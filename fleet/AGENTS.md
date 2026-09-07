@@ -53,6 +53,11 @@ Not owned here: vehicle dynamics and wire codec (`../sim/`), operator UI
   with real rustsitsim dynamics, physical flight asserted from replay ground
   truth), `tests/demo_live.toml` + `../scripts/browser_live_test.sh` for the
   console experience.
+- Boot-gate polling in both harnesses accepts READY or any post-READY FSM
+  state (ACTIVE/RTL/LANDED): the all-READY snapshot window can be <200 ms
+  wide on fast machines because vehicles flip READY->ACTIVE together once
+  the telemetry gate opens. Do not revert to a strict `fsm == "READY"`
+  predicate and do not widen time budgets to compensate.
 
 ## Child DOX Index
 

@@ -119,7 +119,11 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
 import json, sys
 try:
     d = json.load(open(sys.argv[1]))["data"]
-    ready = sum(1 for v in d["vehicles"] if v["fsm"] == "READY")
+    # The READY snapshot window can be <200 ms wide (both vehicles flip
+    # READY->ACTIVE together once the telemetry gate opens; same race as
+    # run_f2.sh), so gate on "boot gate passed": READY or any post-READY
+    # state (all only reachable through READY).
+    ready = sum(1 for v in d["vehicles"] if v["fsm"] in ("READY", "ACTIVE", "RTL", "LANDED"))
     print(f"{ready}/{len(d['vehicles'])}")
 except Exception:
     print("0/0")
