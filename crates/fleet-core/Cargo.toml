@@ -1,0 +1,12 @@
+[package]
+name = "fleet-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Vehicle registry, FSM, health model and event log for mavfleet"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+fleet-modes = { path = "../fleet-modes" }

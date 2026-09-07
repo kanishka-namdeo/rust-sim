@@ -1,0 +1,43 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Unit tests (auction optimality, geofence, FSM, DSL, codec)
+        run: cargo test --workspace
+      - name: Check pinned PX4 version file
+        run: test "$(cat px4-version)" = "v1.16.2"
+      - name: Scenario schema check
+        run: cargo run -p fleet-cli -- check docs/examples/fleet-basic.toml
+
+  # Real-PX4 fleet integration (F-1..F-3) needs a PX4 v1.16.2 SITL build and the
+  # per-vehicle simulator (rustsitsim binary or the vendored prototype). Run on a
+  # self-hosted runner — draft gating per spec §11: required before releases,
+  # advisory on PRs.
+  px4-fleet-integration:
+    if: ${{ false }} # enable when a self-hosted runner is attached
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --workspace
+      - name: F-1 fleet health
+        run: bash tests/run_f1.sh
+      - name: F-2/F-3 canonical scenario (protocol level)
+        run: bash tests/run_f2.sh

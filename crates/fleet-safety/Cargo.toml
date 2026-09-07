@@ -1,0 +1,9 @@
+[package]
+name = "fleet-safety"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Geofence and the ordered safety policy ladder for mavfleet"
+
+[dependencies]
+fleet-core = { path = "../fleet-core" }
