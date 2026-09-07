@@ -1,0 +1,153 @@
+- generic
+  - banner
+    - heading "PX4 Operator Console" [level=1, ref=e2]
+    - paragraph
+      - StaticText "rustsitsim · mavfleet — sandbox gateway plane"
+    - navigation "Console mode" [ref=e3]
+      - tablist [ref=e6] focusable [tabindex]
+        - tab "Sim Console rustsitsim HIL simulator" [selected, ref=e14]
+          - StaticText "Sim Console"
+          - StaticText "rustsitsim HIL simulator"
+        - tab "Fleet C2 mavfleet fleet manager" [ref=e15]
+          - StaticText "Fleet C2"
+          - StaticText "mavfleet fleet manager"
+    - button "Switch to light mode" [ref=e4]
+  - main
+    - tabpanel [ref=e5] focusable [tabindex]
+      - StaticText "rustsitsim — PX4 lockstep HIL"
+      - StaticText "RUN"
+      - generic
+        - StaticText ":"
+        - StaticText "8200"
+        - StaticText "LIVE"
+      - paragraph
+        - StaticText "10 Hz telemetry stream · WS /?XTransformPort=8200 · REST /api/status"
+      - button "E-STOP" [expanded=false, ref=e7]
+      - StaticText "VIRTUAL TIME"
+      - StaticText "00:26.1"
+      - StaticText "mm:ss.s"
+      - StaticText "PX4 LINK"
+      - StaticText "CONNECTED"
+      - StaticText "TCP lockstep master"
+      - StaticText "LOOP"
+      - StaticText "CLOSED"
+      - StaticText "HIL sensor ⇄ actuator"
+      - StaticText "TICK P95"
+      - StaticText "57"
+      - StaticText "µs"
+      - StaticText "sim-loop latency"
+      - StaticText "RATE"
+      - StaticText "200.0"
+      - StaticText "Hz"
+      - StaticText "control plane"
+      - StaticText "BATTERY"
+      - StaticText "100.0"
+      - StaticText "%"
+      - StaticText "nominal"
+      - StaticText "Trajectory — NED top-down (north up)"
+      - generic
+        - StaticText "position history · 192 samples · decimated to 300 points on draw"
+      - image "Top-down NED trajectory of the simulated vehicle"
+      - StaticText "Telemetry — ground truth"
+      - StaticText "state block of the §4.2 WS frame"
+      - StaticText "POSITION NED"
+      - StaticText "0.00 / 50.68 / -9.33"
+      - StaticText "m"
+      - StaticText "VELOCITY NED"
+      - StaticText "0.15 / -0.16 / -0.16"
+      - StaticText "m/s"
+      - StaticText "ROLL"
+      - StaticText "+0.8"
+      - StaticText "°"
+      - StaticText "PITCH"
+      - StaticText "+0.2"
+      - StaticText "°"
+      - StaticText "YAW (Ψ)"
+      - StaticText "359.9"
+      - StaticText "°"
+      - StaticText "from q_wxyz (ZYX)"
+      - StaticText "BATTERY"
+      - StaticText "100.0"
+      - StaticText "%"
+      - generic "Battery 100 percent"
+        - progressbar
+        - StaticText "100.0"
+        - StaticText "%"
+      - paragraph
+        - StaticText "MOTOR OUTPUTS (NORMALIZED)"
+      - StaticText "M"
+      - StaticText "0"
+      - StaticText "0.60"
+      - StaticText "M"
+      - StaticText "1"
+      - StaticText "0.60"
+      - StaticText "M"
+      - StaticText "2"
+      - StaticText "0.60"
+      - StaticText "M"
+      - StaticText "3"
+      - StaticText "0.60"
+      - StaticText "Strip charts — 60 s spooling window"
+      - StaticText "altitude, attitude angles, motor commands · 10 Hz"
+      - paragraph
+        - StaticText "ALTITUDE"
+      - image "Altitude strip chart in meters over the last 60 seconds"
+      - paragraph
+        - StaticText "ATTITUDE (DEG)"
+      - image "Roll, pitch and yaw strip chart in degrees over the last 60 seconds"
+      - paragraph
+        - StaticText "MOTOR COMMANDS"
+      - image "Motor command strip chart, normalized, over the last 60 seconds"
+      - StaticText "Sensors — last emitted"
+      - StaticText "noisy values seen by PX4 (SPEC §4.2)"
+      - StaticText "ACCEL BODY"
+      - StaticText "-0.05 / 0.06 / -9.39"
+      - StaticText "m/s²"
+      - StaticText "GYRO BODY"
+      - StaticText "-0.000 / 0.011 / 0.006"
+      - StaticText "rad/s"
+      - StaticText "BARO ALTITUDE"
+      - StaticText "9.3"
+      - StaticText "m"
+      - StaticText "GPS"
+      - StaticText "3D"
+      - StaticText "10 satellites"
+      - StaticText "Fault console"
+      - StaticText "runtime injection — same schema as timeline events (§7.3)"
+      - heading "ACTIVE FAULTS 0" [level=4, ref=e8]
+        - StaticText "ACTIVE FAULTS"
+        - StaticText "0"
+      - paragraph
+        - StaticText "No active faults"
+      - paragraph
+        - StaticText "Model layers nominal — inject from the catalog"
+      - heading "INJECT FAULT POST /api/faults?XTransformPort=8200" [level=4, ref=e9]
+        - StaticText "INJECT FAULT"
+        - StaticText "POST /api/faults?XTransformPort=8200"
+      - LabelText
+        - StaticText "Type (§7.1 catalog)"
+      - combobox "Fault type" [expanded=false, ref=e10]: F-01 Motor efficiency
+        - generic [ref=e16] clickable [onclick]
+          - StaticText "F-01"
+          - StaticText "Motor efficiency"
+      - LabelText
+        - StaticText "Motor"
+      - combobox "Motor" [expanded=false, ref=e11]: Motor 0
+        - generic [ref=e17] clickable [onclick]
+          - StaticText "Motor 0"
+      - LabelText
+        - StaticText "Factor"
+      - spinbutton "Factor" [ref=e12]: 0.550000011920929
+        - StaticText "0.55"
+      - paragraph
+        - StaticText "Multiplies u_i — yaw drift, altitude sag"
+      - button "Inject Motor efficiency fault" [ref=e13]
+        - StaticText "Inject F-01"
+  - contentinfo
+    - paragraph
+      - StaticText "rustsitsim :8200 · mavfleet :8400 — relative-path fetch + XTransformPort gateway routing"
+    - paragraph
+      - StaticText "10 Hz sim frames · 5 Hz fleet frames · canvas 2D"
+  - region "Notifications (F8)" [ref=e1]
+    - list
+  - alert

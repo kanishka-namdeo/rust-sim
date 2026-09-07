@@ -5,7 +5,7 @@
   "description": "RustSim operator console — live Sim Console (:8200) + Fleet C2 (:8400) for the rust-sim stack",
   "scripts": {
     "dev": "next dev -p 3000",
-    "build": "next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/",
+    "build": "next build && node scripts/finish-standalone.mjs",
     "start": "NODE_ENV=production node .next/standalone/server.js",
     "lint": "eslint ."
   },

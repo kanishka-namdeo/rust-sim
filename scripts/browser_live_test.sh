@@ -50,7 +50,12 @@ echo "[live] preflight..." | tee -a "$LOG"
 [ -x "$MAV/target/debug/mavfleet" ] || fail "mavfleet binary missing (cargo build --workspace in fleet/)"
 [ -x "$ROOT/sim/target/debug/sitsim-cli" ] || fail "sitsim-cli binary missing (cargo build --workspace in sim/)"
 [ -f "$SCENARIO" ] || fail "scenario missing: $SCENARIO"
-[ -f "$CON/.next/standalone/server.js" ] || fail "console build missing (npm run build in console/)"
+# Locate the standalone entry: with an in-project node_modules it lands at
+# .next/standalone/server.js; with a workspace-shared (symlinked) install
+# Turbopack roots the trace at the workspace and nests it (see
+# console/scripts/finish-standalone.mjs).
+CON_SERVER=$(find "$CON/.next/standalone" -name server.js -type f -not -path "*/node_modules/*" 2>/dev/null | head -1)
+[ -n "$CON_SERVER" ] || fail "console build missing (npm run build in console/)"
 [ -x "$PX4_ROOT/build/px4_sitl_default/bin/px4" ] || fail "PX4 binary missing (PX4_ROOT=$PX4_ROOT)"
 command -v agent-browser >/dev/null || fail "agent-browser missing"
 for p in 8400 8200 8201 3000; do
@@ -68,7 +73,7 @@ MANAGER_PID=$!
 echo "[live] manager pid $MANAGER_PID" | tee -a "$LOG"
 
 # ---- 2. console (production standalone server — ~150 MB, boots in ~2 s)
-(PORT=3000 HOSTNAME=127.0.0.1 NODE_ENV=production node "$CON/.next/standalone/server.js" >"$OUT/next.log" 2>&1 &)
+(PORT=3000 HOSTNAME=127.0.0.1 NODE_ENV=production node "$CON_SERVER" >"$OUT/next.log" 2>&1 &)
 
 # ---- 3. wait for both planes
 ok=""

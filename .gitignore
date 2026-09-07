@@ -18,3 +18,6 @@ scratch/
 # OS / editor
 .DS_Store
 *.swp
+# demo live-run evidence: commit the logs/report/snapshots, not the per-vehicle
+# PX4 run roots or ULogs (reproducible via scripts/browser_live_test.sh)
+fleet/tests/demo_artifacts/run/vehicle_*/
