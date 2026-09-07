@@ -1,20 +1,14 @@
 #!/bin/bash
 # =============================================================================
 # rustsitsim integration case I-2: PHYSICAL FLIGHT against REAL PX4 (SPEC
-# §10.3) — arm -> OFFBOARD climb -> hold -> descend -> land, with the fixed
-# v1.16 actuator wire mapping (ADR-0011r) and sized contact substeps
-# (ADR-013).
+# §10.3) — arm -> OFFBOARD climb -> hold -> descend -> land.
 #
-# WIRE ADAPTER (2026-09-07): PX4 v1.16.2 packs HIL_ACTUATOR_CONTROLS(93)
-# as time_usec@0, flags:u64@8, controls@16, mode@80 (size-sorted core
-# fields), while sitsim-mavlink decodes controls@8, mode@72, flags@73 (the
-# official-common.xml extension layout). The 8-byte shift mis-slots the
-# motors (+2 channels) and reads the armed bit from a float byte, pinning
-# the vehicle on the ground (rotors commanded stopped). The engine mapping
-# (ADR-0011r) is correct; the crate offset fix is pending review, so the
-# harness runs tests/i2_wire_proxy.py between PX4 (4560) and sitsim (4570,
-# scenario i2_flight_proxy.toml), re-laying-out ONLY msg 93 PX4->sim and
-# recomputing the CRC. Everything else is byte-transparent.
+# DIRECT WIRE (ADR-0015, 2026-09-07): PX4 v1.16.2's HIL_ACTUATOR_CONTROLS(93)
+# size-sorted layout (flags@8, controls@16, mode@80) is now decoded natively
+# by sitsim-mavlink, so PX4 connects straight to the sim on TCP 4560 — the
+# i2_wire_proxy.py workaround is retired (kept as a wire debugger). The
+# engine mapping (ADR-0011r: [0,1] normalized thrust, armed = mode & 0x80)
+# is unchanged.
 #
 # Single-invocation harness (SPEC §11.3): everything starts, asserts, and
 # cleans up within one call.
@@ -45,12 +39,10 @@ PX4_BIN="$BUILD/bin/px4"
 INSTANCE_DIR="$BUILD/instance_0"
 ETC_DIR="$BUILD/etc"
 
-SCENARIO="$ROOT/tests/i2_flight_proxy.toml"   # io.tcp_port 4570 (proxy owns 4560)
+SCENARIO="$ROOT/tests/i2_flight.toml"   # direct: PX4 -> sitsim on TCP 4560 (ADR-0015)
 HIL_PORT=4560
 API_PORT=8200
 FLIGHT_S=100
-SIM_TCP_PORT=4570
-PROXY_SCRIPT="$ROOT/tests/i2_wire_proxy.py"
 
 OUT="$ROOT/tests/i2_artifacts"
 mkdir -p "$OUT"
@@ -60,7 +52,7 @@ SIM_STDOUT="$OUT/sim_stdout.txt"
 DRIVER_JSON="$OUT/driver_result.json"
 REPLAY="$OUT/i2_flight.replay"
 
-PX4_PID=""; SIM_PID=""; DRIVER_PID=""; PROXY_PID=""
+PX4_PID=""; SIM_PID=""; DRIVER_PID=""
 
 fail() {
     echo "I-2 FAILED: $1"
@@ -79,7 +71,6 @@ fail() {
 
 cleanup() {
     [ -n "$DRIVER_PID" ] && kill "$DRIVER_PID" 2>/dev/null
-    [ -n "${PROXY_PID:-}" ] && kill "$PROXY_PID" 2>/dev/null
     if [ -n "${PX4_PID:-}" ] && kill -0 "$PX4_PID" 2>/dev/null; then
         kill "$PX4_PID" 2>/dev/null
         for _ in $(seq 1 20); do kill -0 "$PX4_PID" 2>/dev/null || break; sleep 0.2; done
@@ -118,19 +109,7 @@ for _ in $(seq 1 100); do
 done
 [ -n "$ok" ] || fail "control plane did not reach WAIT"
 
-# ---- 1b. Wire adapter: owns TCP 4560 for PX4, connects to the sim 4570.
-"$I2_PYTHON" "$PROXY_SCRIPT" 4560 $SIM_TCP_PORT "$OUT/proxy.log" >"$OUT/proxy_stdout.log" 2>&1 &
-PROXY_PID=$!
-ok=""
-for _ in $(seq 1 100); do
-    if grep -q "listening 127.0.0.1:4560" "$OUT/proxy_stdout.log" 2>/dev/null; then
-        ok=1; break
-    fi
-    if ! kill -0 "$PROXY_PID" 2>/dev/null; then break; fi
-    sleep 0.1
-done
-[ -n "$ok" ] || { cat "$OUT/proxy_stdout.log" 2>/dev/null; fail "wire proxy did not start"; }
-echo "[I-2] wire adapter up: PX4:4560 -> proxy -> sitsim:$SIM_TCP_PORT"
+echo "[I-2] sim listening on 127.0.0.1:$HIL_PORT (WAIT) — direct wire, no proxy (ADR-0015)"
 
 # ---- 2. Flight driver (binds 14540 BEFORE PX4 boots).
 "$I2_PYTHON" "$ROOT/tests/i2_flight_driver.py" 14540 $API_PORT "$DRIVER_JSON" 100 >"$OUT/driver.log" 2>&1 &
@@ -179,11 +158,6 @@ wait "$SIM_PID" 2>/dev/null
 SIM_EXIT=$?
 echo "[I-2] sim exit code: $SIM_EXIT"
 [ "$SIM_EXIT" -ne 5 ] || fail "sim exit 5 = numerical divergence"
-if [ -n "${PROXY_PID:-}" ]; then
-    kill "$PROXY_PID" 2>/dev/null
-    wait "$PROXY_PID" 2>/dev/null
-fi
-echo "[I-2] wire proxy stats: $(tail -1 "$OUT/proxy.log" 2>/dev/null)"
 
 [ -s "$DRIVER_JSON" ] || fail "driver produced no result"
 echo "[I-2] driver result:"

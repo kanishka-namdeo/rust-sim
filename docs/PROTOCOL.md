@@ -184,7 +184,17 @@ PX4's innovation tests degrade gracefully instead of gating hard.
 ## 9. HIL_ACTUATOR_CONTROLS contract
 
 Arriving frame (PX4 to sim): time_usec (uint64), controls[16] (float32), mode (uint8,
-MAV_MODE_FLAG bits), flags (uint64). **[V-3 RESOLVED, live-captured against PX4
+MAV_MODE_FLAG bits), flags (uint64). **Wire layout (ADR-0015, live-captured):** PX4
+v1.16.2's pinned dialect packs this message with size-sorted core fields —
+`time_usec:u64 @ 0`, `flags:u64 @ 8`, `controls:f32[16] @ 16..80`, `mode:u8 @ 80` — NOT
+the current official common.xml layout (`controls @ 8, mode @ 72, flags @ 73`, where
+`flags` is a trailing extension field). LEN = 81 and CRC_EXTRA = 47 are identical in both
+dialects, so frames pass CRC either way; only the offsets differ. Decoding the official
+layout mis-slots the motors by +2 channels and reads the armed bit from a float byte —
+the exact defect that pinned I-2 on the ground before the crate fix (ADR-0015; the
+`i2_wire_proxy.py` workaround is retired, the harness runs direct PX4 -> sim on 4560).
+
+**[V-3 RESOLVED, live-captured against PX4
 v1.16.2 — ADR 0011r]** PX4 v1.16 sends **per-motor NORMALIZED thrust [0, 1]** in
 `controls[]`: `SimulatorMavlink` subscribes `actuator_outputs_sim` (NOT the PWM
 topic), which `PWMSim::updateOutputs` publishes as

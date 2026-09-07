@@ -324,13 +324,28 @@ impl HilGps {
 
 /// HIL_ACTUATOR_CONTROLS (93). PX4 -> SIM. SPEC §3.9.
 ///
-/// PX4 emits normalized outputs in [-1, +1]; the sim maps
-/// `u_i = (controls[i] + 1) / 2` (PWM 1000-2000 us convention).
+/// PX4 v1.16.2's pinned dialect packs this message with **size-sorted core
+/// fields** — captured live on the wire during I-2 bring-up (ADR-0015):
+///
+/// ```text
+/// time_usec: u64   @ 0
+/// flags:     u64   @ 8
+/// controls:  f32[16] @ 16..80   (the four [0,1] motor thrusts at 0..4)
+/// mode:      u8    @ 80        (mode & 0x80 is the armed bit)
+/// ```
+///
+/// This differs from the current official common.xml, where `flags` is a
+/// trailing extension field (controls @ 8, mode @ 72, flags @ 73) — the
+/// 8-byte shift mis-slots the motors and reads the armed bit from a float
+/// byte, pinning the vehicle on the ground. PX4's own generated headers
+/// (`build/px4_sitl_default/mavlink/common/mavlink_msg_hil_actuator_controls.h`)
+/// and its live wire behavior are the decoding authority. The per-motor
+/// normalized-thrust scale (ADR-0011r) is unchanged by this layout fix.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HilActuatorControls {
     pub time_usec: u64,
     pub controls: [f32; 16],
-    /// MAV_MODE_FLAG bits.
+    /// MAV_MODE_FLAG bits; & 0x80 = armed.
     pub mode: u8,
     pub flags: u64,
 }
@@ -341,11 +356,11 @@ impl HilActuatorControls {
     pub fn pack_into(&self, buf: &mut [u8]) {
         assert!(buf.len() >= Self::FULL_LEN, "buffer too small");
         put_u64(buf, 0, self.time_usec);
+        put_u64(buf, 8, self.flags);
         for (i, &c) in self.controls.iter().enumerate() {
-            put_f32(buf, 8 + 4 * i, c);
+            put_f32(buf, 16 + 4 * i, c);
         }
-        buf[72] = self.mode;
-        put_u64(buf, 73, self.flags);
+        buf[80] = self.mode;
     }
 
     pub fn unpack(payload: &[u8], msgid: u32) -> Result<Self, DecodeError> {
@@ -353,19 +368,19 @@ impl HilActuatorControls {
             return Err(DecodeError { msgid, payload_len: payload.len() });
         }
         // Zero-fill a truncated payload (v2 trailing-zero truncation is
-        // value-preserving; PX4 itself sends HIL_ACTUATOR_CONTROLS with the
-        // zero `flags` tail trimmed).
+        // value-preserving; PX4's mode byte at 80 is 0x01/0x81 — nonzero —
+        // so on the wire the payload is normally the full 81 bytes).
         let mut buf = [0u8; Self::FULL_LEN];
         buf[..payload.len()].copy_from_slice(payload);
         let mut controls = [0f32; 16];
         for (i, slot) in controls.iter_mut().enumerate() {
-            *slot = get_f32(&buf, 8 + 4 * i);
+            *slot = get_f32(&buf, 16 + 4 * i);
         }
         Ok(Self {
             time_usec: get_u64(&buf, 0),
+            flags: get_u64(&buf, 8),
             controls,
-            mode: buf[72],
-            flags: get_u64(&buf, 73),
+            mode: buf[80],
         })
     }
 }

@@ -103,9 +103,10 @@ fn command_ack_msg() -> CommandAck {
 
 /// Byte-exact encode check for every message type, cross-checked against the
 /// pymavlink oracle (this is the "cross-check at least one HIL_SENSOR frame
-/// against pymavlink's encoding" requirement, applied to the five messages whose
-/// current-dialect layout matches PX4 v1.16.2; HIL_ACTUATOR_CONTROLS drifted
-/// and is covered by `hil_actuator_controls_px4_layout_offsets`).
+/// against pymavlink's encoding" requirement, applied to the five messages
+/// whose current-dialect layout matches PX4 v1.16.2; HIL_ACTUATOR_CONTROLS
+/// has a PX4-specific size-sorted layout and is covered by
+/// `hil_actuator_controls_px4_layout_offsets` + `px4_v116_armed_wire_frame`).
 #[test]
 fn golden_encode_all_messages() {
     let cases: [(Message, u8, &[u8]); 5] = [
@@ -250,15 +251,17 @@ fn payload_lengths_match_px4_headers() {
     assert_eq!(Message::HilSensor(sensor_msg()).pack_payload().len(), 65);
     assert_eq!(Message::HilStateQuaternion(hsq_msg()).pack_payload().len(), 64);
     assert_eq!(Message::HilGps(gps_msg()).pack_payload().len(), 36); // id/yaw zero-trimmed
-    assert_eq!(Message::HilActuatorControls(actuator_msg()).pack_payload().len(), 73); // flags zero-trimmed
+    assert_eq!(Message::HilActuatorControls(actuator_msg()).pack_payload().len(), 81); // mode byte at 80 is nonzero -> no trim
     assert_eq!(Message::CommandLong(command_long_msg()).pack_payload().len(), 32); // confirmation zero-trimmed
     assert_eq!(Message::CommandAck(command_ack_msg()).pack_payload().len(), 2);
 }
 
-/// HIL_ACTUATOR_CONTROLS golden is in the PX4 v1.16.2 wire layout
-/// (time, controls@8, mode@72, flags@73). Current common.xml (and therefore
-/// pymavlink >= 2.4.x) swapped mode/flags; PX4's pinned dialect is the
-/// authority for what we decode — see ADR-006 in docs/adr/.
+/// HIL_ACTUATOR_CONTROLS golden is in the TRUE PX4 v1.16.2 wire layout
+/// (time_usec@0, flags@8, controls@16, mode@80 — size-sorted core fields,
+/// live-captured during I-2 bring-up; ADR-0015). The official common.xml
+/// layout (controls@8, mode@72, flags@73) mis-slots the motors by +2 and
+/// reads the armed bit from a float byte — PX4's pinned dialect is the
+/// authority for what we decode.
 #[test]
 fn hil_actuator_controls_px4_layout_offsets() {
     // Golden wire bytes -> decode.
@@ -269,23 +272,57 @@ fn hil_actuator_controls_px4_layout_offsets() {
     match frames[0].decode().unwrap() {
         Message::HilActuatorControls(a) => {
             assert_eq!(a.time_usec, 1_000_000);
+            assert_eq!(a.flags, 0);
             assert!((a.controls[0] - 0.1).abs() < 1e-6);
             assert!((a.controls[1] - (-0.2)).abs() < 1e-6);
             assert!((a.controls[2] - 0.3).abs() < 1e-6);
             assert!((a.controls[3] - (-0.4)).abs() < 1e-6);
             assert_eq!(a.controls[4], 0.0);
             assert_eq!(a.mode, 1);
-            assert_eq!(a.flags, 0);
         }
         _ => panic!("wrong message"),
     }
-    // Our encoder is byte-identical to the PX4-layout golden (modulo the
-    // trailing-zero trim of the zero `flags` field).
+    // Offset pin: controls[0] is payload bytes 16..20, mode is byte 80.
+    let payload = &GOLDEN_HIL_ACTUATOR_CONTROLS[10..91];
+    let c0 = f32::from_le_bytes([payload[16], payload[17], payload[18], payload[19]]);
+    assert!((c0 - 0.1).abs() < 1e-6, "controls[0] must live at offset 16");
+    assert_eq!(payload[80], 1, "mode must live at offset 80");
+    // Our encoder is byte-identical to the PX4-layout golden (payload is the
+    // full 81 bytes: the trailing mode byte is nonzero, so no trim applies).
     let msg = Message::HilActuatorControls(actuator_msg());
     let frame = Frame::from_message(&msg, 3, SYS_ID, COMP_ID);
     let bytes = frame.encode();
-    assert_eq!(bytes[1], 73);
-    assert_eq!(&bytes[10..73], &GOLDEN_HIL_ACTUATOR_CONTROLS[10..73]);
+    assert_eq!(bytes[1], 81);
+    assert_eq!(&bytes[..], GOLDEN_HIL_ACTUATOR_CONTROLS);
+}
+
+/// Regression: a live-capture-style PX4 v1.16.2 armed frame (mode@80 = 0x81,
+/// per-motor [0,1] thrusts in controls[0..4] at offsets 16..32) decodes with
+/// the armed bit and the four motor slots in the right places. This is the
+/// exact shape the I-2 sniffer observed (ADR-0011r: wire ~= 0.876*(pwm-1000)/1000).
+#[test]
+fn px4_v116_armed_wire_frame() {
+    let mut payload = [0u8; 81];
+    payload[0..8].copy_from_slice(&1_234_567u64.to_le_bytes()); // time_usec @0
+    payload[8..16].copy_from_slice(&0u64.to_le_bytes()); // flags @8
+    let motors = [0.32f32, 0.34, 0.31, 0.35]; // hover-ish [0,1] thrusts
+    for (i, &m) in motors.iter().enumerate() {
+        payload[16 + 4 * i..20 + 4 * i].copy_from_slice(&m.to_le_bytes());
+    }
+    payload[80] = 0x81; // armed (0x01 | 0x80)
+    let frame = Frame { seq: 7, sysid: 1, compid: 1, msgid: msg_id::HIL_ACTUATOR_CONTROLS, payload: payload.to_vec() };
+    match frame.decode().unwrap() {
+        Message::HilActuatorControls(a) => {
+            assert_eq!(a.mode, 0x81);
+            assert!(a.mode & 0x80 != 0, "armed bit must decode from offset 80");
+            for i in 0..4 {
+                assert!((a.controls[i] - motors[i]).abs() < 1e-6, "motor {i} mis-slotted");
+            }
+            assert_eq!(a.flags, 0);
+            assert_eq!(a.time_usec, 1_234_567);
+        }
+        _ => panic!("wrong message"),
+    }
 }
 
 /// The frame encoder produces the sequence number it is given; wrap-around
