@@ -78,3 +78,25 @@ PX4_SIM_MODEL=gazebo-classic_iris ../bin/px4 -i N -d <ABS>/build/px4_sitl_defaul
   telemetry on 14540/14541. ~15 MB RSS per vehicle.
 - pymavlink connect: `mavutil.mavlink_connection('0.0.0.0:14540+i')` (bind);
   PX4 also streams to the bound socket.
+
+## Sensor-noise realism (ADR-0012 / ADR-0014 — the zero-noise starvation class)
+
+Three instances of the same lesson: PX4's estimators need *realistic*
+noise, not perfect data:
+- **mag**: noiseless mag is never fused → no yaw alignment → arming
+  denied (0.005 G noise fixes it);
+- **accel**: noiseless accel leaves the EKF2 bias estimate degenerate →
+  "Preflight Fail: High Accelerometer Bias" arming denials that flip
+  randomly between boots (0.0025 m/s²/√Hz noise fixes it);
+- **baro values**: don't hold values constant across frames with fresh
+  timestamps — refresh the value every HIL_SENSOR (PX4's air data still
+  decimates to 50 Hz internally, but its health check watches the value
+  stream).
+
+## I-2 physical flight (post ADR-0011r/0013/0014) — PASSING
+
+`tests/run_i2_flight.sh`: real PX4 v1.16.2 arms (first attempt),
+OFFBOARD engages with zero re-engages, ground truth climbs to
+z = −3.10 m with EKF tracking to 3 cm, descends, lands, disarms;
+16,706 ticks finite; telemetry hash recorded per run in
+`tests/i2_artifacts/sim_stdout.txt`.

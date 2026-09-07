@@ -28,12 +28,35 @@ INFO  [mavlink] mode: Onboard, data rate: 4000 B/s on udp port 14280 remote port
 INFO  [mavlink] mode: Gimbal, data rate: 400000 B/s on udp port 13030 remote port 13280
 INFO  [logger] logger started (mode=all)
 INFO  [logger] Start file log (type: full)
-INFO  [logger] [logger] ./log/2026-09-07/13_48_11.ulg	
-INFO  [logger] Opened full log file: ./log/2026-09-07/13_48_11.ulg
+INFO  [logger] [logger] ./log/2026-09-07/13_46_25.ulg	
+INFO  [logger] Opened full log file: ./log/2026-09-07/13_46_25.ulg
 INFO  [mavlink] MAVLink only on localhost (set param MAV_{i}_BROADCAST = 1 to enable network)
 INFO  [mavlink] MAVLink only on localhost (set param MAV_{i}_BROADCAST = 1 to enable network)
 INFO  [px4] Startup script returned successfully
 INFO  [tone_alarm] home set
+INFO  [mavlink] partner IP: 127.0.0.1
+INFO  [commander] [32mReady for takeoff![0m
+WARN  [health_and_arming_checks] Preflight Fail: High Accelerometer Bias
+WARN  [commander] Arming denied: Resolve system health failures first	
+INFO  [tone_alarm] notify negative
+WARN  [commander] Arming denied: Resolve system health failures first	
+INFO  [tone_alarm] notify negative
+WARN  [commander] Arming denied: Resolve system health failures first	
+INFO  [tone_alarm] notify negative
+WARN  [commander] Arming denied: Resolve system health failures first	
+INFO  [tone_alarm] notify negative
+INFO  [commander] Armed by external command	
+INFO  [tone_alarm] arming warning
+INFO  [commander] Takeoff detected	
+WARN  [health_and_arming_checks] Preflight Fail: High Accelerometer Bias
+INFO  [vehicle_air_data] BARO switch from #0 -> #1
+ERROR [vehicle_air_data] BARO #1 failed:  STALE!	
+INFO  [vehicle_air_data] BARO switch from #1 -> #0
+ERROR [vehicle_air_data] BARO #0 failed:  STALE!	
+INFO  [commander] Disarmed by external command	
+INFO  [tone_alarm] notify neutral
+ERROR [vehicle_air_data] BARO #0 failed:  STALE!	
+INFO  [logger] closed logfile, bytes written: 22555769
 
 PX4 Exiting...
 Exiting NOW.

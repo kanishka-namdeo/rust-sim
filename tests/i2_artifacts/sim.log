@@ -1,0 +1,7 @@
+{"timestamp":"2026-09-07T13:46:25.282906Z","level":"INFO","fields":{"message":"rustsitsim listening; waiting for PX4 to connect","hil_addr":"127.0.0.1:4570","api_addr":"127.0.0.1:8200","rate_hz":200.0,"duration_s":110.0,"speed":1.0,"seed":7,"scenario_sha256":"4739dd32f6ec8683b45818f5fc68acc7d9c3a992caae69b710d328708fc0df51","replay":"/home/z/my-project/rustsitsim/tests/i2_artifacts/i2_flight.replay"}}
+{"timestamp":"2026-09-07T13:46:25.312653Z","level":"INFO","fields":{"message":"PX4 connected to the HIL link","peer":"127.0.0.1:55732"}}
+{"timestamp":"2026-09-07T13:46:25.312713Z","level":"INFO","fields":{"message":"PX4 connected; starting the tick loop","peer":"127.0.0.1:55732"}}
+{"timestamp":"2026-09-07T13:46:25.553753Z","level":"INFO","fields":{"message":"HIL_ACTUATOR_CONTROLS received -> control loop closed"}}
+{"timestamp":"2026-09-07T13:47:48.838297Z","level":"INFO","fields":{"message":"HIL link: PX4 closed the connection (EOF)"}}
+{"timestamp":"2026-09-07T13:47:48.845623Z","level":"INFO","fields":{"message":"sim loop finished","end":"Some(Px4Disconnected)","ticks":16706,"virtual_ms":83530,"replay_records":16706,"telemetry_hash":"ec1ef0d383cd56e1"}}
+{"timestamp":"2026-09-07T13:47:48.845747Z","level":"INFO","fields":{"message":"run complete","exit_code":3}}

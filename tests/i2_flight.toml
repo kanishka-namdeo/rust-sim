@@ -1,0 +1,55 @@
+# I-2 flight scenario: the I-1 proven-good base (ideal sensors except mag
+# noise — ADR-0012), real-time pacing, long enough for arm + climb + hover
+# + descend + land. Physical flight assertions live in run_i2_flight.sh
+# (sim ground truth from the replay + /api/status, not the EKF estimate).
+
+[io]
+tcp_port = 4560
+api_port = 8200
+
+[sim]
+rate_hz = 200
+duration_s = 110
+speed = 1.0
+seed = 7
+
+[vehicle]
+origin = { lat_deg = 47.397770, lon_deg = 8.545580, alt_m = 500.0 }
+
+[sensors.imu]
+# Realistic BMI088-class noise (config defaults): a NOISELESS IMU leaves the
+# EKF2 accel-bias estimate degenerate (nothing pins it; it random-walks and
+# intermittently trips "Preflight Fail: High Accelerometer Bias" — the
+# same zero-noise-starves-the-estimator class as ADR-0012's mag finding).
+# With noise, the bias estimate converges and arming is deterministic.
+gyro_noise_density = 0.00035
+gyro_bias_walk = 0.0
+gyro_turnon_sigma = 0.0
+gyro_scale_sigma = 0.0
+gyro_misalign_deg = 0.0
+accel_noise_density = 0.0025
+accel_bias_walk = 0.0
+accel_turnon_sigma = 0.0
+accel_scale_sigma = 0.0
+accel_misalign_deg = 0.0
+
+[sensors.mag]
+# ADR-0012: PX4's mag pipeline requires non-constant data; noiseless mag
+# starves EKF2 (no yaw alignment, no GNSS fusion, arming denied).
+noise_gauss = 0.005
+hard_iron_gauss = 0.0
+
+[sensors.baro]
+noise_m = 0.0
+walk_m_per_min = 0.0
+
+[sensors.gps]
+rate_hz = 5
+latency_ms = 0
+pos_noise_m = 0.0
+pos_noise_vert_m = 0.0
+vel_noise_ms = 0.0
+lock_s = 0.0
+
+[env]
+turbulence = "off"

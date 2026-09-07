@@ -393,16 +393,25 @@ impl SimEngine {
         self.sensors.accel_body_ms2 = accel;
         self.sensors.gyro_body_rads = gyro;
 
-        // Mag + baro at 50 Hz (every `mag_baro_div` ticks, starting at
-        // tick 1 so the very first HIL_SENSOR carries real values).
+        // Mag at 50 Hz (every `mag_baro_div` ticks, starting at tick 1 so
+        // the very first HIL_SENSOR carries real values).
         if self.tick % self.mag_baro_div == 1 {
             let rot = sitsim_core::quat_to_rot(&self.dynamics.state.q);
             let field_ned = self.mag_field.field_ned_gauss();
             let truth_body = sitsim_core::quat::rot_t_mul(&rot, &field_ned);
             self.sensors.mag_body_gauss = self.mag.sample(&truth_body, &mut self.streams.mag);
+        }
 
+        // Baro at the FULL tick rate (200 Hz): HIL_SENSOR carries the
+        // baro fields every frame (FIELDS_UPDATED_ALL), and PX4 v1.16's
+        // sensors module fails the simulated baros STALE when the VALUE
+        // holds constant across frames with fresh timestamps (observed
+        // live in I-2: "BARO #0/#1 failed: STALE!" right after takeoff,
+        // EKF2 altitude then drifted ~1 m from truth). Sampling every
+        // tick keeps the value consistent with its timestamp.
+        {
             let alt_above_origin = -self.dynamics.state.pos[2];
-            let b = self.baro.sample(alt_above_origin, h * self.mag_baro_div as f64, fx.baro_bias_m, &mut self.streams.baro);
+            let b = self.baro.sample(alt_above_origin, h, fx.baro_bias_m, &mut self.streams.baro);
             self.sensors.baro_pressure = b.pressure;
             self.sensors.baro_alt_m = b.pressure_alt_m;
             self.sensors.temperature_c = sitsim_env::temperature_c(alt_above_origin);
