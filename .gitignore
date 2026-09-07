@@ -1,0 +1,20 @@
+# Rust
+target/
+
+# Node / Next
+node_modules/
+.next/
+bun.lock
+npm-debug.log*
+
+# local env
+.env
+.env.local
+
+# run artifacts (evidence dirs are committed deliberately per-component)
+scratch/
+*.log
+
+# OS / editor
+.DS_Store
+*.swp
