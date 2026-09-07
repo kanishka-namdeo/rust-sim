@@ -3,9 +3,9 @@
 [i2] ARMED at t=28.2s
 [i2] phase prestream done (truth z_min=0.00, main_mode=4, armed=True)
 [i2] DO_SET_MODE OFFBOARD sent
-[i2] phase climb+hold done (truth z_min=-1.78, main_mode=6, armed=True)
-[i2] phase descend-1 done (truth z_min=-1.85, main_mode=6, armed=True)
-[i2] phase descend-2 done (truth z_min=-1.85, main_mode=6, armed=True)
-[i2] phase land-hold done (truth z_min=-1.85, main_mode=6, armed=True)
+[i2] phase climb+hold done (truth z_min=-1.71, main_mode=6, armed=True)
+[i2] phase descend-1 done (truth z_min=-1.72, main_mode=6, armed=True)
+[i2] phase descend-2 done (truth z_min=-1.72, main_mode=6, armed=True)
+[i2] phase land-hold done (truth z_min=-1.72, main_mode=6, armed=True)
 [i2] DO_SET_MODE AUTO_LAND sent
-[i2] driver done exit=0 result={"heartbeat": true, "armed": true, "offboard_mode_seen": true, "land_mode_seen": true, "disarmed": true, "truth_z_min": -1.8498564958572388, "truth_z_final": 0.0009193734731525183, "truth_max_speed": 1.217828631401062, "truth_ticks": 15000, "ekf_z_min": -2.5128173828125, "ekf_samples": 2218, "arm_s": 28.175053596496582, "offboard_first_s": 31.9998619556427, "offboard_reengages": 0, "errors": [], "exit": 0}
+[i2] driver done exit=0 result={"heartbeat": true, "armed": true, "offboard_mode_seen": true, "land_mode_seen": true, "disarmed": true, "truth_z_min": -1.7188496589660645, "truth_z_final": 0.0009193734731525183, "truth_max_speed": 1.2321776151657104, "truth_ticks": 15000, "ekf_z_min": -2.417236328125, "ekf_samples": 2220, "arm_s": 28.180295944213867, "offboard_first_s": 31.99996590614319, "offboard_reengages": 0, "errors": [], "exit": 0}

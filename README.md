@@ -78,6 +78,11 @@ git clone --depth 1 --branch v1.16.2 --recurse-submodules --shallow-submodules \
 (cd console && npm install && npm run build)
 ```
 
+> Setting this up in the Z.AI sandbox (or a lean container without Rust /
+> cmake / a full npm registry)? Follow
+> [docs/SANDBOX_SETUP.md](docs/SANDBOX_SETUP.md) — the exact verified
+> sequence, including every environment-specific fix.
+
 Fly one vehicle, for real:
 
 ```bash

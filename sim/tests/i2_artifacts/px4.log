@@ -13,7 +13,7 @@ INFO  [px4] startup script: /bin/sh etc/init.d-posix/rcS 0
 INFO  [init] found model autostart file as SYS_AUTOSTART=10015
 INFO  [param] selected parameter default file parameters.bson
 INFO  [param] importing from 'parameters.bson'
-INFO  [parameters] BSON document size 392 bytes, decoded 392 bytes (INT32:17, FLOAT:3)
+INFO  [parameters] BSON document size 350 bytes, decoded 350 bytes (INT32:15, FLOAT:3)
 INFO  [param] selected parameter backup file parameters_backup.bson
 INFO  [dataman] data manager file './dataman' size is 1208528 bytes
 INFO  [init] PX4_SIM_HOSTNAME: localhost
@@ -28,8 +28,8 @@ INFO  [mavlink] mode: Onboard, data rate: 4000 B/s on udp port 14280 remote port
 INFO  [mavlink] mode: Gimbal, data rate: 400000 B/s on udp port 13030 remote port 13280
 INFO  [logger] logger started (mode=all)
 INFO  [logger] Start file log (type: full)
-INFO  [logger] [logger] ./log/2026-09-07/14_27_06.ulg	
-INFO  [logger] Opened full log file: ./log/2026-09-07/14_27_06.ulg
+INFO  [logger] [logger] ./log/2026-09-07/18_42_51.ulg	
+INFO  [logger] Opened full log file: ./log/2026-09-07/18_42_51.ulg
 INFO  [mavlink] MAVLink only on localhost (set param MAV_{i}_BROADCAST = 1 to enable network)
 INFO  [mavlink] MAVLink only on localhost (set param MAV_{i}_BROADCAST = 1 to enable network)
 INFO  [px4] Startup script returned successfully
@@ -43,11 +43,12 @@ INFO  [vehicle_air_data] BARO switch from #0 -> #1
 ERROR [vehicle_air_data] BARO #1 failed:  STALE!	
 INFO  [vehicle_air_data] BARO switch from #1 -> #0
 ERROR [vehicle_air_data] BARO #0 failed:  STALE!	
-INFO  [commander] Landing detected	
-INFO  [commander] Disarmed by landing	
+ERROR [vehicle_air_data] BARO #0 failed:  STALE!	
+INFO  [commander] Disarmed by external command	
 INFO  [tone_alarm] notify neutral
-INFO  [logger] closed logfile, bytes written: 20854697
-INFO  [gyro_calibration] gyro 0 (1310988) updating offsets [0.000, 0.000, 0.000]->[-0.000, 0.000, -0.019] 15.0 degC
+ERROR [vehicle_air_data] BARO #0 failed:  STALE!	
+WARN  [health_and_arming_checks] Preflight Fail: vertical velocity unstable
+INFO  [logger] closed logfile, bytes written: 21372938
 
 PX4 Exiting...
 Exiting NOW.

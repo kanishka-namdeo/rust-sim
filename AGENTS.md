@@ -45,6 +45,11 @@ Everything in this repo is verified live against real PX4-Autopilot v1.16.2
 
 - Read the nearest AGENTS.md before editing a subtree; ADRs before touching
   protocol code.
+- Setting the stack up in the Z.AI sandbox (or any lean container): follow
+  `docs/SANDBOX_SETUP.md` — the exact verified sequence, including the
+  environment-specific fixes (Rust/cmake installs, radix registry pins,
+  PX4 shallow-clone tag fetch, author-layout symlink). Do not improvise
+  around it; every deviation there was hit live.
 - Integration work happens in single-invocation harnesses (background
   processes do not survive between shell calls on some platforms): see
   `sim/tests/run_i1.sh`, `sim/tests/run_i2_flight.sh`, `fleet/tests/run_f1.sh`,
@@ -69,5 +74,5 @@ Everything in this repo is verified live against real PX4-Autopilot v1.16.2
 | `sim/AGENTS.md` | RustSim Core workspace: physics, sensors, MAVLink HIL codec, replay, fault engine, control plane |
 | `fleet/AGENTS.md` | RustSim Fleet workspace: mission manager, links, allocator, safety policies, fleet control plane |
 | `console/AGENTS.md` | Operator console: pages, hooks, gateway/direct API routing, build & run |
-| `docs/AGENTS.md` | Cross-repo documentation: architecture, verification evidence, operations runbook |
+| `docs/AGENTS.md` | Cross-repo documentation: architecture, verification evidence, operations runbook, sandbox setup sequence |
 | `scripts/AGENTS.md` | Shared cross-repo scripts: live browser test, golden-vector generator, build helpers |
