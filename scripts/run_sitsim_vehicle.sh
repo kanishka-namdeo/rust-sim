@@ -42,12 +42,17 @@ seed = $SEED
 origin = { lat_deg = 47.397770, lon_deg = 8.545580, alt_m = 500.0 }
 
 [sensors.imu]
-gyro_noise_density = 0.0
+# Realistic BMI088-class noise (rustsitsim config defaults): a noiseless
+# IMU leaves EKF2's accel-bias estimate degenerate and arming
+# nondeterministic ("Preflight Fail: High Accelerometer Bias" — the same
+# zero-noise-starves-the-estimator class as the mag finding, ADR-0012 /
+# ADR-0014; verified in rustsitsim's live I-2 flight).
+gyro_noise_density = 0.00035
 gyro_bias_walk = 0.0
 gyro_turnon_sigma = 0.0
 gyro_scale_sigma = 0.0
 gyro_misalign_deg = 0.0
-accel_noise_density = 0.0
+accel_noise_density = 0.0025
 accel_bias_walk = 0.0
 accel_turnon_sigma = 0.0
 accel_scale_sigma = 0.0
