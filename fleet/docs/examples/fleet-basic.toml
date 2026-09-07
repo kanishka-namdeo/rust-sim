@@ -1,0 +1,56 @@
+# Canonical fleet scenario (SPEC Appendix B) — the F-2/F-3 driver.
+# 2 vehicles, 4 tasks, one link loss, one GPS denial, success criteria.
+
+[fleet]
+count = 2
+battery_sim = true
+restart_on_fault = false
+
+[env]
+geofence = { points_ned_m = [[-100,-100],[100,-100],[100,100],[-100,100]], ceiling_m = 60, floor_m = 0 }
+wind_steady_ms = [1.0, 0.0, 0.0]
+turbulence = "light"
+
+[[tasks]]
+id = "wp_n"
+pos_ned_m = [-60.0, 0.0, -12.0]
+hover_s = 5
+
+[[tasks]]
+id = "wp_e"
+pos_ned_m = [0.0, 60.0, -12.0]
+hover_s = 5
+
+[[tasks]]
+id = "wp_s"
+pos_ned_m = [60.0, 10.0, -12.0]
+hover_s = 5
+
+[[tasks]]
+id = "wp_w"
+pos_ned_m = [-10.0, -60.0, -12.0]
+hover_s = 5
+
+[[vehicle_override]]
+index = 1
+battery = { discharge_scale = 1.6 }   # accelerates the ladder test path
+
+[[event]]
+kind = "link_loss"
+vehicle = 1
+start_s = 40
+duration_s = 15
+
+[[event]]
+kind = "fault"
+vehicle = 0
+fault = { type = "gps_denial", start_ms = 30000, duration_ms = 20000 }
+
+[success]
+all_tasks_done = true
+all_landed = true
+max_time_s = 300
+no_geofence_breach = true
+fsm_trace = [
+  { vehicle = 1, from = "ACTIVE", to = "RTL", cause = "heartbeat_loss" }
+]

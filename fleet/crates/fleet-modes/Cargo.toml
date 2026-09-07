@@ -1,0 +1,8 @@
+[package]
+name = "fleet-modes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PX4 custom-mode constants and offboard type_mask encodings for mavfleet"
+
+[dependencies]

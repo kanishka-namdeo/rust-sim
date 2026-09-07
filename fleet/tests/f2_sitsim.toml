@@ -1,0 +1,42 @@
+# F-2 driver scenario: mavfleet driving rustsitsim per vehicle — REAL
+# dynamics, real physical flight (ADR-0001 step 3 / SPEC §11.2 Case F-2).
+#
+# Each vehicle's simulator is a full rustsitsim instance (sitsim-cli) spawned
+# via scripts/run_sitsim_vehicle.sh: HIL TCP 4560+i, control plane 8200+i,
+# distinct RNG seeds, BMI088-class IMU noise + mag noise so PX4's EKF2
+# converges and arming is deterministic (ADR-0014). PX4 connects directly —
+# the v1.16.2 actuator wire layout is decoded natively (rustsitsim ADR-0015),
+# no proxy in the path.
+#
+# 2 vehicles, 2 tasks: each vehicle wins one waypoint in the sequential
+# auction, climbs to 10 m, cruises, hovers, RTLs and lands.
+
+[fleet]
+count = 2
+battery_sim = true
+restart_on_fault = false
+
+[env]
+geofence = { points_ned_m = [[-90,-90],[90,-90],[90,90],[-90,90]], ceiling_m = 50, floor_m = 0 }
+wind_steady_ms = [0.0, 0.0, 0.0]
+turbulence = "off"
+
+[sim]
+command = "/home/z/my-project/mavfleet/scripts/run_sitsim_vehicle.sh {instance} {hil_port} {duration_s}"
+duration_s = 420
+
+[[tasks]]
+id = "wp_n"
+pos_ned_m = [-40.0, 0.0, -10.0]
+hover_s = 4
+
+[[tasks]]
+id = "wp_e"
+pos_ned_m = [0.0, 40.0, -10.0]
+hover_s = 4
+
+[success]
+all_tasks_done = true
+all_landed = true
+max_time_s = 360
+no_geofence_breach = true

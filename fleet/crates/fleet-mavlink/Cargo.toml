@@ -1,0 +1,13 @@
+[package]
+name = "fleet-mavlink"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Self-contained GCS-side MAVLink v2 codec and per-vehicle UDP link tasks for mavfleet"
+
+[dependencies]
+tokio = { workspace = true }
+fleet-modes = { path = "../fleet-modes" }
+
+[dev-dependencies]
+serde_json = { workspace = true }

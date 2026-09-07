@@ -1,0 +1,10 @@
+[package]
+name = "fleet-simctl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Per-vehicle process supervision (px4 + simulator) for mavfleet"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }

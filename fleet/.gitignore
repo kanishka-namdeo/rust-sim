@@ -1,0 +1,6 @@
+target/
+scratch/
+fleet-runs/
+*.log
+run-report*.json
+events*.ndjson
