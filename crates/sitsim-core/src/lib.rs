@@ -12,6 +12,8 @@ pub mod dynamics;
 pub mod quat;
 pub mod rng;
 
-pub use dynamics::{QuadDynamics, QuadParams, State, StepInput, MOTOR_SPIN};
+pub use dynamics::{
+    QuadDynamics, QuadParams, State, StepInput, MOTOR_SPIN, contact_fast_root, stable_substeps,
+};
 pub use quat::{quat_mul, quat_normalize, quat_norm, quat_to_euler, quat_to_rot};
 pub use rng::{Pcg64, RngStreams};

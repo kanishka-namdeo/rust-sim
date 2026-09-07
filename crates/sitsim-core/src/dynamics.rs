@@ -187,11 +187,25 @@ fn unpack(x: &[f64; NSTATE]) -> State {
 pub struct QuadDynamics {
     pub params: QuadParams,
     pub state: State,
+    /// Latched numerical-divergence flag (ADR-013): set the first time any
+    /// state component goes non-finite. The integrator keeps running (the
+    /// quaternion guard below keeps the wire output parseable) but callers
+    /// must stop and report — silently streaming NaN is what let the
+    /// I-2 takeoff divergence hide as a frozen EKF.
+    pub diverged: bool,
 }
 
 impl QuadDynamics {
     pub fn new(params: QuadParams, state: State) -> Self {
-        QuadDynamics { params, state }
+        QuadDynamics { params, state, diverged: false }
+    }
+
+    /// True when no state component is NaN/inf.
+    pub fn state_is_finite(&self) -> bool {
+        let s = &self.state;
+        s.pos.iter().chain(s.vel.iter()).chain(s.q.iter()).chain(s.omega.iter()).chain(s.rotors.iter())
+            .all(|v| v.is_finite())
+            && s.soc.is_finite()
     }
 
     /// Total rotor thrust (N), body −z.
@@ -248,7 +262,71 @@ impl QuadDynamics {
         if !self.state.q[0].is_finite() {
             self.state.q = [1.0, 0.0, 0.0, 0.0];
         }
+        if !self.diverged && !self.state_is_finite() {
+            self.diverged = true;
+        }
     }
+}
+
+/// Fastest (dominant) eigenvalue magnitude of the unilateral
+/// spring-damper ground contact, for explicit-integration stability
+/// sizing (ADR-013).
+///
+/// Two contact modes matter:
+/// - vertical: the full mass rides 4 parallel (k_g, c_g) contacts;
+/// - rotational (roll/pitch): inertia Jx/Jy reacts to the same contacts
+///   at the arm moment arms — stiffer per unit inertia, so it dominates
+///   whenever the arm geometry is real (lambda_rot ~ 1.2e3 1/s at SPEC
+///   defaults vs ~6.2e2 1/s vertical).
+///
+/// For an overdamped mode the fast root is wn*(zeta + sqrt(zeta^2 - 1));
+/// for an underdamped mode the pair magnitude is wn. Both are what an
+/// explicit RK4 step of size h must satisfy |lambda*h| < 2.785 against.
+pub fn contact_fast_root(p: &QuadParams) -> f64 {
+    let arms = p.arm_positions();
+    let sum_ry2: f64 = arms.iter().map(|r| r[1] * r[1]).sum();
+    let sum_rx2: f64 = arms.iter().map(|r| r[0] * r[0]).sum();
+    let vertical = overdamped_fast_root(4.0 * p.k_g, 4.0 * p.c_g, p.mass_kg);
+    let roll = overdamped_fast_root(p.k_g * sum_ry2, p.c_g * sum_ry2, p.inertia[0]);
+    let pitch = overdamped_fast_root(p.k_g * sum_rx2, p.c_g * sum_rx2, p.inertia[1]);
+    vertical.max(roll).max(pitch)
+}
+
+/// Fast-root magnitude of (k, c) acting on mass m (see `contact_fast_root`).
+fn overdamped_fast_root(k: f64, c: f64, m: f64) -> f64 {
+    if k <= 0.0 || m <= 0.0 {
+        return 0.0;
+    }
+    let wn = libm::sqrt(k / m);
+    if c <= 0.0 {
+        return wn;
+    }
+    let zeta = c / (2.0 * libm::sqrt(k * m));
+    if zeta >= 1.0 {
+        wn * (zeta + libm::sqrt(zeta * zeta - 1.0))
+    } else {
+        wn
+    }
+}
+
+/// RK4 substeps per tick that keeps every ground-contact root inside the
+/// stability region with margin: N = ceil(lambda_max * h / 1.5), clamped to
+/// [1, 64]. The 1.5 target leaves ~46% margin to RK4's 2.785 real-axis
+/// limit, covering the nonlinear unilateral-contact regime (mode mixing
+/// during penetration chatter). N is a pure function of (params, h), so the
+/// determinism contract (SPEC §8.1) is preserved.
+///
+/// At SPEC defaults (k_g = 4000, c_g = 240, J = 0.02) and h = 5 ms this
+/// gives N = 4 (h_sub = 1.25 ms) — versus the ADR-013-rejected fixed
+/// 2-substep policy whose rotational root sat at |lambda*h| = 3.0, the
+/// measured cause of the I-2 takeoff divergence.
+pub fn stable_substeps(p: &QuadParams, h: f64) -> usize {
+    if h <= 0.0 {
+        return 1;
+    }
+    let lam = contact_fast_root(p);
+    let n = libm::ceil(lam * h / 1.5) as usize;
+    n.clamp(1, 64)
 }
 
 /// Forces and moments (body frame) at state `s` given wind. Returns

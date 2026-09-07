@@ -384,17 +384,17 @@ innovation tests degrade gracefully instead of gating hard [design decision].
 ### 3.9 HIL_ACTUATOR_CONTROLS Contract
 
 Arriving frame (PX4 to sim): time_usec (uint64), controls[16] (float32), mode (uint8,
-MAV_MODE_FLAG bits), flags (uint64). PX4 emits normalized outputs in **[-1, +1]**; the
-quadrotor mixer's minimum output maps to -1 and maximum to +1. The sim maps actuator
-command u_i = (controls[i] + 1) / 2, equivalent to the PWM convention 1000-2000 us with
-u = 0 at 1000 us [SRC: PX4 simulator conventions]. Only controls[0..3] are consumed for the
-quad-X; the remainder are logged.
-
-**V-3:** Confirm against v1.16.2 at M1 that the -1..1 mapping for the gazebo-classic_iris
-mixer is exact at the endpoints (i.e., disarm output is -1, full throttle +1), by sweeping
-a static motor command and observing PX4's actuator_controls uORB topic. The arrival of
-this message at the sim is itself the system's "loop closed" signal and is surfaced on
-the status API.
+MAV_MODE_FLAG bits), flags (uint64). **[V-3 RESOLVED — live capture against
+v1.16.2, ADR 0011r]** PX4 v1.16 sends per-motor **NORMALIZED thrust [0, 1]** in
+controls[0..3] (`actuator_outputs_sim`, published by PWMSim as
+(pwm − 1000)/1000 for Motor functions; disarmed channels are 0). The sim maps
+u_i = clamp(controls[i], 0, 1); values ≥ 900 are honored as raw PWM
+(u = (c − 1000)/1000) for other stacks. **Disarm is the mode-field armed bit
+(mode & 0x80): rotors stop** (wind down through the motor lag). The
+jMAVSim-era (c+1)/2 mapping is NOT used — applying it to v1.16 frames
+creates a phantom u = 0.5 at armed idle. Only controls[0..3] are consumed for
+the quad-X; the remainder are logged. The arrival of this message at the sim
+is itself the system's "loop closed" signal and is surfaced on the status API.
 
 ### 3.10 Lockstep Virtual Time and Timing Contract
 
@@ -471,7 +471,9 @@ behavior wants to see; ground truth lives in state.
 REST errors are distinguished by class: 400 for malformed requests (schema violation
 details included), 409 for phase conflicts (replacing a scenario mid-RUN), 503 during
 WAIT-before-accept. Process exit codes: 0 clean end, 2 scenario failure assertion (test
-harness mode), 3 PX4 disconnect, 4 configuration error. The binary logs structured JSON
+harness mode), 3 PX4 disconnect, 4 configuration error, 5 numerical divergence
+(ADR-013: a DIVERGENCE line with tick, inputs and the contact-root estimate is
+printed to stderr; NaN frames are never sent to PX4). The binary logs structured JSON
 lines (tracing) to stderr with tick metrics every 10 s, suitable for ingestion by CI.
 
 ## 5. Flight Dynamics Model

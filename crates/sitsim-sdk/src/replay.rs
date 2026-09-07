@@ -16,7 +16,8 @@
 //! ```text
 //! [ 0.. 8] virtual time, us (u64)
 //! [ 8..24] 16 motor inputs, u8 = round(u_i * 255) of the RAW commanded
-//!          controls (pre-fault; faults are visible via the flags + state)
+//!          controls in the v1.16 [0, 1] wire convention (ADR-0011r;
+//!          pre-fault; faults are visible via the flags + state)
 //! [24..92] 17 state floats (f32 LE): pos(3), vel(3), q(4), omega(3), rotors(4)
 //! [92..94] fault-active bitmap (u16; bit i = spec i of the first 16)
 //! [94..96] CRC-16/X.25 over bytes [0..94]

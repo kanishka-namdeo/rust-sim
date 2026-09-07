@@ -45,6 +45,9 @@ pub struct TickOutput {
     pub drop_hil_gps: bool,
     /// Wire delay for outgoing frames (F-09), ms of virtual time.
     pub transport_delay_ms: f64,
+    /// Numerical divergence latched during this tick (ADR-013): callers
+    /// must stop the run and exit 5 — never stream NaN silently.
+    pub diverged: bool,
     pub snapshot: TickSnapshot,
 }
 
@@ -102,6 +105,11 @@ impl Default for TickSnapshot {
 pub struct SimEngine {
     pub cfg: ScenarioConfig,
     dynamics: QuadDynamics,
+    /// Divergence diagnostic already emitted (once).
+    reported_divergence: bool,
+    /// `last_armed`: HIL_ACTUATOR_CONTROLS mode bit 0x80 from the latest
+    /// frame (ADR-0011r).
+    last_armed: bool,
     wind: WindModel,
     mag_field: MagFieldModel,
     origin: GeoOrigin,
@@ -239,11 +247,13 @@ impl SimEngine {
             battery,
             streams,
             tick: 0,
-            // Disarmed until the first HIL_ACTUATOR_CONTROLS arrives: PX4's
-            // disarm output is -1 -> u = 0 (§3.9).
-            last_controls: [-1.0; 16],
+            // Disarmed until the first HIL_ACTUATOR_CONTROLS arrives (the
+            // armed bit lives in the mode field, ADR-0011r): rotors stop.
+            last_controls: [0.0; 16],
+            last_armed: false,
             sensors: SensorOutputs::default(),
             mag_baro_div,
+            reported_divergence: false,
         }
     }
 
@@ -279,41 +289,46 @@ impl SimEngine {
     }
 
     /// Advance one tick. `controls` is the latest HIL_ACTUATOR_CONTROLS
-    /// payload from PX4 (16 normalized values in [-1, 1]), if any arrived
-    /// since the last tick.
-    pub fn tick(&mut self, controls: Option<&[f32; 16]>) -> TickOutput {
+    /// payload from PX4 (16 values, v1.16 PWMSim [0,1] motor scale) and
+    /// `armed` the mode-field armed bit (0x80); `None` for either holds
+    /// the last received value.
+    pub fn tick(&mut self, controls: Option<&[f32; 16]>, armed: Option<bool>) -> TickOutput {
         let h = 1.0 / self.cfg.sim.rate_hz as f64;
         let t_us = self.next_t_us();
         self.tick += 1;
         if let Some(c) = controls {
             self.last_controls.copy_from_slice(c);
         }
+        if let Some(a) = armed {
+            self.last_armed = a;
+        }
 
         // ---- Step 2 (Act): fault effects + motor command mapping (§3.9).
         let fx = self.faults.evaluate(t_us);
         let mut u = [0.0f64; 4];
         let mut motor_stopped = [false; 4];
+        let armed = self.last_armed;
         for i in 0..4 {
-            // V-3 RESOLVED (empirical): PX4 v1.16's simulator_mavlink sends
-            // RAW actuator_outputs values in HIL_ACTUATOR_CONTROLS — PWM
-            // microseconds [1000, 2000] when armed, 0 when disarmed — not
-            // the [-1, +1] this spec originally assumed (see
-            // SimulatorMavlink::actuator_controls_from_outputs: `controls[i]
-            // = _actuator_outputs.output[i]`). Range-disambiguate per
-            // channel: small magnitudes are the jMAVSim-era [-1, +1]
-            // convention (u = (c + 1) / 2); anything >= ~900 is PWM
-            // (u = (c - 1000) / 1000). Disarm is handled by the mode-flag
-            // armed bit (rotor stop), not the control values.
+            // ADR-0011r (live-verified against PX4 v1.16.2, captured with a
+            // raw wire sniffer): SimulatorMavlink copies actuator_outputs_sim
+            // into controls[], which PWMSim publishes as PER-MOTOR NORMALIZED
+            // thrust: output = (pwm - 1000) / 1000 in [0, 1] for
+            // non-reversible Motor functions, (pwm - 1500) / 500 in [-1, 1]
+            // for everything else, and 0 for disarmed channels (magic 900
+            // skipped). Observed on the wire: armed idle ~0.002; offboard
+            // climb ramps smoothly ~0.28 -> ~1.0; DISARMED = all zeros with
+            // mode bit 0x80 clear. The previous (c + 1) / 2 mapping (the
+            // jMAVSim-era [-1, +1] convention, ADR-0011 v1) turned armed
+            // idle 0.002 into u = 0.5 — a phantom 2/3-hover thrust that
+            // pinned the vehicle on the ground with spinning motors and
+            // diverged the takeoff closed loop (I-2). PWM-scale values
+            // (>= 900) are still honored for stacks that send raw PWM.
             let c = self.last_controls[i] as f64;
-            let raw = if c.abs() <= 1.5 {
-                (c + 1.0) / 2.0
-            } else if c >= 900.0 {
-                (c - 1000.0) / 1000.0
-            } else {
-                0.0
-            };
+            let raw = if c >= 900.0 { (c - 1000.0) / 1000.0 } else { c };
             u[i] = (raw * fx.motor_eff[i]).clamp(0.0, 1.0);
-            motor_stopped[i] = fx.motor_cut[i];
+            // Disarm means the rotors STOP (wind down through the first-
+            // order lag, §5.3) — PX4's intent, not an idle spin.
+            motor_stopped[i] = !armed || fx.motor_cut[i];
         }
 
         // ---- Wind (steady + turbulence + gust fault F-08).
@@ -327,19 +342,34 @@ impl SimEngine {
 
         // ---- Step 3: dynamics.
         // Ground-contact substepping (ADR-013): the unilateral
-        // spring-damper contact (§5.4) has a fast overdamped root
-        // lambda = omega_n * (zeta + sqrt(zeta^2 - 1)) ~ 6.2 * omega_n
-        // that violates the RK4 stability limit |lambda h| < 2.78 at the
-        // spec's default k_g/c_g and 5 ms step (chatter at the surface
-        // that never diverges, thanks to the one-sided clamp, but never
-        // settles either). Integrating N = ceil(h / 2.5 ms) substeps of
-        // RK4 keeps every root inside the stability region; N is a pure
+        // spring-damper contact (§5.4) is stiff in TWO modes — the
+        // vertical one (4 contacts on the mass, fast root ~6.2e2 1/s at
+        // defaults) and, dominating, the rotational one (the same
+        // contacts reacting on Jx/Jy at the arm moment arms, fast root
+        // ~1.2e3 1/s). The earlier fixed N = ceil(h / 2.5 ms) policy kept
+        // only the vertical root inside RK4's |lambda h| < 2.785 limit;
+        // the rotational root sat at 3.0 and diverged during the I-2
+        // takeoff tilt transient (1.43x amplification per substep ->
+        // NaN in under a second). `stable_substeps` sizes N from the
+        // ACTUAL dominant root of the configured parameters: N is a pure
         // function of (rate, parameters), so determinism is preserved.
         let input = StepInput { u, wind_ned, motor_stopped };
-        let substeps = (((h / 2.5e-3).ceil() as usize).max(1)).min(16);
+        let substeps = sitsim_core::stable_substeps(&self.dynamics.params, h);
         let h_sub = h / substeps as f64;
         for _ in 0..substeps {
             self.dynamics.step(&input, h_sub);
+        }
+        // Divergence is never silent (ADR-013): one diagnostic line to
+        // stderr, then the caller stops the loop and exits 5.
+        if self.dynamics.diverged && !self.reported_divergence {
+            self.reported_divergence = true;
+            eprintln!(
+                "DIVERGENCE tick={} t_us={} substeps={} h_sub_us={:.1} u=[{:.3},{:.3},{:.3},{:.3}] wind=[{:.2},{:.2},{:.2}] contact_fast_root={:.0}/s",
+                self.tick, t_us, substeps, h_sub * 1e6,
+                u[0], u[1], u[2], u[3],
+                wind_ned[0], wind_ned[1], wind_ned[2],
+                sitsim_core::contact_fast_root(&self.dynamics.params)
+            );
         }
 
         // ---- Step 4 (Sample): sensors.
@@ -514,6 +544,7 @@ impl SimEngine {
             drop_hil_sensor,
             drop_hil_gps,
             transport_delay_ms: fx.transport_delay_ms,
+            diverged: self.dynamics.diverged,
             snapshot,
         }
     }
@@ -574,18 +605,22 @@ pub struct HeadlessResult {
 }
 
 /// Run `duration_s` of virtual time with controls from `controls(tick)`
-/// (None = no actuator message that tick). Returns the telemetry hash
-/// (§8.1: FNV-1a 64 over every 100th tick's state vector).
+/// (None = no actuator message that tick; the tuple carries (controls,
+/// armed)). Returns the telemetry hash (§8.1: FNV-1a 64 over every 100th
+/// tick's state vector).
 pub fn run_headless<F>(cfg: &ScenarioConfig, controls: F) -> HeadlessResult
 where
-    F: Fn(u64) -> Option<[f32; 16]>,
+    F: Fn(u64) -> Option<([f32; 16], bool)>,
 {
     let mut engine = SimEngine::new(cfg.clone());
     let total_ticks = (cfg.sim.duration_s.max(0.0) * cfg.sim.rate_hz).ceil() as u64;
     let mut hasher = crate::hash::Fnv1a64::new();
     for tick in 1..=total_ticks {
         let c = controls(tick);
-        let out = engine.tick(c.as_ref());
+        let out = match c {
+            Some((ref c, armed)) => engine.tick(Some(c), Some(armed)),
+            None => engine.tick(None, None),
+        };
         if out.tick % 100 == 0 {
             for v in engine.state_vector() {
                 hasher.update_f64(v);
@@ -648,7 +683,7 @@ mod tests {
         let mut e = SimEngine::new(cfg);
         let mut prev = 0u64;
         for _ in 0..10 {
-            let out = e.tick(None);
+            let out = e.tick(None, None);
             assert_eq!(out.t_us - prev, 5_000);
             prev = out.t_us;
         }
@@ -668,9 +703,9 @@ mod tests {
         // the spring-damper impulse; at equilibrium the accelerometer reads
         // exactly -g on body z).
         for _ in 0..200 {
-            e.tick(None);
+            e.tick(None, None);
         }
-        let out = e.tick(None);
+        let out = e.tick(None, None);
         assert!((out.hil_sensor.zacc + 9.80665).abs() < 1e-3, "zacc {}", out.hil_sensor.zacc);
         assert_eq!(out.hil_state_quaternion.zacc, -1000);
         assert_eq!(out.hil_state_quaternion.attitude_quaternion, [1.0, 0.0, 0.0, 0.0]);
@@ -682,7 +717,7 @@ mod tests {
         // (lock_s = 0).
         let mut delivered = None;
         for _ in 0..60 {
-            let o = e.tick(None);
+            let o = e.tick(None, None);
             if o.hil_gps.is_some() {
                 delivered = Some(o.t_us);
                 break;
@@ -701,10 +736,10 @@ mod tests {
         .unwrap();
         let mut e = SimEngine::new(cfg);
         let c = [1.0f32; 16]; // all motors full: u = 1.0
-        let before = e.tick(Some(&c)).snapshot.motors;
+        let before = e.tick(Some(&c), Some(true)).snapshot.motors;
         assert!((before[0] - 1.0).abs() < 1e-9);
         for _ in 0..40 {
-            let out = e.tick(Some(&c));
+            let out = e.tick(Some(&c), Some(true));
             if out.t_us >= 100_000 {
                 assert!((out.snapshot.motors[0] - 0.5).abs() < 1e-9, "motor0 {}", out.snapshot.motors[0]);
                 assert!((out.snapshot.motors[1] - 1.0).abs() < 1e-9);
@@ -745,8 +780,8 @@ mod tests {
         let mut e = SimEngine::new(cfg);
         for t in 1..=40_000 {
             // 200 Hz * 200 s = 40k ticks; slight push at t=1000.
-            let c = hover_controls(t);
-            e.tick(Some(&c));
+            let (c, armed) = hover_controls(t);
+            e.tick(Some(&c), Some(armed));
         }
         let q = e.dynamics.state.q;
         let n = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
@@ -755,9 +790,74 @@ mod tests {
 
     /// hover command: u ~ 0.545 gives thrust ~= m*g on the defaults
     /// (§5.5 hover check).
-    fn hover_controls(_t: u64) -> [f32; 16] {
-        // c = 2u - 1 with u = 0.545.
-        let c = (2.0 * 0.545 - 1.0) as f32;
-        [c, c, c, c, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    fn hover_controls(_t: u64) -> ([f32; 16], bool) {
+        // v1.16 wire scale: u = 0.545 directly (ADR-0011r), armed.
+        ([0.545f32; 16], true)
+    }
+}
+
+/// ADR-0011r regression: the v1.16 wire convention, live-captured against
+/// real PX4 (scripts/wire_sniff.py): armed idle = 0.002, offboard climb
+/// ramps to ~1.0, disarmed = zeros with the mode armed bit clear. The
+/// legacy (c + 1) / 2 mapping turned armed idle into u = 0.5 — the phantom
+/// 2/3-hover thrust that blocked I-2.
+#[cfg(test)]
+mod actuator_mapping_tests {
+    use super::*;
+    use crate::config::parse_scenario;
+
+    fn cfg() -> ScenarioConfig {
+        parse_scenario(
+            "[sim]\nrate_hz = 200\nduration_s = 3.0\n[sensors.imu]\ngyro_noise_density = 0.0\naccel_noise_density = 0.0\ngyro_bias_walk = 0.0\naccel_bias_walk = 0.0\ngyro_turnon_sigma = 0.0\naccel_turnon_sigma = 0.0\n[sensors.mag]\nnoise_gauss = 0.0\n[sensors.baro]\nnoise_m = 0.0\n[env]\nturbulence = \"off\"\n",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn v1_16_wire_convention_maps_directly() {
+        let mut e = SimEngine::new(cfg());
+
+        // No controls yet: disarmed, motors stopped.
+        let out = e.tick(None, None);
+        assert_eq!(out.snapshot.motors, [0.0; 4]);
+
+        // Disarmed frame (all zeros, armed bit clear): still stopped.
+        let zero = [0f32; 16];
+        let out = e.tick(Some(&zero), Some(false));
+        assert_eq!(out.snapshot.motors, [0.0; 4]);
+
+        // THE regression: armed idle 0.002 must map to 0.002, not 0.5.
+        let idle = [0.002f32; 16];
+        let out = e.tick(Some(&idle), Some(true));
+        for k in 0..4 {
+            assert!((out.snapshot.motors[k] - 0.002).abs() < 1e-6, "motors[{k}] = {}", out.snapshot.motors[k]);
+        }
+
+        // Armed mid-throttle maps directly.
+        let mid = [0.6f32; 16];
+        let out = e.tick(Some(&mid), Some(true));
+        for k in 0..4 {
+            assert!((out.snapshot.motors[k] - 0.6).abs() < 1e-6);
+        }
+
+        // PWM-scale values (other stacks) still disambiguate.
+        let pwm = [1500f32; 16];
+        let out = e.tick(Some(&pwm), Some(true));
+        for k in 0..4 {
+            assert!((out.snapshot.motors[k] - 0.5).abs() < 1e-6);
+        }
+
+        // Disarm with live values: rotors wind down to a stop (the
+        // first-order lag approaches zero asymptotically; "stopped" =
+        // below idle spin by a wide margin, ~2 s at 200 Hz).
+        let mut stopped = false;
+        for _ in 0..400 {
+            let out = e.tick(Some(&mid), Some(false));
+            if out.snapshot.rotors_rads.iter().all(|&w| w < 1.0) {
+                stopped = true;
+                break;
+            }
+        }
+        assert!(stopped, "rotors did not wind down after disarm");
     }
 }

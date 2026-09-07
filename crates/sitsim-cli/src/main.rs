@@ -7,7 +7,8 @@
 //! - `replay-info <file>`: print a replay header + record summary.
 //!
 //! Exit codes (SPEC §4.3): 0 clean end (scenario duration or REST stop),
-//! 2 scenario failure, 3 PX4 disconnect, 4 configuration error.
+//! 2 scenario failure, 3 PX4 disconnect, 4 configuration error,
+//! 5 numerical divergence (ADR-013).
 
 mod api;
 mod run;
@@ -55,7 +56,9 @@ The control plane (REST + WebSocket, SPEC §4) serves on [io] api_port
 /api/faults, DELETE /api/faults/{id}, POST /api/estop, GET /api/replay,
 WebSocket at /ws/telemetry (and at / for gateway-forwarded sockets).
 
-Exit codes: 0 clean, 2 scenario failure, 3 PX4 disconnect, 4 config error.
+Exit codes: 0 clean, 2 scenario failure, 3 PX4 disconnect, 4 config error,
+5 numerical divergence (dynamics went non-finite; a DIVERGENCE line with the
+tick, inputs and contact-root estimate is printed to stderr first).
 ";
 
 fn main() -> ExitCode {

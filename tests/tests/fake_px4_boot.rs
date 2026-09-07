@@ -151,18 +151,19 @@ fn fake_px4_boot_handshake_loop_and_exit_code() {
     });
     px4.write_all(&Frame::from_message(&cl, 0, 1, 1).encode()).unwrap();
 
-    // ---- Close the loop (§3.9): one HIL_ACTUATOR_CONTROLS.
+    // ---- Close the loop (§3.9): one HIL_ACTUATOR_CONTROLS (v1.16 wire
+    // convention: [0,1] motor values, mode bit 0x80 = armed, ADR-0011r).
     let hac = Message::HilActuatorControls(sitsim_mavlink::HilActuatorControls {
         time_usec: 5_000,
         controls: {
             let mut c = [0f32; 16];
-            c[0] = -0.2;
-            c[1] = -0.2;
-            c[2] = -0.2;
-            c[3] = -0.2;
+            c[0] = 0.4;
+            c[1] = 0.4;
+            c[2] = 0.4;
+            c[3] = 0.4;
             c
         },
-        mode: 1,
+        mode: 0x81,
         flags: 0,
     });
     px4.write_all(&Frame::from_message(&hac, 1, 1, 1).encode()).unwrap();

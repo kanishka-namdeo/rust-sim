@@ -184,18 +184,27 @@ PX4's innovation tests degrade gracefully instead of gating hard.
 ## 9. HIL_ACTUATOR_CONTROLS contract
 
 Arriving frame (PX4 to sim): time_usec (uint64), controls[16] (float32), mode (uint8,
-MAV_MODE_FLAG bits), flags (uint64). **[V-3 RESOLVED, empirical]** PX4 v1.16 sends the
-**raw `actuator_outputs` values** in `controls[]` — PWM microseconds [1000, 2000] when
-armed, all-zero when disarmed (`SimulatorMavlink::actuator_controls_from_outputs`:
-`msg->controls[i] = _actuator_outputs.output[i]`, memset 0 when disarmed). The
-[-1, +1] convention of the jMAVSim era is NOT what v1.16 emits; a simulator must
-range-disambiguate per channel: |c| <= 1.5 → u = (c + 1) / 2; c >= 900 →
-u = (c - 1000) / 1000. Disarm is signalled by the mode flag's armed bit (rotors to
-zero), not by the control values. For a quad-X only controls[0..3] are meaningful;
-the remainder are logged.
+MAV_MODE_FLAG bits), flags (uint64). **[V-3 RESOLVED, live-captured against PX4
+v1.16.2 — ADR 0011r]** PX4 v1.16 sends **per-motor NORMALIZED thrust [0, 1]** in
+`controls[]`: `SimulatorMavlink` subscribes `actuator_outputs_sim` (NOT the PWM
+topic), which `PWMSim::updateOutputs` publishes as
+`(pwm − 1000) / 1000` for non-reversible Motor outputs — armed idle ≈ 0.002,
+offboard climb ramps to ~1.0 — and 0 for disarmed channels (magic 900 skipped).
+The **armed bit is mode & 0x80** (0x81 = armed+lockstep, 0x0001 = disarmed);
+disarmed frames are all-zero. Observed live: motors occupy controls[0..3]
+(CA_ROTOR0..3), the other 12 channels stay 0. The correct mapping is
+`u = clamp(c, 0, 1)`; keep a PWM fallback (`c >= 900 → u = (c − 1000)/1000`)
+for stacks that send raw PWM. The jMAVSim-era [-1, +1] convention (`u = (c+1)/2`)
+must NOT be applied to v1.16 frames: it turns armed idle 0.002 into a phantom
+u = 0.5 (2/3 of hover thrust on "stopped" motors) — the exact defect that
+diverged the I-2 takeoff (ADR 0011r). Disarm (armed bit clear) means the rotors
+STOP (wind down), not idle-spin.
 
 Related v1.16 bring-up facts found the hard way (see docs/adr/ in the rustsitsim
 repo):
+- **The 1 Hz GCS heartbeat matters for arming**: without it PX4 flags the
+  datalink lost and denies arming (the fleet driver and any GCS emulation
+  must pump MAVLink heartbeats).
 - **DO_SET_MODE (COMMAND_LONG 176)** is decoded by PX4 as separate params —
   `custom_main_mode = (uint8_t)param2; custom_sub_mode = (uint8_t)param3`
   (Commander.cpp:787-790) — NOT the packed 32-bit custom-mode word used in

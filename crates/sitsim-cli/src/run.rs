@@ -16,8 +16,9 @@ use crate::simthread::{sim_loop, SimEnd, SimPlane};
 
 /// Commands into the sim thread (from the HIL reader and the REST plane).
 pub enum SimCommand {
-    /// Latest HIL_ACTUATOR_CONTROLS (16 normalized values).
-    Actuator([f32; 16]),
+    /// Latest HIL_ACTUATOR_CONTROLS: 16 control values (v1.16 PWMSim [0,1]
+    /// motor scale, ADR-0011r) + the mode-field armed bit (0x80).
+    Actuator { controls: [f32; 16], armed: bool },
     InjectFault(sitsim_fault::FaultSpec),
     ClearFault(String),
     /// POST /api/estop (§4.1): stop at the end of the current tick.
@@ -33,6 +34,8 @@ pub enum RunEnd {
     Px4Disconnected,
     /// `--wait-timeout-s` expired while waiting for PX4 (ADR-014).
     WaitTimeout,
+    /// Numerical divergence in the dynamics (ADR-013).
+    Diverged,
 }
 
 impl RunEnd {
@@ -41,6 +44,7 @@ impl RunEnd {
             RunEnd::DurationReached | RunEnd::EStop => 0,
             RunEnd::Px4Disconnected => 3,
             RunEnd::WaitTimeout => 4,
+            RunEnd::Diverged => 5,
         }
     }
 }
@@ -213,7 +217,11 @@ async fn run_async(
                         sim_running = true;
                     }
                     Some(LinkEvent::Actuator(a)) => {
-                        let _ = cmd_tx.send(SimCommand::Actuator(a.controls));
+                        // ADR-0011r: the armed bit is mode & 0x80.
+                        let _ = cmd_tx.send(SimCommand::Actuator {
+                            controls: a.controls,
+                            armed: a.mode & 0x80 != 0,
+                        });
                     }
                     Some(LinkEvent::Disconnected) => {
                         if sim_running {
@@ -237,6 +245,7 @@ async fn run_async(
                         SimEnd::DurationReached => RunEnd::DurationReached,
                         SimEnd::EStop => RunEnd::EStop,
                         SimEnd::Px4Disconnected => RunEnd::Px4Disconnected,
+                        SimEnd::Diverged => RunEnd::Diverged,
                     });
                 }
             }

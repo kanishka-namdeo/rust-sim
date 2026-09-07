@@ -259,3 +259,103 @@ fn ground_contact_settles_without_instability() {
     );
     assert!(model.state.vel[2].abs() < 0.05, "residual vertical speed {}", model.state.vel[2]);
 }
+
+/// ADR-013 regression: dominant contact root and substep sizing.
+///
+/// The rotational (roll/pitch) contact mode must dominate the vertical one
+/// (Jx/Jy is far lighter than the mass at the same contact stiffness), and
+/// `stable_substeps` must place every root inside RK4's stability region
+/// with margin: |lambda * h_sub| <= 1.5 < 2.785.
+#[test]
+fn contact_root_and_substep_sizing() {
+    use sitsim_core::{contact_fast_root, stable_substeps};
+
+    let p = QuadParams::default();
+    let lam = contact_fast_root(&p);
+    // Vertical fast root ~6.2e2 1/s, rotational ~1.2e3 1/s at defaults.
+    assert!(lam > 1000.0 && lam < 1400.0, "dominant root {lam:.0}/s outside the expected band");
+
+    for &h in &[0.005, 0.004, 0.0025, 0.001] {
+        let n = stable_substeps(&p, h);
+        let h_sub = h / n as f64;
+        assert!(n >= 1 && n <= 64, "substeps {n} out of range for h={h}");
+        assert!(
+            lam * h_sub <= 1.5 + 1e-9,
+            "root not stabilized with margin: lambda*h_sub = {} (h={}, n={})",
+            lam * h_sub,
+            h,
+            n
+        );
+    }
+    // SPEC default tick: exactly 4 substeps (h_sub = 1.25 ms).
+    assert_eq!(stable_substeps(&p, 0.005), 4);
+}
+
+/// ADR-013: closed-loop takeoff soak. A small PD rate/attitude damper (a
+/// stand-in for PX4's attitude controller) holds the vehicle near level
+/// while it climbs off the ground under the sized substep policy, then the
+/// motors cut and it lands. The whole transient — contact-loaded tilt at
+/// liftoff, free flight, touchdown bounce — must stay finite with bounded
+/// rates. This is the pure-dynamics shape of the I-2 takeoff sequence.
+#[test]
+fn pd_stabilized_takeoff_soak_stays_finite() {
+    use sitsim_core::stable_substeps;
+
+    let p = QuadParams::default();
+    let n = stable_substeps(&p, H);
+    let h_sub = H / n as f64;
+    let w_hover = (p.mass_kg * p.g / (4.0 * p.c_t)).sqrt();
+    let u_hover = w_hover / p.omega_max;
+
+    let mut model = QuadDynamics::new(p, State::default());
+    let (kp, katt) = (0.5, 1.2); // rate + attitude damping gains
+
+    let ticks = (18.0 / H) as usize;
+    let mut max_rate = 0.0f64;
+    let mut reached_alt = false;
+    for t in 0..ticks {
+        // Small-angle euler (valid while the damper works).
+        let (w, x, y, _z) = (
+            model.state.q[0], model.state.q[1], model.state.q[2], model.state.q[3],
+        );
+        let roll = 2.0 * (w * x + model.state.q[3] * y);
+        let pitch = 2.0 * (w * y - model.state.q[3] * x);
+
+        let base = if t < (5.0 / H) as usize { u_hover * 1.06 } else { 0.0 };
+        let d_roll = -(kp * model.state.omega[0] + katt * roll);
+        let d_pitch = -(kp * model.state.omega[1] + katt * pitch);
+
+        // Roll torque: raise the left pair (1, 2), lower the right (0, 3).
+        // Pitch torque: raise the front pair (0, 2), lower the back (1, 3).
+        let input = StepInput {
+            u: [
+                (base + d_pitch - d_roll).clamp(0.0, 0.9),
+                (base - d_pitch + d_roll).clamp(0.0, 0.9),
+                (base + d_pitch + d_roll).clamp(0.0, 0.9),
+                (base - d_pitch - d_roll).clamp(0.0, 0.9),
+            ],
+            wind_ned: [0.0, 0.0, 0.0],
+            motor_stopped: [t >= (5.0 / H) as usize; 4],
+        };
+        for _ in 0..n {
+            model.step(&input, h_sub);
+        }
+        assert!(!model.diverged, "diverged at t={:.2}s", t as f64 * H);
+        for k in 0..3 {
+            max_rate = max_rate.max(model.state.omega[k].abs());
+        }
+        if model.state.pos[2] < -1.0 {
+            reached_alt = true;
+        }
+    }
+
+    assert!(model.state_is_finite(), "state went non-finite");
+    assert!(reached_alt, "did not climb: z = {}", model.state.pos[2]);
+    assert!(max_rate < 8.0, "rates unbounded: max |omega| = {max_rate:.2} rad/s");
+    assert!(
+        model.state.pos[2] > -0.05 && model.state.pos[2] < 0.02,
+        "did not settle on the ground: z = {}",
+        model.state.pos[2]
+    );
+    assert!(model.state.vel[2].abs() < 0.2, "residual vz = {}", model.state.vel[2]);
+}

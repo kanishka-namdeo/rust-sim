@@ -20,6 +20,10 @@ pub enum SimEnd {
     EStop,
     /// PX4 closed the HIL link (TCP EOF) — exit code 3 (§2.5).
     Px4Disconnected,
+    /// Numerical divergence (ADR-013) — exit code 5. The diagnostic line
+    /// is emitted by the engine the moment it latches; the sim never
+    /// streams NaN frames.
+    Diverged,
 }
 
 /// Everything the I/O plane needs at 10 Hz: the snapshot plus sim-side
@@ -93,8 +97,9 @@ pub fn sim_loop(
     // F-09 virtual-time delay queue: (release_t_us, bytes).
     let mut delay_queue: Vec<(u64, Vec<u8>)> = Vec::new();
     let snapshot_period = ((rate / 10.0).ceil() as u64).max(1); // 10 Hz
-    // Latest actuator frame from PX4 (held across ticks, §2.3).
-    let mut pending_controls: Option<[f32; 16]> = None;
+    // Latest actuator frame from PX4 (held across ticks, §2.3): (controls,
+    // armed bit from the mode field, ADR-0011r).
+    let mut pending_controls: Option<([f32; 16], bool)> = None;
     let wall_start = Instant::now();
     let mut end: Option<SimEnd> = None;
 
@@ -104,7 +109,7 @@ pub fn sim_loop(
         let mut disconnected = false;
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
-                SimCommand::Actuator(c) => pending_controls = Some(c),
+                SimCommand::Actuator { controls, armed } => pending_controls = Some((controls, armed)),
                 SimCommand::InjectFault(spec) => {
                     let id = engine.inject_fault(spec);
                     tracing::info!(id, "runtime fault injected");
@@ -131,7 +136,10 @@ pub fn sim_loop(
         let raw_controls = controls; // RAW commanded values (pre-fault), for the replay record
 
         let t_start = Instant::now();
-        let out = engine.tick(controls.as_ref());
+        let out = match &controls {
+            Some((c, armed)) => engine.tick(Some(c), Some(*armed)),
+            None => engine.tick(None, None),
+        };
         let tick_us = t_start.elapsed().as_micros() as u64;
 
         // ---- Telemetry hash (§8.1): every 100th tick.
@@ -141,11 +149,12 @@ pub fn sim_loop(
             }
         }
 
-        // ---- Replay record (§8.2).
+        // ---- Replay record (§8.2): RAW commanded values in the [0,1]
+        // wire convention (ADR-0011r; byte = round(u*255)).
         let mut motors = [0f64; 16];
-        if let Some(raw) = raw_controls {
+        if let Some((raw, _armed)) = raw_controls {
             for (i, m) in motors.iter_mut().enumerate() {
-                *m = ((raw[i] as f64) + 1.0) / 2.0;
+                *m = (raw[i] as f64).clamp(0.0, 1.0);
             }
         }
         let rec = TickRecord {
@@ -174,6 +183,14 @@ pub fn sim_loop(
         };
         if let Err(e) = replay.push(&rec) {
             tracing::warn!(error = %e, "replay write failed; continuing");
+        }
+
+        // Divergence (ADR-013): record the (already NaN) tick as replay
+        // evidence, then stop — NaN frames must never reach PX4.
+        if out.diverged {
+            tracing::error!(tick = out.tick, t_us = out.t_us, "numerical divergence: stopping run (exit 5)");
+            end = Some(SimEnd::Diverged);
+            break;
         }
 
         // ---- Step 5 (Encode and send), with F-09 delay / F-10 drop.
