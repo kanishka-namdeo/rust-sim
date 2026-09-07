@@ -39,9 +39,14 @@ pub const EXIT_ERROR: i32 = 3;
 /// READY gate: home may be missing this long before we open the gate anyway
 /// (the interim sim streams HOME_POSITION only on the manager's request).
 const HOME_FALLBACK_MS: u64 = 45_000;
-/// RTL → LANDED disarm-observation timeout (interim sim: vehicle never
-/// physically leaves the ground; PX4 may auto-disarm instantly on RTL).
-const LAND_TIMEOUT_MS: u64 = 30_000;
+/// RTL → LANDED disarm-observation budget. With real rustsitsim dynamics the
+/// full RTL cycle is climb-to-return-alt (RTL_RETURN_ALT, default 30 m AGL,
+/// ~30 s) + return leg + descend at MPC_LAND_SPEED (~0.7 m/s, ~45 s from
+/// 30 m) + touchdown + PX4 auto-disarm — measured 60–90 s end-to-end in the
+/// live F-2 runs. 30 s (the interim-sim value) declared vehicles "LANDED"
+/// while they were still ~20 m up (killed mid-air at teardown). Disarm is
+/// still the primary signal; the timeout is the watchdog.
+const LAND_TIMEOUT_MS: u64 = 120_000;
 /// Max re-arm cycles per vehicle (LANDED → READY recovery, spec §4/§6.5).
 const MAX_REARM: u8 = 2;
 /// Grace between abort and teardown so final ACKs/statustexts land.
@@ -1023,7 +1028,7 @@ impl Supervisor {
                             EventKind::SupervisorAction,
                             Some(i),
                             format!(
-                                "disarm not observed within {}s; grounded vehicle treated as LANDED (interim sim)",
+                                "disarm not observed within {}s; treating vehicle as LANDED (watchdog — check RTL/land progress and teardown)",
                                 LAND_TIMEOUT_MS / 1000
                             ),
                         );

@@ -83,4 +83,5 @@ lock_s = 0.0
 turbulence = "off"
 EOF
 
-exec "$SITSIM" scenario-run "$CFG" --speed 1.0
+exec "$SITSIM" scenario-run "$CFG" --speed 1.0 \
+    --replay-out "$CFG_DIR/vehicle_${INSTANCE}.replay"

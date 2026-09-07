@@ -24,6 +24,14 @@ pub const HEARTBEAT_ESCALATION_MS: u64 = 10_000;
 pub const STALE_ACTIVE_RTL_MS: u64 = 5_000;
 pub const SEPARATION_HORIZ_M: f32 = 4.0;
 pub const SEPARATION_VERT_M: f32 = 2.0;
+/// A vehicle is "airborne" (maneuverable vertically) only below this NED z.
+/// Vehicles spawn co-located on the ground (shared local-frame origins, both
+/// at NED (0,0,0)); the separation AltitudeDiverge override must not fire
+/// for grounded vehicles — it would replace the runner's mission goal with
+/// `current +/- 3 m` every tick and pin the fleet on the ground (the F-2
+/// live-capture failure: goal z hijacked to +10 while armed, xy frozen,
+/// motors idle, auto-disarm 10 s later).
+pub const AIRBORNE_Z_M: f32 = -1.0;
 pub const CONSECUTIVE_CMD_FAILURES: u32 = 3;
 
 /// Ground-contact tolerance on the fence floor (§8.2 deadband): a vehicle
@@ -251,6 +259,11 @@ impl PolicyEngine {
         }
 
         // --- policy 7: separation (two ACTIVE vehicles within 4 m / 2 m) ---
+        // AltitudeDiverge applies only when BOTH vehicles are airborne
+        // (z < AIRBORNE_Z_M): a grounded vehicle cannot maneuver vertically,
+        // and co-located spawns (both at NED origin) would otherwise hijack
+        // the goal stream permanently. The note is still logged for
+        // observability (F-2 regression).
         if input.fsm == FsmState::Active {
             for &(other, pos) in &input.other_active_positions {
                 if other == i {
@@ -267,7 +280,16 @@ impl PolicyEngine {
                         ));
                         self.separation_note.insert(key, true);
                     }
-                    // Altitude divergence: climb the lower vehicle.
+                    // Altitude divergence (NED dz: climb = negative): the
+                    // lower-altitude vehicle climbs, the higher dives —
+                    // only between AIRBORNE vehicles.
+                    let own_airborne = est_pos[2] < AIRBORNE_Z_M;
+                    let other_airborne = pos[2] < AIRBORNE_Z_M;
+                    if !(own_airborne && other_airborne) {
+                        // grounded conflict: observe, never override the
+                        // mission goal (the vehicle cannot comply anyway).
+                        continue;
+                    }
                     let dz = if est_pos[2] > pos[2] { -3.0 } else { 3.0 };
                     return PolicyVerdict {
                         action: SafetyAction::AltitudeDiverge { dz_m: dz },
@@ -553,11 +575,12 @@ mod tests {
     fn separation_altitude_divergence() {
         let mut e = engine();
         let mut inp = input(0, 1000, [0.0, 0.0, -10.0], FsmState::Active);
-        inp.other_active_positions = vec![(1, [2.0, 0.0, -10.5])]; // 2 m horiz, 0.5 m vert
+        inp.other_active_positions = vec![(1, [2.0, 0.0, -10.5])]; // 2 m horiz, 0.5 m vert, both airborne
         let v = e.evaluate(0, &inp);
         match v.action {
             SafetyAction::AltitudeDiverge { dz_m } => {
-                // vehicle 0 is ABOVE vehicle 1 (z=-10 > -10.5): dive
+                // NED: v0 z=-10 is BELOW v1 z=-10.5 (less negative = lower);
+                // the lower vehicle climbs: dz < 0.
                 assert!(dz_m < 0.0);
             }
             other => panic!("expected altitude divergence, got {other:?}"),
@@ -567,6 +590,37 @@ mod tests {
         let mut inp = input(0, 1000, [0.0, 0.0, -10.0], FsmState::Active);
         inp.other_active_positions = vec![(1, [2.0, 0.0, -13.0])]; // 3 m vert
         assert_eq!(e.evaluate(0, &inp).action, SafetyAction::None);
+    }
+
+    /// F-2 live-capture regression: two vehicles spawn co-located on the
+    /// ground (both near NED (0,0,0), armed, ACTIVE). The separation policy
+    /// must NOT hijack the goal stream with an AltitudeDiverge override —
+    /// grounded vehicles cannot comply, and the override replaced the
+    /// runner's mission goal every tick, pinning the fleet on the ground
+    /// (goal z drifted to +10 = down, xy frozen, motors idle, auto-disarm).
+    #[test]
+    fn grounded_colocated_spawn_gets_no_altitude_override() {
+        let mut e = engine();
+        let mut inp = input(0, 1000, [0.002, 0.001, 0.008], FsmState::Active);
+        inp.other_active_positions = vec![(1, [0.0, 0.0, 0.001])];
+        let v = e.evaluate(0, &inp);
+        assert_eq!(
+            v.action,
+            SafetyAction::None,
+            "grounded co-located vehicles must not trigger AltitudeDiverge"
+        );
+        // one airborne, one grounded: still no override (the grounded one
+        // cannot separate vertically).
+        let mut inp = input(0, 1000, [0.0, 0.0, -1.5], FsmState::Active);
+        inp.other_active_positions = vec![(1, [0.0, 0.0, 0.0])];
+        assert_eq!(e.evaluate(0, &inp).action, SafetyAction::None);
+        // both airborne and close: the override engages (separation works).
+        let mut inp = input(0, 1000, [0.0, 0.0, -5.0], FsmState::Active);
+        inp.other_active_positions = vec![(1, [1.0, 0.0, -5.2])];
+        assert!(matches!(
+            e.evaluate(0, &inp).action,
+            SafetyAction::AltitudeDiverge { .. }
+        ));
     }
 
     #[test]
