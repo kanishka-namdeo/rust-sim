@@ -1,0 +1,46 @@
+# I-1 boot-gate scenario: defaults everywhere, short duration, ideal
+# sensors (zero noise) so first-boot bring-up is not confounded by
+# realism knobs. Used by tests/run_i1.sh.
+
+[io]
+tcp_port = 4560
+api_port = 8200
+
+[sim]
+rate_hz = 200
+duration_s = 60
+seed = 42
+
+[vehicle]
+origin = { lat_deg = 47.397770, lon_deg = 8.545580, alt_m = 500.0 }
+
+[sensors.imu]
+gyro_noise_density = 0.0
+gyro_bias_walk = 0.0
+gyro_turnon_sigma = 0.0
+gyro_scale_sigma = 0.0
+gyro_misalign_deg = 0.0
+accel_noise_density = 0.0
+accel_bias_walk = 0.0
+accel_turnon_sigma = 0.0
+accel_scale_sigma = 0.0
+accel_misalign_deg = 0.0
+
+[sensors.mag]
+noise_gauss = 0.0
+hard_iron_gauss = 0.0
+
+[sensors.baro]
+noise_m = 0.0
+walk_m_per_min = 0.0
+
+[sensors.gps]
+rate_hz = 5
+latency_ms = 0
+pos_noise_m = 0.0
+pos_noise_vert_m = 0.0
+vel_noise_ms = 0.0
+lock_s = 0.0
+
+[env]
+turbulence = "off"

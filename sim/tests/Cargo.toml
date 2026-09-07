@@ -1,0 +1,11 @@
+[package]
+name = "sitsim-integration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Integration harness: CLI end-to-end tests against a fake PX4 client (no PX4 binary needed), plus the I-1 driver scripts"
+
+[dependencies]
+sitsim-mavlink = { path = "../crates/sitsim-mavlink" }
+tokio = { workspace = true }

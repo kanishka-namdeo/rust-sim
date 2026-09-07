@@ -1,0 +1,27 @@
+{
+ "heartbeat": true,
+ "armed": true,
+ "offboard_mode_seen": true,
+ "land_mode_seen": true,
+ "disarmed": true,
+ "statustexts": [
+  "[logger] ./log/2026-09-07/14_27_06.ulg\t",
+  "Armed by external command\t",
+  "Takeoff detected\t",
+  "BARO #1 failed:  STALE!\t",
+  "BARO #0 failed:  STALE!\t",
+  "Landing detected\t",
+  "Disarmed by landing\t"
+ ],
+ "truth_z_min": -1.8498564958572388,
+ "truth_z_final": 0.0009193734731525183,
+ "truth_max_speed": 1.217828631401062,
+ "truth_ticks": 15000,
+ "ekf_z_min": -2.5128173828125,
+ "ekf_samples": 2218,
+ "arm_s": 28.175053596496582,
+ "offboard_first_s": 31.9998619556427,
+ "offboard_reengages": 0,
+ "errors": [],
+ "exit": 0
+}

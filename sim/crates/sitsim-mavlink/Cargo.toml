@@ -1,0 +1,10 @@
+[package]
+name = "sitsim-mavlink"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Hand-written MAVLink v2 codec for the PX4 HIL lockstep subset (107/115/113/93/76/77)"
+
+[dependencies]
+
+[dev-dependencies]

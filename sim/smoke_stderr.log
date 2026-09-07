@@ -1,0 +1,6 @@
+{"timestamp":"2026-09-07T09:52:11.738552Z","level":"INFO","fields":{"message":"rustsitsim listening; waiting for PX4 to connect","hil_addr":"127.0.0.1:4560","api_addr":"127.0.0.1:8200","rate_hz":200.0,"duration_s":4.0,"speed":1.0,"seed":42,"scenario_sha256":"5642748b55bfcbec2480c4a1c89cb6b4c373b86bbff856b34e2ab6d611d5866e","replay":"smoke.replay"}}
+{"timestamp":"2026-09-07T09:52:12.285780Z","level":"INFO","fields":{"message":"PX4 connected to the HIL link","peer":"127.0.0.1:48358"}}
+{"timestamp":"2026-09-07T09:52:12.285852Z","level":"INFO","fields":{"message":"PX4 connected; starting the tick loop","peer":"127.0.0.1:48358"}}
+{"timestamp":"2026-09-07T09:52:12.389620Z","level":"WARN","fields":{"message":"HIL link read error","error":"Connection reset by peer (os error 104)"}}
+{"timestamp":"2026-09-07T09:52:12.392231Z","level":"INFO","fields":{"message":"sim loop finished","end":"Some(Px4Disconnected)","ticks":21,"virtual_ms":105,"replay_records":21,"telemetry_hash":"cbf29ce484222325"}}
+{"timestamp":"2026-09-07T09:52:12.392432Z","level":"INFO","fields":{"message":"run complete","exit_code":3}}

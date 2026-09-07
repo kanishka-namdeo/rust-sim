@@ -1,0 +1,3 @@
+[proxy] listening 127.0.0.1:4560 -> sim 127.0.0.1:4570
+[proxy] connected to sitsim
+[proxy] PX4 connected from ('127.0.0.1', 53668)

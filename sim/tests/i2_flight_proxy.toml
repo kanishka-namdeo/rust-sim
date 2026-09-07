@@ -1,0 +1,52 @@
+# I-2 flight scenario for the wire-adapter run: identical to i2_flight.toml
+# except the HIL TCP port — PX4 v1.16.2 always connects to 4560 as a client,
+# so the harness runs tests/i2_wire_proxy.py as the 4560 endpoint (it owns
+# 4560, re-lays-out HIL_ACTUATOR_CONTROLS(93) per the PX4 v1.16.2 dialect,
+# and connects to the sim here on 4570; see i2_wire_proxy.py's docstring for
+# the diagnosed sitsim-mavlink offset defect this works around).
+
+[io]
+tcp_port = 4570
+api_port = 8200
+
+[sim]
+rate_hz = 200
+duration_s = 110
+speed = 1.0
+seed = 7
+
+[vehicle]
+origin = { lat_deg = 47.397770, lon_deg = 8.545580, alt_m = 500.0 }
+
+[sensors.imu]
+gyro_noise_density = 0.0
+gyro_bias_walk = 0.0
+gyro_turnon_sigma = 0.0
+gyro_scale_sigma = 0.0
+gyro_misalign_deg = 0.0
+accel_noise_density = 0.0
+accel_bias_walk = 0.0
+accel_turnon_sigma = 0.0
+accel_scale_sigma = 0.0
+accel_misalign_deg = 0.0
+
+[sensors.mag]
+# ADR-0012: PX4's mag pipeline requires non-constant data; noiseless mag
+# starves EKF2 (no yaw alignment, no GNSS fusion, arming denied).
+noise_gauss = 0.005
+hard_iron_gauss = 0.0
+
+[sensors.baro]
+noise_m = 0.0
+walk_m_per_min = 0.0
+
+[sensors.gps]
+rate_hz = 5
+latency_ms = 0
+pos_noise_m = 0.0
+pos_noise_vert_m = 0.0
+vel_noise_ms = 0.0
+lock_s = 0.0
+
+[env]
+turbulence = "off"
