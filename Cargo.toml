@@ -1,0 +1,36 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/sitsim-core",
+    "crates/sitsim-env",
+    "crates/sitsim-sensors",
+    "crates/sitsim-fault",
+    "crates/sitsim-mavlink",
+    "crates/sitsim-transport",
+    "crates/sitsim-sdk",
+    "crates/sitsim-cli",
+    "tests",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/example/rustsitsim"
+rust-version = "1.75"
+
+# The reference build platform has 2 cores; keep debug artifacts lean so
+# incremental builds stay inside the sandbox command-time budget.
+[profile.dev]
+debug = 1
+[profile.test]
+debug = 1
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros"] }
+axum = { version = "0.7", features = ["ws"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }

@@ -1,0 +1,10 @@
+[package]
+name = "sitsim-env"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Environment models: ISA atmosphere, WGS84 geodesy, magnetic field, Dryden-class wind turbulence (SPEC §6.1-6.2)"
+
+[dependencies]
+sitsim-core = { path = "../sitsim-core" }
+libm = "0.2"

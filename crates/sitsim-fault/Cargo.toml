@@ -1,0 +1,9 @@
+[package]
+name = "sitsim-fault"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Fault injection: event catalog, timeline evaluation, effect aggregation, runtime inject/clear (SPEC §7)"
+
+[dependencies]
+serde = { workspace = true }

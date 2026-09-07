@@ -1,0 +1,16 @@
+[package]
+name = "sitsim-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Scenario configuration (TOML), simulator assembly, replay recorder, determinism harness (SPEC §8, §9)"
+
+[dependencies]
+sitsim-core = { path = "../sitsim-core" }
+sitsim-env = { path = "../sitsim-env" }
+sitsim-sensors = { path = "../sitsim-sensors" }
+sitsim-fault = { path = "../sitsim-fault" }
+sitsim-mavlink = { path = "../sitsim-mavlink" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }

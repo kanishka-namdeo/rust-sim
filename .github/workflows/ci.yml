@@ -1,0 +1,39 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Unit + integration tests (no PX4 needed)
+        run: cargo test --workspace
+      - name: Check pinned PX4 version file
+        run: test "$(cat px4-version)" = "v1.16.2"
+
+  # The real-PX4 integration suite (I-1..I-5) needs a PX4 v1.16.2 SITL build
+  # and the pymavlink oracle. Run it on a self-hosted runner (or a container
+  # job that builds PX4 with the cached recipe) — draft gating per spec 10.5:
+  # it is REQUIRED before releases, advisory on PRs.
+  px4-integration:
+    if: ${{ false }} # enable when a self-hosted runner is attached
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --workspace
+      - name: I-1 boot gate
+        run: bash tests/run_i1.sh

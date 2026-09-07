@@ -1,0 +1,42 @@
+# rustsitsim reference scenario — SPEC Appendix B, verbatim.
+# The canonical hover-and-fault scenario used by integration cases I-2..I-4.
+
+[io]
+tcp_port = 4560
+api_port = 8200
+
+[sim]
+rate_hz = 200
+duration_s = 150
+seed = 42
+
+[vehicle]
+origin = { lat_deg = 47.397770, lon_deg = 8.545580, alt_m = 500.0 }
+initial = { pos_ned_m = [0.0, 0.0, 0.0] }
+
+[dynamics]
+mass_kg = 1.5
+inertia = [0.02, 0.02, 0.04]
+arm_m = 0.225
+c_T = 1.10e-5
+c_M = 1.25e-7
+omega_max = 950.0
+tau_motor = 0.03
+
+[sensors.gps]
+rate_hz = 5
+latency_ms = 120
+pos_noise_m = 0.8
+vel_noise_ms = 0.2
+eph_cm = 100
+epv_cm = 150
+
+[env]
+wind_steady_ms = [1.5, 0.0, 0.0]
+turbulence = "moderate"
+
+[[fault]]
+id = "denial_1"
+type = "gps_denial"
+start_ms = 30000
+duration_ms = 20000
