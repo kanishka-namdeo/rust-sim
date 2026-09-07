@@ -1,0 +1,102 @@
+# RustSim Architecture
+
+One repo, three components, one live-verified contract chain:
+
+```
+                       ┌──────────────────────────────┐
+                       │        browser user          │
+                       └──────────────┬───────────────┘
+                                      │ HTTP/WS (relative paths)
+                     ┌────────────────▼─────────────────┐
+                     │   Caddy gateway :81 (XTransformPort)   │
+                     └───────┬───────────────────┬──────┘
+                             │ :8200+i           │ :8400
+              ┌──────────────▼─────┐   ┌─────────▼────────────┐
+              │ RustSim Core (sim) │   │ RustSim Fleet (fleet) │
+              │  per vehicle       │   │  mission manager      │
+              │  sitsim-cli        │◄──┤  mavfleet             │
+              │  REST+WS + HIL TCP │   │  REST+WS control plane│
+              └─────────┬──────────┘   └─────────┬────────────┘
+                        │ TCP 4560+i (HIL, lockstep)  │ spawn + UDP links
+              ┌─────────▼──────────┐   ┌─────────▼────────────┐
+              │  PX4 SITL v1.16.2  │   │  PX4 SITL v1.16.2     │
+              │  (unmodified)      │   │  (unmodified, -i)     │
+              └────────────────────┘   └───────────────────────┘
+```
+
+- The **console** talks only to the two Rust control planes (REST for
+  status/commands, WS for telemetry). The `XTransformPort` gateway pattern
+  lets a single origin serve any backend port — the same routing the sandbox
+  preview proxy uses; `console/Caddyfile.example` reproduces it locally.
+- The **fleet manager** spawns one `sitsim-cli` + one `px4 -i <n>` pair per
+  vehicle (the `[sim]` command template in the scenario TOML), drives them
+  over MAVLink UDP, and supervises the mission.
+- Each **sitsim-cli** owns one vehicle's physics: PX4 connects to it as a TCP
+  client on 4560+i and the pair exchanges HIL_SENSOR / HIL_STATE_QUATERNION /
+  HIL_GPS (sim -> PX4) and HIL_ACTUATOR_CONTROLS (PX4 -> sim) in lockstep at
+  200 Hz virtual time. The whole flight stack — EKF2, commander, navigator,
+  offboard — runs in **unmodified PX4**.
+
+## Port map (contract)
+
+| Port | Owner | Protocol |
+|------|-------|----------|
+| 4560 + i | sitsim-cli (listener) | TCP, MAVLink v2 HIL lockstep; PX4 connects as client |
+| 8200 + i | sitsim-cli control plane | HTTP REST + WS (10 Hz telemetry frames) |
+| 8400 | mavfleet control plane | HTTP REST + WS (10 Hz fleet frames) |
+| 14540 + i | manager's telemetry link | UDP; PX4 streams telemetry here |
+| 14580 + i | PX4 onboard link | UDP; the manager sends commands here |
+| 3000 | console | HTTP (Next.js) |
+| 81 | gateway | HTTP/WS reverse proxy (`?XTransformPort=<port>`) |
+
+## Component map
+
+```
+sim/     rustsitsim workspace — 8 crates
+         sitsim-core      6-DOF quadrotor dynamics, RK4 + contact substeps
+         sitsim-env       atmosphere, wind, magnetic field, geodesy
+         sitsim-sensors   IMU/mag/baro/GPS models (noise, latency, bias)
+         sitsim-mavlink   hand-rolled MAVLink v2 codec, golden-vectored
+         sitsim-transport lockstep TCP link + stats
+         sitsim-fault     10-fault injection engine
+         sitsim-sdk       scenario config, engine, replay, determinism hash
+         sitsim-cli       the binary (REST+WS control plane)
+
+fleet/   mavfleet workspace — 8 crates
+         fleet-core       FSM, registry, health, events
+         fleet-mavlink    links, command/ack ladder, 20 Hz setpoint pump
+         fleet-mission    scenario DSL, compiler, mission runner, report
+         fleet-alloc      auction allocator (+ Hungarian baseline)
+         fleet-safety     geofence + 8-policy ladder
+         fleet-modes      PX4 custom-mode words, type masks
+         fleet-simctl     per-vehicle process supervision, port probes
+         fleet-cli        the binary (manager, control plane)
+
+console/ Next.js 16 operator console (see console/README.md)
+```
+
+## Key data flows
+
+1. **Lockstep physics**: sim ticks at `rate_hz` (200 Hz default) and emits
+   sensor frames stamped with virtual time; PX4's scheduler advances with
+   them; PX4 returns actuator controls; the sim applies them and advances.
+   Disconnect = end of run (exit 3).
+2. **Mission**: scenario -> compile (fence/task validation) -> sequential
+   auction -> per-vehicle runner -> arm + OFFBOARD engage -> 20 Hz
+   position setpoints (4 m/s capped ramps) -> hover observation -> RTL ->
+   land -> disarm; the 10 Hz supervisor enforces the safety ladder over it
+   all.
+3. **Telemetry**: sitsim WS pushes 10 Hz JSON frames; fleet WS pushes 10 Hz
+   fleet frames + events; the console normalizes both tolerantly and renders
+   strip charts/maps/tables; commands (fault inject, estop) go back over
+   REST through the same routing.
+
+## Why native HIL instead of Gazebo?
+
+The goal is a **protocol-faithful, deterministic, dependency-free** testbed
+for PX4-native integration work: no Gazebo/jmavsim, no C++ simulator in the
+loop, full control of sensor physics and fault injection, byte-level
+visibility of the HIL wire, and reproducible runs (scenario + seed ->
+telemetry hash). The cost is honesty about wire reality: every divergence
+between PX4's pinned dialect and the official common.xml is captured in
+`sim/docs/PROTOCOL.md` + ADRs, with live-capture evidence.

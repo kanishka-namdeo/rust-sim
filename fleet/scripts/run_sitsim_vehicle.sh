@@ -21,9 +21,10 @@ HIL_PORT="${2:?hil_port}"
 DURATION="${3:?duration_s}"
 API_PORT=$((8200 + INSTANCE))
 SEED=$((100 + INSTANCE))
-SITSIM="${FLEET_SITSIM_BIN:-/home/z/my-project/rustsitsim/target/debug/sitsim-cli}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SITSIM="${FLEET_SITSIM_BIN:-$SCRIPT_DIR/../../sim/target/debug/sitsim-cli}"
 
-CFG_DIR="${FLEET_SIM_CFG_DIR:-/home/z/my-project/mavfleet/scratch/vsims}"
+CFG_DIR="${FLEET_SIM_CFG_DIR:-$SCRIPT_DIR/../scratch/vsims}"
 CFG="$CFG_DIR/vehicle_${INSTANCE}.toml"
 mkdir -p "$CFG_DIR"
 

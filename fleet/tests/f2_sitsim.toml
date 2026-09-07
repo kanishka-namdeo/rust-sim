@@ -22,7 +22,7 @@ wind_steady_ms = [0.0, 0.0, 0.0]
 turbulence = "off"
 
 [sim]
-command = "/home/z/my-project/mavfleet/scripts/run_sitsim_vehicle.sh {instance} {hil_port} {duration_s}"
+command = "scripts/run_sitsim_vehicle.sh {instance} {hil_port} {duration_s}"
 duration_s = 420
 
 [[tasks]]

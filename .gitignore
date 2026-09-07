@@ -1,5 +1,5 @@
 # Rust
-target/
+target
 
 # Node / Next
 node_modules/

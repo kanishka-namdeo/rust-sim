@@ -1,0 +1,47 @@
+# LIVE DEMO scenario: the browser-visible fleet mission (F-2 configuration,
+# stretched for an operator watching the console).
+#
+# 2 vehicles x 4 tasks (square patrol), real rustsitsim dynamics per vehicle,
+# 12 s task hovers so the mission stays airborne ~3 minutes — enough to watch
+# the Sim Console telemetry, the Fleet C2 table, the auction/task states and
+# the RTL/landing sequence live.
+
+[fleet]
+count = 2
+battery_sim = true
+restart_on_fault = false
+
+[env]
+geofence = { points_ned_m = [[-110,-110],[110,-110],[110,110],[-110,110]], ceiling_m = 60, floor_m = 0 }
+wind_steady_ms = [0.5, 0.0, 0.0]
+turbulence = "light"
+
+[sim]
+command = "scripts/run_sitsim_vehicle.sh {instance} {hil_port} {duration_s}"
+duration_s = 480
+
+[[tasks]]
+id = "wp_n"
+pos_ned_m = [-50.0, 0.0, -12.0]
+hover_s = 12
+
+[[tasks]]
+id = "wp_e"
+pos_ned_m = [0.0, 50.0, -12.0]
+hover_s = 12
+
+[[tasks]]
+id = "wp_s"
+pos_ned_m = [50.0, 10.0, -12.0]
+hover_s = 12
+
+[[tasks]]
+id = "wp_w"
+pos_ned_m = [-10.0, -50.0, -12.0]
+hover_s = 12
+
+[success]
+all_tasks_done = true
+all_landed = true
+max_time_s = 420
+no_geofence_breach = true
