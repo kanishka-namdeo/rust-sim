@@ -3,7 +3,9 @@
 /**
  * Mode 2 — mavfleet Fleet C2.
  * Fleet map with geofence, fleet table, task/allocation board, safety & event
- * log, and the single fleet command surface: E-STOP (SPEC §3.4 / §13).
+ * log, mission bindings (§5.4 AC-5.4.1), Start Fleet modal (§5.4 AC-5.4.2),
+ * swarming-pattern library (§5.4 AC-5.4.3), and the single fleet abort
+ * surface: E-STOP (SPEC §3.4 / §13).
  */
 
 import { useCallback, useState } from 'react'
@@ -28,7 +30,10 @@ import { useFleetC2 } from '@/hooks/useFleetC2'
 import { ConnBadge, ConnSubline } from './ConnBadge'
 import { EventLog, SafetyLadder } from './EventLog'
 import { FleetTable } from './FleetTable'
+import { MissionBindingsPanel } from './MissionBindingsPanel'
 import { NedMap, type MapMarker } from './NedMap'
+import { PatternsDialog } from './PatternsDialog'
+import { StartFleetDialog } from './StartFleetDialog'
 import { StatTile } from './StatTile'
 import { TaskPanel } from './TaskPanel'
 import { fmt } from '@/lib/format'
@@ -111,35 +116,39 @@ export function FleetC2() {
                 <ConnSubline conn={fleet.conn} port={fleet.port} retryAt={fleet.retryAt} lastError={fleet.lastError} />
               </div>
             </div>
-            <AlertDialog>
-              <AlertDialogTrigger asChild>
-                <Button variant="destructive" size="sm" className="gap-2">
-                  <OctagonAlert className="size-4" aria-hidden="true" />
-                  FLEET E-STOP
-                </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Confirm fleet E-STOP</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    Every vehicle LANDs immediately and the run is marked ABORTED. Policy 1 short-circuits the whole
-                    escalation ladder.
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>Cancel</AlertDialogCancel>
-                  <AlertDialogAction
-                    onClick={(e) => {
-                      e.preventDefault()
-                      void doEstop()
-                    }}
-                    className="bg-destructive text-white hover:bg-destructive/90"
-                  >
-                    E-STOP all vehicles
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <PatternsDialog fleet={fleet} disabled={aborted} />
+              <StartFleetDialog fleet={fleet} disabled={aborted || fleet.bindings.length === 0} />
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button variant="destructive" size="sm" className="gap-2">
+                    <OctagonAlert className="size-4" aria-hidden="true" />
+                    FLEET E-STOP
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Confirm fleet E-STOP</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      Every vehicle LANDs immediately and the run is marked ABORTED. Policy 1 short-circuits the whole
+                      escalation ladder.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction
+                      onClick={(e) => {
+                        e.preventDefault()
+                        void doEstop()
+                      }}
+                      className="bg-destructive text-white hover:bg-destructive/90"
+                    >
+                      E-STOP all vehicles
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            </div>
           </div>
         </CardHeader>
         <CardContent>
@@ -207,6 +216,9 @@ export function FleetC2() {
           </CardContent>
         </Card>
       </div>
+
+      {/* ----------------------------------------------- mission bindings */}
+      <MissionBindingsPanel fleet={fleet} vehicles={snap?.vehicles ?? []} />
 
       {/* ------------------------------------------------------ fleet table */}
       <Card>

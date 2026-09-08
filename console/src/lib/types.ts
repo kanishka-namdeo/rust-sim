@@ -338,6 +338,83 @@ export interface VehicleSetupSummary {
 export type CalSensor = 'gyro' | 'accel' | 'accel_quick' | 'mag' | 'level' | 'baro' | 'airspeed'
 
 // ---------------------------------------------------------------------------
+// Fleet mission bindings + orchestration (GCS_SPEC §5.4 / §8.4)
+// ---------------------------------------------------------------------------
+
+/** Per-vehicle mission binding state machine (SPEC §5.4 AC-5.4.1). */
+export type MissionBindingState =
+  | 'unassigned'
+  | 'assigned'
+  | 'uploaded'
+  | 'active'
+  | 'complete'
+  | 'aborted'
+
+/** One row in GET /api/fleet/mission-bindings (:8400). */
+export interface MissionBinding {
+  vehicle_id: number
+  mission_id: string
+  binding_state: MissionBindingState
+}
+
+/** Body of POST /api/fleet/mission-bindings. */
+export interface MissionBindingInput {
+  vehicle_id: number
+  mission_id: string
+}
+
+/**
+ * Per-vehicle result of POST /api/fleet/start. The fleet orchestrator walks
+ * every bound vehicle and emits one of these rows; the UI surfaces them as
+ * they arrive (the modal closes immediately, the result table streams in).
+ */
+export interface FleetStartResult {
+  vehicle_id: number
+  mission_id: string
+  status: 'started' | 'failed' | 'timeout'
+  /** Human-readable detail (error message / gate reason). */
+  detail?: string
+}
+
+/** Orchestration mode for POST /api/fleet/start. */
+export type FleetStartMode = 'parallel' | 'sequential'
+
+/** Sequential gate condition (SPEC §5.4 AC-5.4.2). */
+export type SequentialGate = 'first_waypoint' | 'takeoff_complete'
+
+/** Body of POST /api/fleet/start. */
+export interface FleetStartRequest {
+  mode: FleetStartMode
+  sequential_gate?: SequentialGate
+  timeout_s?: number
+}
+
+/** One swarming pattern in the library (GET /api/fleet/patterns). */
+export interface SwarmPattern {
+  name: string
+  description: string
+}
+
+/**
+ * One per-vehicle mission emitted by POST /api/fleet/patterns/{name}/generate.
+ * The shape mirrors PlanMissionSummary so the operator can upload it directly
+ * via the existing catalog upload path (§5.1).
+ */
+export interface GeneratedPatternMission {
+  vehicle_id: number
+  mission_id: string
+  waypoint_count: number
+  /** Optional preview waypoints (NED) for the map overlay. */
+  preview_ned_m?: [number, number, number][]
+}
+
+/** Result of POST /api/fleet/patterns/{name}/generate. */
+export interface PatternGenerationResult {
+  pattern: string
+  missions: GeneratedPatternMission[]
+}
+
+// ---------------------------------------------------------------------------
 // Fault injection catalog (rustsitsim SPEC §7.1)
 // ---------------------------------------------------------------------------
 

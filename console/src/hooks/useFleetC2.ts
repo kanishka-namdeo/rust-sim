@@ -5,15 +5,37 @@
  *
  * Same dual-mode lifecycle as useSimConsole: probe REST /api/fleet through the
  * gateway → LIVE via /ws/fleet frames (10 Hz) + /api/events tail polling, or
- * SIMULATED via the FleetMockEngine with periodic live retries. The only fleet
- * command surface is E-STOP (POST /api/fleet/estop) per SPEC §13 — everything
- * else is read-only by design.
+ * SIMULATED via the FleetMockEngine with periodic live retries. The fleet
+ * command surface (SPEC §5.4 / §13) covers:
+ *   - E-STOP                    — POST /api/fleet/estop (single-button abort)
+ *   - mission bindings          — GET / POST / DELETE /api/fleet/mission-bindings
+ *   - fleet start (parallel/sequential)
+ *   - swarming pattern library  — GET /api/fleet/patterns + generate
+ *
+ * All fleet API calls route through `src/lib/conn.ts` gateway mode with
+ * `?XTransformPort=8400`. The catalog (:8300) is the source of truth for
+ * saved missions (the Assign dropdown fetches `GET /api/missions` from there);
+ * bindings themselves are persisted on the fleet plane so they survive
+ * catalog restarts.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { fetchGw, gw, normalizeFleetSnapshot, probePlane, unwrapEnvelope, wsUrl } from '@/lib/conn'
 import { FleetMockEngine } from '@/lib/mock-fleet'
-import type { AuctionEntry, ConnState, FleetEvent, FleetSnapshot } from '@/lib/types'
+import type {
+  AuctionEntry,
+  ConnState,
+  FleetEvent,
+  FleetSnapshot,
+  FleetStartMode,
+  FleetStartResult,
+  GeneratedPatternMission,
+  MissionBinding,
+  MissionBindingState,
+  PatternGenerationResult,
+  SequentialGate,
+  SwarmPattern,
+} from '@/lib/types'
 
 export const FLEET_PORT = 8400
 
@@ -27,6 +49,9 @@ export function useFleetC2() {
   const [snapshot, setSnapshot] = useState<FleetSnapshot | null>(null)
   const [events, setEvents] = useState<FleetEvent[]>([])
   const [auctions, setAuctions] = useState<AuctionEntry[]>([])
+  const [bindings, setBindings] = useState<MissionBinding[]>([])
+  const [patterns, setPatterns] = useState<SwarmPattern[]>([])
+  const [busy, setBusy] = useState(false)
   const [frameCount, setFrameCount] = useState(0)
 
   const engineRef = useRef<FleetMockEngine | null>(null)
@@ -250,7 +275,376 @@ export function useFleetC2() {
     return true
   }, [])
 
-  return { conn, port: FLEET_PORT, lastError, retryAt, snapshot, events, auctions, frameCount, estop }
+  // ---- v1 (GCS_SPEC §5.4): mission bindings + fleet start + patterns -----
+
+  /** Pull a human-readable error message out of the backend's error envelope.
+   * The envelope shape is `{ok:false, error:{code,message}} | {ok:false, error:string}`. */
+  const envelopeError = (raw: unknown, fallback: string): string => {
+    if (!raw || typeof raw !== 'object') return fallback
+    const r = raw as Record<string, unknown>
+    const err = r.error
+    if (typeof err === 'string') return err || fallback
+    if (err && typeof err === 'object') {
+      const e = err as Record<string, unknown>
+      const msg = typeof e.message === 'string' ? e.message : typeof e.code === 'string' ? e.code : null
+      if (msg) return msg
+    }
+    return fallback
+  }
+
+  /** Tolerant binding-shape normalizer (the backend may omit fields). */
+  const normBinding = (raw: unknown): MissionBinding | null => {
+    if (!raw || typeof raw !== 'object') return null
+    const r = raw as Record<string, unknown>
+    const vehicle_id = typeof r.vehicle_id === 'number' ? r.vehicle_id : Number(r.vehicle_id)
+    if (!Number.isFinite(vehicle_id)) return null
+    const mission_id = typeof r.mission_id === 'string' ? r.mission_id : String(r.mission_id ?? '')
+    const rawState = typeof r.binding_state === 'string' ? r.binding_state : typeof r.state === 'string' ? r.state : 'unassigned'
+    const allowed: MissionBindingState[] = ['unassigned', 'assigned', 'uploaded', 'active', 'complete', 'aborted']
+    const binding_state = (allowed.includes(rawState as MissionBindingState) ? rawState : 'unassigned') as MissionBindingState
+    return { vehicle_id, mission_id, binding_state }
+  }
+
+  /** GET /api/fleet/mission-bindings (:8400) — refresh the bindings table. */
+  const listMissionBindings = useCallback(async (): Promise<MissionBinding[]> => {
+    try {
+      const res = await fetchGw(gw(FLEET_PORT, '/api/fleet/mission-bindings'), { method: 'GET' }, 3000)
+      if (!res.ok) return []
+      const j = await res.json()
+      const data = unwrapEnvelope(j)
+      const arr = Array.isArray(data) ? data : Array.isArray((data as { bindings?: unknown[] })?.bindings) ? (data as { bindings: unknown[] }).bindings : []
+      const list = arr.map(normBinding).filter((b): b is MissionBinding => b != null)
+      setBindings(list)
+      return list
+    } catch {
+      return []
+    }
+  }, [])
+
+  /**
+   * POST /api/fleet/mission-bindings (:8400) — body: `{"bindings":[{vehicle_id,
+   * mission_id}, ...]}`. Persists the operator's assignments to the fleet plane
+   * so they survive console reconnects. Returns the refreshed bindings list.
+   */
+  const setMissionBindings = useCallback(
+    async (inputs: { vehicle_id: number; mission_id: string }[]): Promise<{ ok: boolean; bindings: MissionBinding[]; error: string | null }> => {
+      setBusy(true)
+      try {
+        const res = await fetchGw(
+          gw(FLEET_PORT, '/api/fleet/mission-bindings'),
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ bindings: inputs }),
+          },
+          6000,
+        )
+        if (!res.ok) {
+          let err = `HTTP ${res.status}`
+          try {
+            const j = await res.json()
+            err = envelopeError(unwrapEnvelope(j), err)
+          } catch {
+            /* keep HTTP status as error */
+          }
+          return { ok: false, bindings: [], error: err }
+        }
+        const j = await res.json()
+        const data = unwrapEnvelope(j)
+        const arr = Array.isArray(data)
+          ? data
+          : Array.isArray((data as { bindings?: unknown[] })?.bindings)
+            ? (data as { bindings: unknown[] }).bindings
+            : []
+        const list = arr.map(normBinding).filter((b): b is MissionBinding => b != null)
+        setBindings(list)
+        return { ok: true, bindings: list, error: null }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        return { ok: false, bindings: [], error: msg }
+      } finally {
+        setBusy(false)
+      }
+    },
+    [],
+  )
+
+  /** DELETE /api/fleet/mission-bindings/{vehicleId} (:8400) — clear one row. */
+  const clearMissionBinding = useCallback(
+    async (vehicleId: number): Promise<boolean> => {
+      try {
+        const res = await fetchGw(gw(FLEET_PORT, `/api/fleet/mission-bindings/${vehicleId}`), { method: 'DELETE' }, 3000)
+        if (!res.ok) return false
+        setBindings((prev) => prev.filter((b) => b.vehicle_id !== vehicleId))
+        return true
+      } catch {
+        return false
+      }
+    },
+    [],
+  )
+
+  /**
+   * POST /api/fleet/start (:8400) — kick off every bound mission.
+   *
+   * Body shape per SPEC §5.4:
+   *   `{mode: "parallel"|"sequential", sequential_gate?: "first_waypoint"|
+   *    "takeoff_complete", timeout_s?: 30}`
+   *
+   * Returns the per-vehicle result list (`[{vehicle_id, mission_id, status}]`)
+   * so the modal can stream started/failed/timeout rows as they land.
+   */
+  const startFleet = useCallback(
+    async (mode: FleetStartMode, sequentialGate?: SequentialGate, timeoutS?: number): Promise<{ ok: boolean; results: FleetStartResult[]; error: string | null }> => {
+      setBusy(true)
+      try {
+        const body: Record<string, unknown> = { mode }
+        if (mode === 'sequential') {
+          body.sequential_gate = sequentialGate ?? 'first_waypoint'
+          body.timeout_s = typeof timeoutS === 'number' && Number.isFinite(timeoutS) ? timeoutS : 30
+        }
+        const res = await fetchGw(
+          gw(FLEET_PORT, '/api/fleet/start'),
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(body),
+          },
+          10_000,
+        )
+        if (!res.ok) {
+          let err = `HTTP ${res.status}`
+          try {
+            const j = await res.json()
+            err = envelopeError(unwrapEnvelope(j), err)
+          } catch {
+            /* keep HTTP status */
+          }
+          return { ok: false, results: [], error: err }
+        }
+        const j = await res.json()
+        const data = unwrapEnvelope(j)
+        const arr = Array.isArray(data)
+          ? data
+          : Array.isArray((data as { results?: unknown[] })?.results)
+            ? (data as { results: unknown[] }).results
+            : []
+        const results: FleetStartResult[] = arr
+          .map((r): FleetStartResult | null => {
+            if (!r || typeof r !== 'object') return null
+            const x = r as Record<string, unknown>
+            const vehicle_id = typeof x.vehicle_id === 'number' ? x.vehicle_id : Number(x.vehicle_id)
+            const mission_id = typeof x.mission_id === 'string' ? x.mission_id : String(x.mission_id ?? '')
+            const status = x.status === 'started' || x.status === 'failed' || x.status === 'timeout' ? (x.status as FleetStartResult['status']) : 'failed'
+            const detail = typeof x.detail === 'string' ? x.detail : typeof x.message === 'string' ? x.message : undefined
+            if (!Number.isFinite(vehicle_id)) return null
+            return { vehicle_id, mission_id, status, detail }
+          })
+          .filter((r): r is FleetStartResult => r != null)
+        // Promote any binding whose vehicle reported "started" to "active"
+        // (the backend drives the rest of the lifecycle via telemetry).
+        const startedIds = new Set(results.filter((r) => r.status === 'started').map((r) => r.vehicle_id))
+        if (startedIds.size > 0) {
+          setBindings((prev) =>
+            prev.map((b) => (startedIds.has(b.vehicle_id) && b.binding_state === 'uploaded' ? { ...b, binding_state: 'active' } : b)),
+          )
+        }
+        return { ok: true, results, error: null }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        return { ok: false, results: [], error: msg }
+      } finally {
+        setBusy(false)
+      }
+    },
+    [],
+  )
+
+  /** GET /api/fleet/patterns (:8400) — the swarming-pattern library. */
+  const listPatterns = useCallback(async (): Promise<SwarmPattern[]> => {
+    try {
+      const res = await fetchGw(gw(FLEET_PORT, '/api/fleet/patterns'), { method: 'GET' }, 3000)
+      if (!res.ok) return patterns
+      const j = await res.json()
+      const data = unwrapEnvelope(j)
+      const arr = Array.isArray(data)
+        ? data
+        : Array.isArray((data as { patterns?: unknown[] })?.patterns)
+          ? (data as { patterns: unknown[] }).patterns
+          : []
+      const list: SwarmPattern[] = arr
+        .map((p): SwarmPattern | null => {
+          if (!p || typeof p !== 'object') return null
+          const r = p as Record<string, unknown>
+          const name = typeof r.name === 'string' ? r.name : ''
+          const description = typeof r.description === 'string' ? r.description : ''
+          if (!name) return null
+          return { name, description }
+        })
+        .filter((p): p is SwarmPattern => p != null)
+      setPatterns(list)
+      return list
+    } catch {
+      return patterns
+    }
+  }, [patterns])
+
+  /**
+   * POST /api/fleet/patterns/{name}/generate (:8400) — generates per-vehicle
+   * missions for the chosen swarming pattern and binds them automatically
+   * (so the operator can immediately press "Start Fleet" afterwards).
+   */
+  const generatePattern = useCallback(
+    async (name: string, params: Record<string, number | string>): Promise<{ ok: boolean; result: PatternGenerationResult | null; error: string | null }> => {
+      setBusy(true)
+      try {
+        const res = await fetchGw(
+          gw(FLEET_PORT, `/api/fleet/patterns/${encodeURIComponent(name)}/generate`),
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(params ?? {}),
+          },
+          6000,
+        )
+        if (!res.ok) {
+          let err = `HTTP ${res.status}`
+          try {
+            const j = await res.json()
+            err = envelopeError(unwrapEnvelope(j), err)
+          } catch {
+            /* keep HTTP status */
+          }
+          return { ok: false, result: null, error: err }
+        }
+        const j = await res.json()
+        const data = unwrapEnvelope(j)
+        const rec = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>
+        const missionsRaw = Array.isArray(rec.missions) ? rec.missions : Array.isArray(data) ? data : []
+        const missions: GeneratedPatternMission[] = missionsRaw
+          .map((m): GeneratedPatternMission | null => {
+            if (!m || typeof m !== 'object') return null
+            const r = m as Record<string, unknown>
+            const vehicle_id = typeof r.vehicle_id === 'number' ? r.vehicle_id : Number(r.vehicle_id)
+            const mission_id = typeof r.mission_id === 'string' ? r.mission_id : String(r.mission_id ?? '')
+            const waypoint_count = typeof r.waypoint_count === 'number' ? r.waypoint_count : Number(r.waypoint_count ?? 0)
+            if (!Number.isFinite(vehicle_id)) return null
+            const previewRaw = Array.isArray(r.preview_ned_m) ? r.preview_ned_m : Array.isArray(r.preview) ? r.preview : null
+            const preview_ned_m = previewRaw
+              ? (previewRaw
+                  .map((p) => {
+                    if (Array.isArray(p) && p.length >= 3) {
+                      const a = Number(p[0])
+                      const b = Number(p[1])
+                      const c = Number(p[2])
+                      return Number.isFinite(a) && Number.isFinite(b) && Number.isFinite(c) ? ([a, b, c] as [number, number, number]) : null
+                    }
+                    return null
+                  })
+                  .filter((p): p is [number, number, number] => p != null) as [number, number, number][])
+              : undefined
+            return { vehicle_id, mission_id, waypoint_count, preview_ned_m }
+          })
+          .filter((m): m is GeneratedPatternMission => m != null)
+        const result: PatternGenerationResult = { pattern: typeof rec.pattern === 'string' ? rec.pattern : name, missions }
+        // auto-bind the generated missions so the operator can press Start Fleet next
+        if (missions.length > 0) {
+          const next = missions.map((m) => ({
+            vehicle_id: m.vehicle_id,
+            mission_id: m.mission_id,
+            binding_state: 'assigned' as MissionBindingState,
+          }))
+          setBindings((prev) => {
+            const map = new Map(next.map((b) => [b.vehicle_id, b]))
+            const out: MissionBinding[] = []
+            const seen = new Set<number>()
+            for (const b of prev) {
+              const replacement = map.get(b.vehicle_id)
+              if (replacement) {
+                out.push(replacement)
+                seen.add(b.vehicle_id)
+              } else {
+                out.push(b)
+              }
+            }
+            for (const b of next) if (!seen.has(b.vehicle_id)) out.push(b)
+            return out
+          })
+        }
+        return { ok: true, result, error: null }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        return { ok: false, result: null, error: msg }
+      } finally {
+        setBusy(false)
+      }
+    },
+    [],
+  )
+
+  /** Refresh bindings + patterns on a short interval while live. The bind
+   * panel also calls these on mount; the interval keeps the binding_state
+   * column in sync as the fleet orchestrator advances it. */
+  useEffect(() => {
+    if (conn !== 'live') return
+    let cancelled = false
+    const tick = async () => {
+      if (cancelled) return
+      await listMissionBindings()
+      if (cancelled) return
+      await listPatterns()
+    }
+    void tick()
+    const t = setInterval(() => {
+      void tick()
+    }, 5000)
+    return () => {
+      cancelled = true
+      clearInterval(t)
+    }
+  }, [conn, listMissionBindings, listPatterns])
+
+  /** Local optimistic assign — used by the Assign dropdown so the UI flips to
+   * "assigned" instantly, then POSTs to persist. Falls back to nothing if the
+   * POST fails (the bindings list refresh will correct the row). */
+  const assignLocal = useCallback((vehicleId: number, missionId: string) => {
+    setBindings((prev) => {
+      const idx = prev.findIndex((b) => b.vehicle_id === vehicleId)
+      if (idx === -1) return [...prev, { vehicle_id: vehicleId, mission_id: missionId, binding_state: 'assigned' }]
+      const next = [...prev]
+      next[idx] = { ...next[idx], mission_id: missionId, binding_state: 'assigned' }
+      return next
+    })
+  }, [])
+
+  /** Local optimistic upload flip — used by "Upload all". */
+  const markUploaded = useCallback((vehicleIds: number[]) => {
+    const set = new Set(vehicleIds)
+    setBindings((prev) => prev.map((b) => (set.has(b.vehicle_id) && b.binding_state === 'assigned' ? { ...b, binding_state: 'uploaded' } : b)))
+  }, [])
+
+  return {
+    conn,
+    port: FLEET_PORT,
+    lastError,
+    retryAt,
+    snapshot,
+    events,
+    auctions,
+    bindings,
+    patterns,
+    busy,
+    frameCount,
+    estop,
+    listMissionBindings,
+    setMissionBindings,
+    clearMissionBinding,
+    assignLocal,
+    markUploaded,
+    startFleet,
+    listPatterns,
+    generatePattern,
+  }
 }
 
 export type FleetC2Api = ReturnType<typeof useFleetC2>
