@@ -191,6 +191,10 @@ pub fn crc_extra(msgid: u32) -> Option<u8> {
         0 => 50,   // HEARTBEAT
         1 => 124,  // SYS_STATUS
         4 => 237,  // PING
+        20 => 214, // PARAM_REQUEST_READ
+        21 => 159, // PARAM_REQUEST_LIST
+        22 => 220, // PARAM_VALUE
+        23 => 168, // PARAM_SET
         30 => 39,  // ATTITUDE
         32 => 185, // LOCAL_POSITION_NED
         33 => 104, // GLOBAL_POSITION_INT

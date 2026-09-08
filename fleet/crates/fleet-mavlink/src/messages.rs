@@ -26,6 +26,11 @@ pub mod ids {
     pub const STATUSTEXT: u32 = 253;
     pub const PARAM_SET: u32 = 23;
     pub const PARAM_VALUE: u32 = 22;
+    /// PARAM_REQUEST_READ (20): read one parameter (by id or index).
+    pub const PARAM_REQUEST_READ: u32 = 20;
+    /// PARAM_REQUEST_LIST (21): request the full parameter dump — the
+    /// QGroundControl-style initial parameter download.
+    pub const PARAM_REQUEST_LIST: u32 = 21;
 }
 
 pub mod cmds {
@@ -35,6 +40,12 @@ pub mod cmds {
     pub const COMPONENT_ARM_DISARM: u16 = 400;
     pub const DO_SET_MODE: u16 = 176;
     pub const SET_MESSAGE_INTERVAL: u16 = 511;
+    /// MAV_CMD_PREFLIGHT_CALIBRATION (241): sensor calibration triggers
+    /// (accel/gyro/mag/level-horizon/airspeed), param-matrix semantics.
+    pub const PREFLIGHT_CALIBRATION: u16 = 241;
+    /// MAV_CMD_PREFLIGHT_RESTART_SHUTDOWN (246): param1=1 restarts the
+    /// autopilot (airframe changes apply at next boot).
+    pub const PREFLIGHT_RESTART_SHUTDOWN: u16 = 246;
 }
 
 pub mod enums {
@@ -536,6 +547,10 @@ pub enum TelemetryEvent {
         param_id: String,
         value: f32,
         param_type: u8,
+        /// Total parameter count reported by the vehicle (download progress).
+        param_count: u16,
+        /// This parameter's index in the vehicle's parameter table.
+        param_index: u16,
     },
     Heartbeat {
         sysid: u8,
@@ -623,6 +638,8 @@ pub fn decode_event(frame: &crate::frame::Frame) -> Option<TelemetryEvent> {
                 param_id: m.param_id_string(),
                 value: m.param_value,
                 param_type: m.param_type,
+                param_count: m.param_count,
+                param_index: m.param_index,
             }
         }
         ids::ATTITUDE => {
@@ -744,11 +761,14 @@ impl ParamSet {
     }
 
     pub fn pack(&self) -> Vec<u8> {
+        // Wire order (PX4-generated header / pymavlink 2.4.49, golden-pinned):
+        // param_value(f32) @0, target_system @4, target_component @5,
+        // param_id[16] @6, param_type @22.
         let mut v = Vec::with_capacity(23);
+        v.extend_from_slice(&self.param_value.to_le_bytes());
         v.push(self.target_system);
         v.push(self.target_component);
         v.extend_from_slice(&self.param_id);
-        v.extend_from_slice(&self.param_value.to_le_bytes());
         v.push(self.param_type);
         v
     }
@@ -766,13 +786,19 @@ pub struct ParamValue {
 
 impl ParamValue {
     pub fn unpack(p: &[u8]) -> Option<Self> {
+        // Wire order (PX4-generated header / pymavlink 2.4.49, golden-pinned):
+        // param_value(f32) @0, param_count @4, param_index @6,
+        // param_id[16] @8, param_type @24. The original v0.1 decoder read the
+        // XML declaration order instead, so every live PARAM_VALUE echo
+        // decoded to a garbage id and param writes never confirmed — fixed
+        // with ADR-0016 and pinned by the PARAM_VALUE_echo golden vector.
         let p = padded(p, 25);
         Some(ParamValue {
-            param_id: p[0..16].try_into().ok()?,
-            param_value: f32::from_le_bytes(p[16..20].try_into().ok()?),
-            param_type: p[20],
-            param_count: u16::from_le_bytes(p[21..23].try_into().ok()?),
-            param_index: u16::from_le_bytes(p[23..25].try_into().ok()?),
+            param_value: f32::from_le_bytes(p[0..4].try_into().ok()?),
+            param_count: u16::from_le_bytes(p[4..6].try_into().ok()?),
+            param_index: u16::from_le_bytes(p[6..8].try_into().ok()?),
+            param_id: p[8..24].try_into().ok()?,
+            param_type: p[24],
         })
     }
 
@@ -786,6 +812,92 @@ impl ParamValue {
 pub fn param_id_to_string(id: &[u8; 16]) -> String {
     let end = id.iter().position(|&b| b == 0).unwrap_or(16);
     String::from_utf8_lossy(&id[..end]).into_owned()
+}
+
+/// PARAM_REQUEST_LIST (21): request the vehicle's full parameter dump. This
+/// is exactly the initial parameter download QGroundControl/Mission Planner
+/// perform on connect: the vehicle answers with a burst of PARAM_VALUE frames
+/// carrying `param_count`/`param_index` progress fields.
+///
+/// Wire order (generated header field order, largest-first): two u8 targets
+/// only — 2-byte payload.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParamRequestList {
+    pub target_system: u8,
+    pub target_component: u8,
+}
+
+impl ParamRequestList {
+    pub fn pack(&self) -> Vec<u8> {
+        vec![self.target_system, self.target_component]
+    }
+
+    pub fn unpack(p: &[u8]) -> Option<Self> {
+        if p.len() < 2 {
+            return None;
+        }
+        Some(ParamRequestList {
+            target_system: p[0],
+            target_component: p[1],
+        })
+    }
+}
+
+/// PARAM_REQUEST_READ (20): read a single parameter. `param_index = -1` plus
+/// a non-empty `param_id` requests by id; otherwise the index selects.
+///
+/// Wire order (PX4-generated header / pymavlink 2.4.49, golden-pinned):
+/// `param_index` (i16) @0, `target_system` @2, `target_component` @3,
+/// `param_id` char[16] @4 — 20-byte payload.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParamRequestRead {
+    pub param_id: [u8; 16],
+    pub param_index: i16,
+    pub target_system: u8,
+    pub target_component: u8,
+}
+
+impl ParamRequestRead {
+    /// Request by id (index = -1).
+    pub fn from_str(param_id: &str, target_system: u8, target_component: u8) -> Self {
+        let mut id = [0u8; 16];
+        for (i, b) in param_id.as_bytes().iter().take(15).enumerate() {
+            id[i] = *b;
+        }
+        ParamRequestRead {
+            param_id: id,
+            param_index: -1,
+            target_system,
+            target_component,
+        }
+    }
+
+    pub fn pack(&self) -> Vec<u8> {
+        // Wire order (PX4-generated header / pymavlink 2.4.49, golden-pinned):
+        // param_index(i16) @0, target_system @2, target_component @3,
+        // param_id[16] @4.
+        let mut v = Vec::with_capacity(20);
+        v.extend_from_slice(&self.param_index.to_le_bytes());
+        v.push(self.target_system);
+        v.push(self.target_component);
+        v.extend_from_slice(&self.param_id);
+        v
+    }
+
+    pub fn unpack(p: &[u8]) -> Option<Self> {
+        let p = padded(p, 20);
+        Some(ParamRequestRead {
+            param_index: i16::from_le_bytes(p[0..2].try_into().ok()?),
+            target_system: p[2],
+            target_component: p[3],
+            param_id: p[4..20].try_into().ok()?,
+        })
+    }
+
+    /// The id as a NUL-terminated string.
+    pub fn param_id_string(&self) -> String {
+        param_id_to_string(&self.param_id)
+    }
 }
 
 fn padded(p: &[u8], n: usize) -> Vec<u8> {
@@ -887,20 +999,27 @@ mod tests {
         let s = ParamSet::from_str("NAV_DLL_ACT", 0.0, 1, 1);
         let p = s.pack();
         assert_eq!(p.len(), 23);
-        assert_eq!(&p[2..13], b"NAV_DLL_ACT");
-        assert_eq!(&p[18..22], &0.0f32.to_le_bytes());
+        // value first, then targets, then id, then type
+        assert_eq!(&p[0..4], &0.0f32.to_le_bytes());
+        assert_eq!(p[4], 1);
+        assert_eq!(p[5], 1);
+        assert_eq!(&p[6..17], b"NAV_DLL_ACT");
         assert_eq!(p[22], 9);
-        // PARAM_VALUE echo with the same id
+        // PARAM_VALUE echo with the same id: value@0, count@4, index@6,
+        // id@8, type@24 — a mid-download-shaped echo (count 722, index 101)
+        // so offset errors cannot pass.
         let mut v = vec![0u8; 25];
-        v[0..11].copy_from_slice(b"NAV_DLL_ACT");
-        v[16..20].copy_from_slice(&0.0f32.to_le_bytes());
-        v[20] = 9;
-        v[21..23].copy_from_slice(&1u16.to_le_bytes());
+        v[0..4].copy_from_slice(&0.0f32.to_le_bytes());
+        v[4..6].copy_from_slice(&722u16.to_le_bytes());
+        v[6..8].copy_from_slice(&101u16.to_le_bytes());
+        v[8..19].copy_from_slice(b"NAV_DLL_ACT");
+        v[24] = 9;
         let pv = ParamValue::unpack(&v).unwrap();
         assert_eq!(pv.param_id_string(), "NAV_DLL_ACT");
         assert_eq!(pv.param_value, 0.0);
         assert_eq!(pv.param_type, 9);
-        assert_eq!(pv.param_count, 1);
+        assert_eq!(pv.param_count, 722);
+        assert_eq!(pv.param_index, 101);
     }
 
     #[test]
@@ -911,5 +1030,41 @@ mod tests {
         assert_eq!(a.result, 0);
         assert_eq!(a.progress, 255); // unknown
         assert_eq!(a.target_system, 0);
+    }
+
+    /// PARAM_REQUEST_LIST payload is exactly the two target bytes (wire
+    /// order from the generated header: target_system, target_component).
+    #[test]
+    fn param_request_list_pack_order() {
+        let p = ParamRequestList {
+            target_system: 1,
+            target_component: 1,
+        }
+        .pack();
+        assert_eq!(p, vec![1u8, 1u8]);
+        assert_eq!(p.len(), 2);
+    }
+
+    /// PARAM_REQUEST_READ wire order: i16 index first, then targets, then
+    /// char[16] id (PX4 generated header + pymavlink 2.4.49, golden-pinned).
+    #[test]
+    fn param_request_read_pack_order() {
+        let r = ParamRequestRead::from_str("BAT_N_CELLS", 1, 1);
+        let p = r.pack();
+        assert_eq!(p.len(), 20);
+        assert_eq!(p[0..2], (-1i16).to_le_bytes());
+        assert_eq!(p[2], 1);
+        assert_eq!(p[3], 1);
+        assert_eq!(&p[4..15], b"BAT_N_CELLS");
+    }
+
+    /// param_id truncation is at 15 bytes (16th byte stays NUL so the
+    /// receiver's C-string decode terminates).
+    #[test]
+    fn param_request_read_id_truncates_at_15() {
+        let long_id = "A".repeat(20);
+        let r = ParamRequestRead::from_str(&long_id, 1, 1);
+        assert_eq!(r.param_id[15], 0);
+        assert!(r.param_id.iter().take(15).all(|&b| b == b'A'));
     }
 }

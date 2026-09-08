@@ -262,8 +262,15 @@ One axum server on 127.0.0.1:8400 (configurable). Envelope identical to rustsits
 | /api/fleet | PUT | Load and start a fleet scenario (body: scenario TOML as JSON) |
 | /api/fleet/estop | POST | E-stop: every vehicle LAND immediately, scenario marked ABORTED |
 | /api/vehicles/{i} | GET | Full vehicle detail incl. telemetry snapshot age, link counters |
-| /api/vehicles/{i}/mode | POST | Request mode change (supervisor policy still applies) |
+| /api/vehicles/{i}/mode | POST | Request mode change (implemented by ADR-0016: DO_SET_MODE + ACK) |
 | /api/vehicles/{i}/faults | POST | Inject a rustsitsim fault on vehicle i (proxied to its 8200+i plane) |
+| /api/airframes | GET | ROMFS-derived airframe catalog, QGC-browser grouped (ADR-0016) |
+| /api/modes | GET | Switchable flight-mode set with mode words (ADR-0016) |
+| /api/vehicles/{i}/setup | GET | QGC setup Summary: airframe, calibration, power, safety, download state (ADR-0016) |
+| /api/vehicles/{i}/params | GET / POST | Param cache + progress; typed param write (PARAM_SET + echo, ADR-0016) |
+| /api/vehicles/{i}/params/refresh | POST | (Re)start the full parameter download (PARAM_REQUEST_LIST, ADR-0016) |
+| /api/vehicles/{i}/airframe | POST | Apply airframe: SYS_AUTOSTART write + controlled pair restart (ADR-0016) |
+| /api/vehicles/{i}/calibrate | POST | Sensor calibration trigger (MAV_CMD 241, commander's param matrix, ADR-0016) |
 | /api/tasks | GET / POST | Inspect task set; append tasks at runtime (triggers reallocation) |
 | /api/events | GET | Event log tail (supervisor decisions, fault injections, state changes) |
 | /ws/fleet | WS | 5 Hz fleet state frames + event push |

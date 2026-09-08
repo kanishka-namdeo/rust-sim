@@ -164,6 +164,96 @@ export interface FleetSnapshot {
 }
 
 // ---------------------------------------------------------------------------
+// Vehicle Setup (mavfleet ADR-0016 — the QGC/Mission-Planner workflow)
+// ---------------------------------------------------------------------------
+
+/** One PX4 airframe from the ROMFS-derived catalog (GET /api/airframes). */
+export interface Airframe {
+  /** SYS_AUTOSTART value that selects this airframe at boot. */
+  id: number
+  name: string
+  frame_type: string
+  /** SITL model tag (posix airframes), null for real-vehicle frames. */
+  sim_model: string | null
+}
+
+/** Airframe catalog group (QGC browser order). */
+export interface AirframeGroup {
+  category: string // 'Multirotor (UAV)' | 'Boat (USV)' | ...
+  airframes: Airframe[]
+}
+
+/** One switchable flight mode (GET /api/modes). */
+export interface ModeEntry {
+  name: string
+  mode_word: number
+}
+
+/** Param-download state (fleet-mavlink ParamDownloadState). */
+export type ParamDownloadState = 'Idle' | 'Downloading' | 'Complete' | 'Stalled' | 'NoLink' | (string & {})
+
+/** One parameter row in the live cache (GET /api/vehicles/{i}/params). */
+export interface ParamEntry {
+  id: string
+  value: number
+  type: number
+  index: number
+}
+
+/** The parameter store snapshot with download progress. */
+export interface ParamStoreView {
+  total: number
+  received: number
+  state: ParamDownloadState
+  requested_ms: number | null
+  last_value_ms: number | null
+  params: ParamEntry[]
+}
+
+/** Airframe as resolved against the live SYS_AUTOSTART (setup summary). */
+export interface AirframeResolved {
+  sys_autostart: number | null
+  name: string
+  frame_type: string
+  category: string
+  /** True when this stack's quad-rotor HIL dynamics can fly it. */
+  dynamics_compatible: boolean
+}
+
+/** Sensor calibration flags (CAL_*_ID nonzero = calibrated, QGC's rule). */
+export interface CalibrationView {
+  accel: boolean | null
+  gyro: boolean | null
+  mag0: boolean | null
+  mag1: boolean | null
+  mag2: boolean | null
+  level_horizon: boolean | null
+}
+
+/** GET /api/vehicles/{i}/setup — the QGC setup Summary. */
+export interface VehicleSetupSummary {
+  index: number
+  sysid: number
+  compid: number
+  fsm: string
+  mode: string
+  mode_word: number
+  armed: boolean
+  battery_pct: number
+  voltage_v: number | null
+  restart_pending: boolean
+  autopilot: { type: string; version: string }
+  airframe: AirframeResolved
+  params: { total: number; received: number; state: ParamDownloadState } | null
+  calibration: CalibrationView | null
+  power: Record<string, number | null> | null
+  safety: Record<string, number | null> | null
+}
+
+/** Sensor ids the calibrate endpoint accepts (MAV_CMD 241 matrix). */
+export type CalSensor = 'gyro' | 'accel' | 'accel_quick' | 'mag' | 'level' | 'baro' | 'airspeed'
+
+// ---------------------------------------------------------------------------
 // Fault injection catalog (rustsitsim SPEC §7.1)
 // ---------------------------------------------------------------------------
 

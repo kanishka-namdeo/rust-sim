@@ -73,6 +73,10 @@ pub struct LinkStats {
     pub heartbeats_sent: u64,
     /// SET_MESSAGE_INTERVAL subscription requests sent (V-10 evidence).
     pub subscribe_requests_sent: u64,
+    /// PARAM_REQUEST_LIST full downloads requested (setup workflow).
+    pub param_list_requests_sent: u64,
+    /// Total PARAM_VALUE frames ingested into the param store.
+    pub param_values_recv: u64,
     /// Message ids observed **before** the subscription requests went out
     /// (the rcS default stream set — V-10's empirical answer).
     pub pre_request_msg_ids: std::collections::BTreeMap<u32, u64>,
@@ -134,7 +138,16 @@ pub enum LinkCommand {
     SetParam {
         param_id: String,
         value: f32,
-        reply: oneshot::Sender<Option<f32>>,
+        /// Wire param_type for the PARAM_SET (typed protocol, ADR-0016);
+        /// 6 = INT32 (value = bit pattern), 9 = REAL32.
+        param_type: u8,
+        reply: oneshot::Sender<Option<ParamVal>>,
+    },
+    /// PARAM_REQUEST_LIST: the QGC-style full parameter download. Every
+    /// PARAM_VALUE frame (solicited or not) lands in the link's param store;
+    /// the caller tracks progress by polling the store snapshot.
+    RequestParamList {
+        ack: oneshot::Sender<bool>,
     },
 }
 
@@ -166,9 +179,202 @@ struct Queued {
 struct PendingParam {
     param_id: [u8; 16],
     value: f32,
-    reply: oneshot::Sender<Option<f32>>,
+    /// Wire param_type carried by the PARAM_SET (typed protocol, ADR-0016).
+    param_type: u8,
+    reply: oneshot::Sender<Option<ParamVal>>,
     attempts: u32,
     deadline: Instant,
+}
+
+/// One parameter as last seen on the wire.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParamEntry {
+    /// Raw wire value — MAVLink carries int params as their **bit pattern**
+    /// in the f32 field (mavlink_parameters.cpp memcpy's the int onto the
+    /// float), so `value` for an INT32 param is meaningless until decoded
+    /// through `typed_value`.
+    pub value: f32,
+    /// MAVLink param type — PX4 v2 dialect sends the *wire type* constants:
+    /// 6 = INT32, 9 = REAL32 (the v2 MAV_PARAM_TYPE_REAL32; **not** the
+    /// v1 enum's 7). INT32 bit-casts are the rule (PX4's own code sets
+    /// `param_type = MAVLINK_TYPE_INT32_T / MAVLINK_TYPE_FLOAT`).
+    pub param_type: u8,
+    /// The vehicle's own index for this parameter (download ordering).
+    pub param_index: u16,
+    /// Wall-clock ms (link start) when this entry was last refreshed.
+    pub last_seen_ms: u64,
+}
+
+/// A parameter's value in its own type — the typed view the setup plane
+/// serves (QGC's parameter editor does exactly this bit-cast).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ParamVal {
+    Real32(f32),
+    Int32(i32),
+    /// Unknown/superset types we still cache raw.
+    Other(f32),
+}
+
+impl ParamVal {
+    /// The wire f32 for a PARAM_SET of this value: int params travel as
+    /// their bit pattern, floats as themselves.
+    pub fn to_wire(self) -> f32 {
+        match self {
+            ParamVal::Real32(v) | ParamVal::Other(v) => v,
+            ParamVal::Int32(v) => f32::from_bits(v as u32),
+        }
+    }
+    /// The MAVLink param_type byte a PARAM_SET of this value must carry
+    /// (PX4's receiver rejects mismatches — mavlink_parameters.cpp:129).
+    pub fn wire_type(self) -> u8 {
+        match self {
+            ParamVal::Int32(_) => 6, // MAVLINK_TYPE_INT32_T / MAV_PARAM_TYPE_INT32
+            _ => 9,                  // MAVLINK_TYPE_FLOAT / v2 MAV_PARAM_TYPE_REAL32
+        }
+    }
+
+    pub fn as_f32(self) -> f32 {
+        match self {
+            ParamVal::Real32(v) | ParamVal::Other(v) => v,
+            ParamVal::Int32(v) => v as f32,
+        }
+    }
+}
+
+impl std::fmt::Display for ParamVal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ParamVal::Int32(v) => write!(f, "{v}"),
+            ParamVal::Real32(v) | ParamVal::Other(v) => write!(f, "{v}"),
+        }
+    }
+}
+
+impl ParamEntry {
+    /// Decode the wire value into the param's own type: INT32 params are
+    /// bit-cast out of the f32 field (the inverse of PX4's memcpy).
+    pub fn typed_value(&self) -> ParamVal {
+        match self.param_type {
+            6 => ParamVal::Int32(self.value.to_bits() as i32),
+            9 => ParamVal::Real32(self.value),
+            other => ParamVal::Other(self.value), // incl. 0 = unset
+        }
+    }
+}
+
+/// Download progress of the last PARAM_REQUEST_LIST.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ParamDownloadState {
+    /// No request issued yet (the store may still hold unsolicited values).
+    #[default]
+    Idle,
+    /// Request sent; PARAM_VALUE stream in flight.
+    Downloading,
+    /// `received_unique >= total` (both from PARAM_VALUE frames).
+    Complete,
+    /// A download was started but no PARAM_VALUE arrived for >3 s while
+    /// incomplete; re-request heals it (the protocol's own remedy).
+    Stalled,
+}
+
+/// The per-vehicle parameter store: every decoded PARAM_VALUE lands here
+/// (unsolicited echoes included — those are how PARAM_SET writes confirm),
+/// keyed by param id, with the last download's progress bookkeeping.
+/// This is the SITL/QGC-compatible parameter cache the setup control plane
+/// serves from.
+#[derive(Debug, Clone, Default)]
+pub struct ParamStore {
+    pub params: std::collections::BTreeMap<String, ParamEntry>,
+    /// Total parameter count as reported by PARAM_VALUE.param_count.
+    pub total: u16,
+    /// Unique ids received since the last request (<= total when sane).
+    pub received_unique: u16,
+    pub state: ParamDownloadState,
+    /// Link-elapsed ms when PARAM_REQUEST_LIST was last sent.
+    pub requested_ms: Option<u64>,
+    /// Link-elapsed ms of the last PARAM_VALUE frame.
+    pub last_value_ms: Option<u64>,
+}
+
+impl ParamStore {
+    /// Ingest one decoded PARAM_VALUE into the store.
+    pub fn ingest(&mut self, param_id: &str, value: f32, param_type: u8, param_count: u16, param_index: u16, now_ms: u64) {
+        if !param_id.is_empty() {
+            let n = self.params.len() as u16;
+            self.params.entry(param_id.to_string())
+                .and_modify(|e| {
+                    e.value = value;
+                    e.param_type = param_type;
+                    e.param_index = param_index;
+                    e.last_seen_ms = now_ms;
+                })
+                .or_insert_with(|| ParamEntry {
+                    value,
+                    param_type,
+                    param_index,
+                    last_seen_ms: now_ms,
+                });
+            if self.params.len() as u16 > n {
+                self.received_unique = self.received_unique.saturating_add(1);
+            }
+        }
+        if param_count > 0 {
+            self.total = param_count;
+        }
+        self.last_value_ms = Some(now_ms);
+        if self.state == ParamDownloadState::Downloading
+            || self.state == ParamDownloadState::Stalled
+        {
+            // completion: unique ids cover the reported total.
+            if self.total > 0 && self.params.len() >= self.total as usize {
+                self.state = ParamDownloadState::Complete;
+            }
+        }
+    }
+
+    /// Mark a fresh PARAM_REQUEST_LIST issued at `now_ms`.
+    pub fn mark_requested(&mut self, now_ms: u64) {
+        self.requested_ms = Some(now_ms);
+        self.state = ParamDownloadState::Downloading;
+    }
+
+    /// Stalled = downloading + no value for 3 s + incomplete.
+    pub fn refresh_staleness(&mut self, now_ms: u64) {
+        if self.state == ParamDownloadState::Downloading {
+            let stale = self
+                .last_value_ms
+                .map_or(true, |t| now_ms.saturating_sub(t) > 3_000);
+            if stale {
+                self.state = ParamDownloadState::Stalled;
+            }
+        }
+    }
+
+    /// A named parameter's current value, if the store has it (raw f32 —
+    /// for INT32 params prefer `typed`/`typed_f32`).
+    pub fn get(&self, id: &str) -> Option<f32> {
+        self.params.get(id).map(|e| e.value)
+    }
+
+    /// A named parameter's value decoded through its own type.
+    pub fn typed(&self, id: &str) -> Option<ParamVal> {
+        self.params.get(id).map(|e| e.typed_value())
+    }
+
+    /// A named INT32-typed parameter's integer value (0 when the id is
+    /// absent — QGC's CAL-check treats "absent" and "not calibrated"
+    /// alike, but `None` vs 0 matters to callers, so they choose).
+    pub fn get_i32(&self, id: &str) -> Option<i32> {
+        self.params.get(id).and_then(|e| match e.typed_value() {
+            ParamVal::Int32(v) => Some(v),
+            ParamVal::Real32(v) | ParamVal::Other(v) => Some(v as i32),
+        })
+    }
+
+    /// The param_type byte the store last saw for this id (write typing).
+    pub fn type_of(&self, id: &str) -> Option<u8> {
+        self.params.get(id).map(|e| e.param_type)
+    }
 }
 
 /// Shared state between the link task and the rest of the manager.
@@ -182,6 +388,8 @@ pub struct LinkShared {
     /// supervisor does not need to watch the event channel).
     pub last_recv: Mutex<Option<Instant>>,
     pub last_heartbeat_in: Mutex<Option<Instant>>,
+    /// The QGC-style parameter cache (ADR-0016).
+    pub params: Mutex<ParamStore>,
 }
 
 impl LinkShared {
@@ -192,6 +400,7 @@ impl LinkShared {
             link_loss_until: Mutex::new(None),
             last_recv: Mutex::new(None),
             last_heartbeat_in: Mutex::new(None),
+            params: Mutex::new(ParamStore::default()),
         })
     }
 
@@ -261,15 +470,20 @@ impl LinkHandle {
         }
     }
 
-    /// Write a parameter (PARAM_SET, REAL32); returns the PARAM_VALUE echo
-    /// on confirmation, None after three unconfirmed attempts (600 ms apart).
-    pub async fn set_param(&self, param_id: &str, value: f32) -> Option<f32> {
+    /// Write one parameter, typed: the PARAM_SET carries the param's own
+    /// wire type and (for INT32) the value as its bit pattern — exactly
+    /// what PX4's receiver requires (mavlink_parameters.cpp:129 rejects
+    /// type mismatches) and what QGC sends. The returned value is the
+    /// PARAM_VALUE echo decoded through the same typing; None = no echo
+    /// (rejected or lost).
+    pub async fn set_param_typed(&self, param_id: &str, val: ParamVal) -> Option<ParamVal> {
         let (tx, rx) = oneshot::channel();
         if self
             .cmd_tx
             .send(LinkCommand::SetParam {
                 param_id: param_id.to_string(),
-                value,
+                value: val.to_wire(),
+                param_type: val.wire_type(),
                 reply: tx,
             })
             .await
@@ -281,6 +495,43 @@ impl LinkHandle {
             Ok(Ok(v)) => v,
             _ => None,
         }
+    }
+
+    /// Legacy float write with store-inferred typing: if the param cache
+    /// knows the id's type, the write is typed accordingly (INT32 params
+    /// get the value bit-cast); unknown ids go out as REAL32. This keeps
+    /// the supervisor's plain-float calls (e.g. NAV_DLL_ACT) PX4-correct.
+    pub async fn set_param(&self, param_id: &str, value: f32) -> Option<ParamVal> {
+        let val = match self.param_store().type_of(param_id) {
+            Some(6) => ParamVal::Int32(value as i32),
+            _ => ParamVal::Real32(value),
+        };
+        self.set_param_typed(param_id, val).await
+    }
+
+    /// Request the full parameter dump (PARAM_REQUEST_LIST — the QGC-style
+    /// initial download, ADR-0016). The PARAM_VALUE stream lands in the
+    /// link's param store; poll `param_store()` for progress. Returns true
+    /// when the request was queued and sent.
+    pub async fn request_param_list(&self) -> bool {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .cmd_tx
+            .send(LinkCommand::RequestParamList { ack: tx })
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        matches!(
+            tokio::time::timeout(Duration::from_millis(1500), rx).await,
+            Ok(Ok(true)),
+        )
+    }
+
+    /// Snapshot of the per-vehicle parameter store (QGC-style cache).
+    pub fn param_store(&self) -> ParamStore {
+        self.shared.params.lock().unwrap().clone()
     }
 
     /// Convenience wrapper for DO_SET_MODE (spec §3.2).
@@ -396,7 +647,7 @@ pub async fn run(
                 if pp.attempts < cfg.cmd_attempts {
                     pp.attempts += 1;
                     pp.deadline = Instant::now() + Duration::from_millis(600);
-                    let frame = param_set_frame(&cfg, &pp.param_id, pp.value);
+                    let frame = param_set_frame(&cfg, &pp.param_id, pp.value, pp.param_type);
                     send_frame(&sock, &frame, seq)?;
                     seq = seq.wrapping_add(1);
                     shared.stats.lock().unwrap().sent += 1;
@@ -515,16 +766,35 @@ pub async fn run(
                     }
                     // Param write confirmation: resolve the pending write
                     // when the echo's id matches (unsolicited echoes restore).
+                    // Every PARAM_VALUE (solicited download frame or write
+                    // echo) also lands in the link's param store — the
+                    // QGC-style cache behind the setup control plane
+                    // (ADR-0016).
                     if frame.msgid == ids::PARAM_VALUE {
-                        if let TelemetryEvent::ParamValue { param_id, value, .. } =
+                        if let TelemetryEvent::ParamValue { param_id, value, param_type, param_count, param_index } =
                             crate::messages::decode_event(&frame).unwrap()
                         {
+                            {
+                                let now_ms = started.elapsed().as_millis() as u64;
+                                let mut store = shared.params.lock().unwrap();
+                                store.ingest(&param_id, value, param_type, param_count, param_index, now_ms);
+                            }
+                            shared.stats.lock().unwrap().param_values_recv += 1;
                             let ours = pending_param.as_ref().map_or(false, |pp| {
                                 crate::messages::param_id_to_string(&pp.param_id) == param_id
                             });
                             if ours {
                                 let pp = pending_param.take().unwrap();
-                                let _ = pp.reply.send(Some(value));
+                                // decode the echo through ITS type (the
+                                // store ingest above already updated it)
+                                let typed = ParamEntry {
+                                    value,
+                                    param_type,
+                                    param_index,
+                                    last_seen_ms: 0,
+                                }
+                                .typed_value();
+                                let _ = pp.reply.send(Some(typed));
                             }
                         }
                     }
@@ -563,22 +833,53 @@ pub async fn run(
                     Some(LinkCommand::SendCommand { command, params, ack }) => {
                         queue.push_back(Queued { command, params, ack });
                     }
-                    Some(LinkCommand::SetParam { param_id, value, reply }) => {
+                    Some(LinkCommand::SetParam { param_id, value, param_type, reply }) => {
                         let mut id = [0u8; 16];
                         for (i, b) in param_id.as_bytes().iter().take(15).enumerate() {
                             id[i] = *b;
                         }
-                        let frame = param_set_frame(&cfg, &id, value);
+                        let frame = param_set_frame(&cfg, &id, value, param_type);
                         send_frame(&sock, &frame, seq)?;
                         seq = seq.wrapping_add(1);
                         shared.stats.lock().unwrap().sent += 1;
                         pending_param = Some(PendingParam {
                             param_id: id,
                             value,
+                            param_type,
                             reply,
                             attempts: 1,
                             deadline: Instant::now() + Duration::from_millis(600),
                         });
+                    }
+                    Some(LinkCommand::RequestParamList { ack }) => {
+                        // QGC-style full parameter download (ADR-0016):
+                        // fire-and-track — progress lands in the param store
+                        // as PARAM_VALUE frames arrive.
+                        let frame = Frame {
+                            seq: 0,
+                            sysid: cfg.manager_sysid,
+                            compid: cfg.manager_compid,
+                            msgid: ids::PARAM_REQUEST_LIST,
+                            payload: crate::messages::ParamRequestList {
+                                target_system: cfg.instance + 1,
+                                target_component: 1,
+                            }
+                            .pack(),
+                            crc_ok: true,
+                        };
+                        send_frame(&sock, &frame, seq)?;
+                        seq = seq.wrapping_add(1);
+                        {
+                            let mut st = shared.stats.lock().unwrap();
+                            st.sent += 1;
+                            st.param_list_requests_sent += 1;
+                        }
+                        shared
+                            .params
+                            .lock()
+                            .unwrap()
+                            .mark_requested(started.elapsed().as_millis() as u64);
+                        let _ = ack.send(true);
                     }
                 }
             }
@@ -674,6 +975,15 @@ pub async fn run(
                 let mut st = shared.stats.lock().unwrap();
                 let el = started.elapsed().as_secs_f32().max(0.001);
                 st.recv_rate_hz = st.recv as f32 / el;
+                drop(st);
+                // param download staleness (3 s without a value while
+                // incomplete -> Stalled; the API reports it and a
+                // re-request heals it, the protocol's own remedy)
+                shared
+                    .params
+                    .lock()
+                    .unwrap()
+                    .refresh_staleness(started.elapsed().as_millis() as u64);
             }
         }
     }
@@ -697,9 +1007,10 @@ fn command_frame(cfg: &LinkConfig, command: u16, params: &[f32; 7]) -> Frame {
     }
 }
 
-fn param_set_frame(cfg: &LinkConfig, param_id: &[u8; 16], value: f32) -> Frame {
+fn param_set_frame(cfg: &LinkConfig, param_id: &[u8; 16], value: f32, param_type: u8) -> Frame {
     let mut ps = crate::messages::ParamSet::from_str("", value, cfg.instance + 1, 1);
     ps.param_id = *param_id;
+    ps.param_type = param_type;
     Frame {
         seq: 0,
         sysid: cfg.manager_sysid,
@@ -767,5 +1078,59 @@ mod tests {
         assert_eq!(s.goal.unwrap().position, [1.0, 2.0, -3.0]);
         shared.stop_stream();
         assert!(!shared.slot_snapshot().active);
+    }
+
+    /// Param store ingest: unique ids advance received_unique, re-values
+    /// do not, total tracks param_count, completion flips at coverage.
+    #[test]
+    fn param_store_ingest_tracks_download() {
+        let mut s = ParamStore::default();
+        assert_eq!(s.state, ParamDownloadState::Idle);
+        s.mark_requested(10);
+        assert_eq!(s.state, ParamDownloadState::Downloading);
+        s.ingest("SYS_AUTOSTART", 4001.0, 9, 3, 0, 12);
+        s.ingest("BAT_N_CELLS", 4.0, 9, 3, 1, 13);
+        assert_eq!(s.total, 3);
+        assert_eq!(s.received_unique, 2);
+        assert_eq!(s.state, ParamDownloadState::Downloading);
+        // a write echo re-delivers an existing id: no double count
+        s.ingest("BAT_N_CELLS", 4.0, 9, 3, 1, 20);
+        assert_eq!(s.received_unique, 2);
+        assert_eq!(s.params.len(), 2);
+        s.ingest("NAV_DLL_ACT", 0.0, 9, 3, 2, 21);
+        assert_eq!(s.state, ParamDownloadState::Complete);
+        assert_eq!(s.get("BAT_N_CELLS"), Some(4.0));
+        assert_eq!(s.get("NOPE"), None);
+    }
+
+    /// Stalled: downloading with no PARAM_VALUE for >3 s and incomplete.
+    #[test]
+    fn param_store_staleness_flips_to_stalled() {
+        let mut s = ParamStore::default();
+        s.mark_requested(0);
+        s.ingest("A", 1.0, 9, 100, 0, 100);
+        s.refresh_staleness(1_000); // 900 ms since last value: still fine
+        assert_eq!(s.state, ParamDownloadState::Downloading);
+        s.refresh_staleness(4_500); // 4.4 s since last value: stalled
+        assert_eq!(s.state, ParamDownloadState::Stalled);
+        // a late value un-stalls (ingest accepts Stalled state too)
+        s.ingest("B", 2.0, 9, 100, 1, 4_600);
+        assert_eq!(s.state, ParamDownloadState::Stalled);
+        // and a re-request resets to Downloading
+        s.mark_requested(4_700);
+        assert_eq!(s.state, ParamDownloadState::Downloading);
+    }
+
+    /// Empty param ids (PX4's unknown-param reply shape) must not create
+    /// entries; their count/index bookkeeping still lands.
+    #[test]
+    fn param_store_ignores_empty_ids() {
+        let mut s = ParamStore::default();
+        s.mark_requested(0);
+        s.ingest("", 0.0, 9, 5, 0, 10);
+        assert_eq!(s.params.len(), 0);
+        assert_eq!(s.received_unique, 0);
+        assert_eq!(s.total, 5);
+        assert_eq!(s.last_value_ms, Some(10));
     }
 }

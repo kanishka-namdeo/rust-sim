@@ -21,3 +21,8 @@ scratch/
 # demo live-run evidence: commit the logs/report/snapshots, not the per-vehicle
 # PX4 run roots or ULogs (reproducible via scripts/browser_live_test.sh)
 fleet/tests/demo_artifacts/run/vehicle_*/
+
+# setup live-test artifacts (regenerated per run; screenshots are committed)
+fleet/fleet-runs/
+fleet/tests/setup_browser_artifacts/
+console/tsconfig.tsbuildinfo

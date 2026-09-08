@@ -64,13 +64,17 @@ sim/     rustsitsim workspace — 8 crates
 
 fleet/   mavfleet workspace — 8 crates
          fleet-core       FSM, registry, health, events
-         fleet-mavlink    links, command/ack ladder, 20 Hz setpoint pump
+         fleet-mavlink    links, command/ack ladder, 20 Hz setpoint pump,
+                          typed param protocol + per-vehicle ParamStore
+                          (QGC-style cache, ADR-0016)
          fleet-mission    scenario DSL, compiler, mission runner, report
          fleet-alloc      auction allocator (+ Hungarian baseline)
          fleet-safety     geofence + 8-policy ladder
          fleet-modes      PX4 custom-mode words, type masks
-         fleet-simctl     per-vehicle process supervision, port probes
-         fleet-cli        the binary (manager, control plane)
+         fleet-simctl     per-vehicle process supervision, port probes,
+                          controlled pair restart (airframe apply)
+         fleet-cli        the binary (manager, control plane,
+                          vehicle-setup REST plane + ROMFS airframe catalog)
 
 console/ Next.js 16 operator console (see console/README.md)
 ```
@@ -90,6 +94,22 @@ console/ Next.js 16 operator console (see console/README.md)
    fleet frames + events; the console normalizes both tolerantly and renders
    strip charts/maps/tables; commands (fault inject, estop) go back over
    REST through the same routing.
+4. **Vehicle setup (ADR-0016)**: the QGroundControl/Mission-Planner-style
+   configuration workflow. On connect the manager (or the console's Download
+   button) sends PARAM_REQUEST_LIST; every PARAM_VALUE — download frames and
+   write echoes alike — lands in the link's typed ParamStore (INT32 params
+   bit-cast out of the wire f32). The setup REST plane (`/api/airframes`,
+   `/api/modes`, `/api/vehicles/{i}/setup|params|airframe|calibrate|mode`)
+   serves that live cache; writes are typed PARAM_SETs (echo-confirmed, PX4
+   autosaves) and calibration/mode changes are COMMAND_LONGs (241/176).
+   Airframe apply = write `SYS_AUTOSTART` + a controlled sim+px4 pair
+   restart into the same workdir — rcS imports the persisted param, detects
+   the change, and loads the new airframe (QGC's "Apply and Restart"). The
+   console's Vehicle Setup tab is a thin view over this plane; a
+   `hold_for_setup` scenario keeps the fleet disarmed for configuration
+   work. UAV / USV / UUV / VTOL / Rover frames are all selectable from the
+   ROMFS-derived catalog; only multirotor-class frames are
+   physics-compatible with the current quad HIL dynamics (flagged honestly).
 
 ## Why native HIL instead of Gazebo?
 

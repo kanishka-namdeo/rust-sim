@@ -130,5 +130,29 @@
   "sysid": 2,
   "compid": 1,
   "hex": "fd0a00000002014d0000b00000ff00000000ffbecff5"
+ },
+ {
+  "name": "PARAM_REQUEST_LIST",
+  "sysid": 255,
+  "compid": 190,
+  "hex": "fd02000000ffbe150000010188c0"
+ },
+ {
+  "name": "PARAM_REQUEST_READ",
+  "sysid": 255,
+  "compid": 190,
+  "hex": "fd0f000000ffbe140000ffff01014241545f4e5f43454c4c53e05b"
+ },
+ {
+  "name": "PARAM_VALUE_echo",
+  "sysid": 1,
+  "compid": 1,
+  "hex": "fd19000000010116000000000000d20265004e41565f444c4c5f414354000000000009aa55"
+ },
+ {
+  "name": "PARAM_SET_nav_dll_act",
+  "sysid": 255,
+  "compid": 190,
+  "hex": "fd17000000ffbe1700000000000001014e41565f444c4c5f414354000000000009e0cc"
  }
 ]

@@ -169,6 +169,23 @@ sleep 3
     bash scripts/browser_live_test.sh)                   # "BROWSER LIVE TEST PASS"
 ```
 
+Vehicle-setup plane (ADR-0016 — the QGC/Mission-Planner-style
+configuration workflow, real PX4, single-invocation like everything else):
+
+```bash
+(cd fleet && bash scripts/live_test_setup.sh)
+# S-1: "LIVE SETUP TEST: 44 passed, 0 failed" — full param download, typed
+# writes, calibration, mode switch, airframe apply Iris->Boat->Iris with
+# controlled restarts, persistence, error gates, clean teardown.
+
+bash scripts/browser_setup_test.sh
+# S-2: "VEHICLE SETUP BROWSER LIVE TEST PASS (13 checks)" — the console's
+# Vehicle Setup tab driven end-to-end through the gateway (:81).
+# NOTE: caddy :81 must be answering 502 first; the script also kills any
+# leaked px4/sim pairs from earlier runs (they squat the per-instance
+# ports and abort the fresh fleet with process-death FAULT).
+```
+
 ## 9. Known flakiness and its fix (applied in-repo)
 
 **F-1 READY poll race.** On a fast machine both vehicles flip
@@ -191,6 +208,8 @@ pattern, apply the f2-style gate, do not widen time budgets.
 | F-1 bring-up + estop → ABORTED(2) + clean teardown | PASS |
 | F-2 two-vehicle auctioned mission, real dynamics, from replay truth | PASS |
 | Browser live test (gateway :81, both consoles LIVE, telemetry moving) | PASS |
+| S-1 vehicle-setup REST live test (param download, typed writes, calibration, modes, airframe apply + restart + persistence) | PASS (44/44) |
+| S-2 Vehicle Setup browser test (QGC-style tab end-to-end, Boat apply via dialog) | PASS (13/13) |
 | Console `npm run lint` + `npm run build` | clean |
 
 Artifacts from this run live under each harness's `tests/*_artifacts/`;

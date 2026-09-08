@@ -442,6 +442,8 @@ pub async fn run_scenario(args: RunArgs) -> i32 {
             Ok((handle, ev_rx)) => {
                 let slot = Arc::clone(&registry.entry(i).unwrap().state);
                 tokio::spawn(aggregate(ev_rx, slot, i));
+                // register for the setup control plane (ADR-0016)
+                api.set_link(i, handle.clone());
                 ctxs.push(VehCtx::new(i, handle));
             }
             Err(e) => {
@@ -573,6 +575,38 @@ impl Supervisor {
         loop {
             ticker.tick().await;
             let now = fleet_epoch_ms();
+
+            // Controlled vehicle restarts (ADR-0016 setup workflow): the
+            // airframe-apply endpoint writes SYS_AUTOSTART and queues a
+            // restart; respawn the sim+px4 pair here — before the sync
+            // tick, so the dead-pair window is never observed by the
+            // process-death supervision (restart ≠ process death).
+            for i in self.api.take_restart_requests() {
+                self.log.log(
+                    EventKind::SupervisorAction,
+                    Some(i),
+                    "vehicle restart: airframe change (SYS_AUTOSTART) — respawn pair",
+                );
+                match self.simctl.restart_vehicle(i, &self.run_dir).await {
+                    Ok(()) => {
+                        self.log.log(
+                            EventKind::SupervisorAction,
+                            Some(i),
+                            "vehicle restart: pair respawned — booting with persisted params",
+                        );
+                        println!("[fleet] vehicle {i}: restarted (airframe apply, ADR-0016)");
+                    }
+                    Err(e) => {
+                        self.log.log(
+                            EventKind::SupervisorAction,
+                            Some(i),
+                            format!("vehicle restart FAILED: {e}"),
+                        );
+                        eprintln!("[fleet] vehicle {i} restart FAILED: {e}");
+                    }
+                }
+            }
+
             if let Outcome::Stop = self.tick(now) {
                 break;
             }
@@ -1104,6 +1138,31 @@ impl Supervisor {
 
     fn mission_start_gate(&mut self, now: u64) {
         if self.mission_started {
+            return;
+        }
+        // Setup-bench mode (ADR-0016): hold pre-mission indefinitely —
+        // vehicles sit READY and disarmed for the configuration workflow;
+        // the run ends at max_time_s / SIGINT like any other run.
+        if self.scenario.fleet.hold_for_setup {
+            if self.api.phase() == "BRING_UP" {
+                let ready = self
+                    .ctxs
+                    .iter()
+                    .filter(|c| self.registry.fsm(c.index) == Some(FsmState::Ready))
+                    .count();
+                if ready > 0 {
+                    self.api.set_phase("SETUP_HOLD");
+                    self.log.log(
+                        EventKind::RunBoundary,
+                        None,
+                        format!(
+                            "setup bench: {}/{} vehicles READY and holding (hold_for_setup) — mission deferred, vehicles disarmed for configuration",
+                            ready,
+                            self.ctxs.len()
+                        ),
+                    );
+                }
+            }
             return;
         }
         let all_ready = self

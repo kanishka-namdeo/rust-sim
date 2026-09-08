@@ -12,6 +12,8 @@ shell call, with CI-classifiable exit codes.
 | **F-1** | `fleet/tests/run_f1.sh` | Fleet bring-up: 2 vehicles READY with live health (sysid, decoded modes, heartbeat ages, link counters), operator e-stop -> ABORTED(2), run report + event log written, teardown leaves all ports free | **PASS** |
 | **F-2** | `fleet/tests/run_f2.sh` | **Fleet flies with real dynamics**: 2 vehicles x full rustsitsim instances (direct HIL wire, no proxy), auction, offboard missions, hover observed at the waypoint, RTL, land, disarm — asserted from replay ground truth (z <= -2 m flight, final |z| < 0.5 m, all finite) | **PASS** (both vehicles flew + landed; run 92.9 s; manager exit 0) |
 | **Browser-live** | `scripts/browser_live_test.sh` | The operator console, end-to-end through the preview gateway: Sim Console LIVE (WS :8200, 10 Hz telemetry), telemetry demonstrably moving (two snapshots differ), Fleet C2 LIVE (vehicles in OFFBOARD mid-mission), screenshots captured | **PASS** |
+| **S-1** | `fleet/scripts/live_test_setup.sh` | The ADR-0016 vehicle-setup plane against real PX4, REST-level: full parameter download (887 params, PARAM_REQUEST_LIST), typed param write with echo confirm, gyro calibration (MAV_CMD 241 ACCEPTED), flight-mode switch (ALTCTL + heartbeat echo), airframe apply Iris -> Boat (USV 1070) -> Iris with controlled pair restarts, parameter persistence across both reboots, 422/404 error paths, graceful estop teardown with no leaked processes | **PASS** (44/44 checks) |
+| **S-2** | `scripts/browser_setup_test.sh` | The QGC-style Vehicle Setup tab driven end-to-end in a real browser through the gateway: tab LIVE + disarm badge, param download via the UI button, typed rows in the params table, airframe catalog (UAV/USV/UUV groups), calibration rows, mode switch via button, Boat apply via filter + confirm dialog, post-restart resolution to Boat, screenshots | **PASS** (13/13 checks) |
 
 ## Unit tests
 
@@ -20,10 +22,13 @@ shell call, with CI-classifiable exit codes.
   sizing), sensor models (latency FIFO, denial ramp, glitch), engine mapping
   regressions incl. the PX4 v1.16.2 actuator wire layout + armed-frame
   decode.
-- `fleet/`: 126+ tests — FSM transitions, policy ladder ordering property,
+- `fleet/`: 144 tests — FSM transitions, policy ladder ordering property,
   allocator optimality, runner profile math, router integration tests
   (incl. WS upgrades on the gateway's `/?XTransformPort=` shape), wire-goal
-  repro pinning NED setpoints on the wire.
+  repro pinning NED setpoints on the wire, the vehicle-setup plane (param
+  store ingest/staleness, typed INT32 bit-cast round-trips, airframe
+  resolution against the ROMFS catalog, setup-endpoint envelopes, error
+  gates) and the hold-for-setup scenario key.
 
 ## Hard-won protocol facts (all live-captured, all ADR'd)
 
@@ -41,5 +46,20 @@ shell call, with CI-classifiable exit codes.
 6. Co-located grounded spawns must not trigger the separation
    AltitudeDiverge override — grounded vehicles cannot comply, and the
    hijacked goal stream pins the fleet on the ground (`fleet/docs/adr/0011`).
+7. `PARAM_VALUE`/`PARAM_SET` wire order is generated-header order
+   (value f32 @0 ...), not XML declaration order — the v0.1 decoder read
+   XML order and every echo decoded to a garbage id (`fleet/docs/adr/0016`).
+8. PX4 v1.16's param protocol is **typed**: INT32 params travel as their
+   bit pattern inside the f32 field and `param_type` carries the v2
+   dialect's wire constants (REAL32 = **9**, INT32 = 6); the receiver
+   rejects type mismatches, so QGC-style writes must be typed
+   (`fleet/docs/adr/0016`).
+9. PX4's param autosave is deferred ~300 ms (`autosave.cpp`
+   ScheduleDelayed) — an immediate post-write reboot races the flash and
+   boots the old airframe; the apply-restart path waits it out
+   (`fleet/docs/adr/0016`).
+10. PX4 v1.16 battery params carry the `BAT1_` instance prefix
+    (`BAT1_N_CELLS`, `BAT1_V_EMPTY`, ...); the unprefixed `BAT_*` ids of
+    earlier versions do not exist.
 
 Re-run any of this yourself: see [OPERATIONS.md](OPERATIONS.md).

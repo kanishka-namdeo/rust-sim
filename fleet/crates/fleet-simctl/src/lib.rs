@@ -347,6 +347,33 @@ impl SimCtl {
         self.vehicles.retain(|v| v.instance != instance);
     }
 
+    /// Controlled vehicle restart for the vehicle-setup workflow
+    /// (ADR-0016: apply airframe = write `SYS_AUTOSTART` + restart the
+    /// sim+px4 pair, exactly QGroundControl's "apply and reboot" flow).
+    ///
+    /// The whole pair restarts (the interim sim accepts a single HIL TCP
+    /// connection — a respawned px4 cannot reuse it), but the **working
+    /// directory is preserved**, so the persisted `parameters.bson` keeps
+    /// the just-written `SYS_AUTOSTART` (PX4 autosaves param changes) and
+    /// rcS applies the new airframe on boot. Because the pair is dropped
+    /// from the tracked list *before* the kill, the process-death
+    /// supervision (§2.4) does not trip a FAULT — the restart is an
+    /// intentional operator action, logged by the caller.
+    ///
+    /// Returns the spawn error, if any (the old pair is already gone).
+    pub async fn restart_vehicle(&mut self, instance: u8, run_dir: &Path) -> Result<(), SpawnError> {
+        if let Some(mut v) = self.take_vehicle(instance) {
+            v.kill().await;
+        }
+        self.spawn_vehicle(instance, run_dir).await
+    }
+
+    /// Take (remove) one vehicle's process pair out of the tracked list.
+    fn take_vehicle(&mut self, instance: u8) -> Option<VehicleProcesses> {
+        let idx = self.vehicles.iter().position(|v| v.instance == instance)?;
+        Some(self.vehicles.remove(idx))
+    }
+
     /// Kill and reap everything (teardown, F-1's probe requirement).
     pub async fn kill_all(&mut self) {
         for v in &mut self.vehicles {

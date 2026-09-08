@@ -1,0 +1,26 @@
+# SETUP BENCH scenario (ADR-0016): hold_for_setup keeps the fleet at
+# READY and disarmed — the QGC/Mission-Planner-style configuration
+# workflow (parameter download, airframe apply + restart, sensor
+# calibration, power/safety params, flight-mode checks) has the stage
+# to itself. The run ends at max_time_s (or SIGINT).
+#
+# 1 vehicle is enough to drive the whole setup plane end-to-end; the
+# interim sim (fleet/scripts/sim_stream.py) provides the HIL stream.
+# battery_sim stays off so the bench cannot age the battery into a
+# low-battery abort while an operator works.
+
+[fleet]
+count = 1
+battery_sim = false
+hold_for_setup = true
+
+[env]
+geofence = { points_ned_m = [[-60, -60], [60, -60], [60, 60], [-60, 60]], ceiling_m = 50, floor_m = 0 }
+wind_steady_ms = [0.0, 0.0, 0.0]
+turbulence = "off"
+
+[sim]
+duration_s = 1200
+
+[success]
+max_time_s = 900

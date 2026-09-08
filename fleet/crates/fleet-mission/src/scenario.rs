@@ -30,11 +30,17 @@ pub struct FleetSection {
     /// Supervisor rate; reserved at 10 in v0.1 (spec §9.1).
     #[serde(default = "default_tick_hz")]
     pub tick_hz: u8,
+    /// Setup-bench mode (ADR-0016): the fleet boots to READY and holds —
+    /// the mission never starts, vehicles stay disarmed for the
+    /// QGC-style configuration workflow (airframe / calibration / params
+    /// all require disarm). The run ends at max_time_s (or SIGINT).
+    #[serde(default)]
+    pub hold_for_setup: bool,
 }
 
 impl Default for FleetSection {
     fn default() -> Self {
-        FleetSection { count: None, battery_sim: true, restart_on_fault: false, tick_hz: 10 }
+        FleetSection { count: None, battery_sim: true, restart_on_fault: false, tick_hz: 10, hold_for_setup: false }
     }
 }
 
@@ -415,11 +421,26 @@ mod tests {
     }
 
     #[test]
+    fn hold_for_setup_key_parses() {
+        let s = Scenario::parse_toml(
+            "[fleet]\ncount = 1\nbattery_sim = false\nhold_for_setup = true\n",
+        )
+        .unwrap();
+        assert!(s.fleet.hold_for_setup);
+        assert!(!s.fleet.battery_sim);
+        assert_eq!(s.count(), 1);
+        // unknown keys are still rejected (deny_unknown_fields)
+        let e = Scenario::parse_toml("[fleet]\ncount = 1\nhold_for_setups = true\n");
+        assert!(e.is_err(), "typo'd hold_for_setup must be rejected, not dropped");
+    }
+
+    #[test]
     fn defaults_match_spec_9_1() {
         let s = Scenario::parse_toml("[fleet]\ncount = 3\n").unwrap();
         assert_eq!(s.count(), 3);
         assert!(s.fleet.battery_sim);
         assert!(!s.fleet.restart_on_fault);
+        assert!(!s.fleet.hold_for_setup, "setup-bench is opt-in (ADR-0016)");
         assert_eq!(s.fleet.tick_hz, 10);
         assert!(s.tasks.is_empty());
         let fence = s.fence().unwrap();

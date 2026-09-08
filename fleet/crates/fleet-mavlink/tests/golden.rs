@@ -7,8 +7,8 @@
 use fleet_mavlink::frame::{crc_extra, Decoder, Frame};
 use fleet_mavlink::messages::{
     decode_event, Attitude, BatteryStatus, CommandAck, CommandLong, GlobalPositionInt, Heartbeat,
-    HomePosition, LocalPositionNed, Ping, SetPositionTargetLocalNed, StatusText, SysStatus,
-    TelemetryEvent,
+    HomePosition, LocalPositionNed, ParamRequestList, ParamRequestRead, ParamSet, ParamValue, Ping,
+    SetPositionTargetLocalNed, StatusText, SysStatus, TelemetryEvent,
 };
 use serde_json::Value;
 
@@ -99,6 +99,16 @@ fn golden_decoded_field_values() {
             ("PING", TelemetryEvent::Ping { time_usec, seq }) => {
                 assert_eq!((time_usec, seq), (1234567890, 0));
             }
+            ("PARAM_VALUE_echo", TelemetryEvent::ParamValue { param_id, value, param_type, param_count, param_index, .. }) => {
+                // golden-pinned wire order: value@0, count@4, index@6,
+                // id@8, type@24 (see ADR-0016; the v0.1 XML-order decoder
+                // could never confirm a write).
+                assert_eq!(param_id, "NAV_DLL_ACT");
+                assert_eq!(value, 0.0);
+                assert_eq!(param_type, 9);
+                assert_eq!(param_count, 722);
+                assert_eq!(param_index, 101);
+            }
             ("SET_POSITION_TARGET_LOCAL_NED_position", TelemetryEvent::Unknown { .. }) => {}
             ("SET_POSITION_TARGET_LOCAL_NED_velocity", TelemetryEvent::Unknown { .. }) => {}
             (_, TelemetryEvent::Unknown { .. }) => {}
@@ -108,12 +118,16 @@ fn golden_decoded_field_values() {
 }
 
 /// Typed verification for the outbound GCS messages that are not
-/// `TelemetryEvent` variants.
+/// `TelemetryEvent` variants: command/setpoint set plus the param
+/// protocol's request sides (request-list, request-read, param-set).
 #[test]
 fn golden_typed_outbound_messages() {
     for v in fixtures() {
         let name = v["name"].as_str().unwrap();
-        if !name.starts_with("COMMAND_LONG") && !name.starts_with("SET_POSITION_TARGET") {
+        if !name.starts_with("COMMAND_LONG")
+            && !name.starts_with("SET_POSITION_TARGET")
+            && !name.starts_with("PARAM_")
+        {
             continue;
         }
         let bytes = common::hex_decode(v["hex"].as_str().unwrap());
@@ -162,6 +176,22 @@ fn golden_typed_outbound_messages() {
                 assert_eq!(m.type_mask, 1479); // VELOCITY_YAWRATE
                 assert_eq!((m.vx, m.vy, m.vz), (1.0, 2.0, -0.5));
                 assert_eq!(m.yaw_rate, 0.25);
+            }
+            "PARAM_REQUEST_LIST" => {
+                let m = ParamRequestList::unpack(&frame.payload).unwrap();
+                assert_eq!((m.target_system, m.target_component), (1, 1));
+            }
+            "PARAM_REQUEST_READ" => {
+                let m = ParamRequestRead::unpack(&frame.payload).unwrap();
+                assert_eq!(m.param_index, -1);
+                assert_eq!((m.target_system, m.target_component), (1, 1));
+                assert_eq!(m.param_id_string(), "BAT_N_CELLS");
+            }
+            "PARAM_SET_nav_dll_act" => {
+                // re-pack our typed PARAM_SET and compare payload bytes
+                // to pymavlink's: byte-exact wire order proof.
+                let ours = ParamSet::from_str("NAV_DLL_ACT", 0.0, 1, 1);
+                assert_eq!(ours.pack(), frame.payload);
             }
             _ => {}
         }

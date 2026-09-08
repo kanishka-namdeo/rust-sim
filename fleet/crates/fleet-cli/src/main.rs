@@ -8,10 +8,12 @@
 
 #![forbid(unsafe_code)]
 
+mod airframes;
 mod api;
 mod manager;
 mod pump;
 mod report;
+mod setup;
 mod state;
 
 use std::path::{Path, PathBuf};
