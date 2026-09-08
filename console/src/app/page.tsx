@@ -1,27 +1,28 @@
 'use client'
 
 /**
- * Single-page operator console for rustsitsim (:8200) + mavfleet (:8400).
- * Mode switcher: Sim Console / Fleet C2 / Operator Map / Vehicle Setup. All
- * consoles stay mounted (hidden by CSS) so their telemetry engines keep
- * running across mode switches.
+ * Single-page operator console for rustsitsim (:8200) + mavfleet (:8400)
+ * + fleet-catalog (:8300). Mode switcher: Plan / Sim Console / Fleet C2 /
+ * Operator Map / Vehicle Setup. All consoles stay mounted (hidden by CSS)
+ * so their telemetry engines keep running across mode switches.
  */
 
 import { useState } from 'react'
-import { Drone, MapPin, Network, Wrench } from 'lucide-react'
+import { Drone, MapPin, Network, Route, Wrench } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { SimConsole } from '@/components/dashboard/SimConsole'
 import { FleetC2 } from '@/components/dashboard/FleetC2'
 import { OperatorMap } from '@/components/dashboard/OperatorMap'
 import { VehicleSetup } from '@/components/dashboard/VehicleSetup'
+import { PlanView } from '@/components/dashboard/PlanView'
 import { ThemeToggle } from '@/components/dashboard/ThemeToggle'
 import { useVehicleSetup } from '@/hooks/useVehicleSetup'
 import { useOperatorMap } from '@/hooks/useOperatorMap'
 
-type Mode = 'sim' | 'fleet' | 'map' | 'setup'
+type Mode = 'plan' | 'sim' | 'fleet' | 'map' | 'setup'
 
 export default function Home() {
-  const [mode, setMode] = useState<Mode>('sim')
+  const [mode, setMode] = useState<Mode>('plan')
   // the setup engine lives at page level so it survives tab switches
   // (vehicle count follows the fleet snapshot when live; 2 = the demo
   // scenario / mock fleet)
@@ -42,13 +43,18 @@ export default function Home() {
             </span>
             <div className="min-w-0">
               <h1 className="truncate text-sm font-semibold leading-tight">PX4 Operator Console</h1>
-              <p className="truncate text-[11px] text-muted-foreground">rustsitsim · mavfleet — sandbox gateway plane</p>
+              <p className="truncate text-[11px] text-muted-foreground">rustsitsim · mavfleet · fleet-catalog — sandbox gateway plane</p>
             </div>
           </div>
 
           <nav aria-label="Console mode" className="order-3 w-full sm:order-none sm:w-auto">
             <Tabs value={mode} onValueChange={(v) => setMode(v as Mode)}>
-              <TabsList className="grid h-10 w-full grid-cols-4 sm:w-auto">
+              <TabsList className="grid h-10 w-full grid-cols-5 sm:w-auto">
+                <TabsTrigger value="plan" className="gap-1.5 px-3">
+                  <Route className="size-3.5" aria-hidden="true" />
+                  Plan
+                  <span className="sr-only">mission editor with map, geofence drawing, validate, save, upload</span>
+                </TabsTrigger>
                 <TabsTrigger value="sim" className="gap-1.5 px-3">
                   <Drone className="size-3.5" aria-hidden="true" />
                   Sim Console
@@ -75,7 +81,7 @@ export default function Home() {
 
           <div className="ml-auto flex items-center gap-1.5">
             <span className="hidden font-mono text-[10px] text-muted-foreground md:inline" aria-hidden="true">
-              :8200 / :8400
+              :8200 / :8300 / :8400
             </span>
             <ThemeToggle />
           </div>
@@ -84,6 +90,9 @@ export default function Home() {
 
       <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-4">
         <Tabs value={mode} onValueChange={(v) => setMode(v as Mode)}>
+          <TabsContent value="plan" forceMount className="mt-0 data-[state=inactive]:hidden">
+            <PlanView />
+          </TabsContent>
           <TabsContent value="sim" forceMount className="mt-0 data-[state=inactive]:hidden">
             <SimConsole />
           </TabsContent>
@@ -102,9 +111,11 @@ export default function Home() {
       <footer className="mt-auto border-t border-border bg-background/60">
         <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center justify-between gap-x-4 gap-y-1 px-4 py-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))]">
           <p className="font-mono text-[10px] text-muted-foreground">
-            rustsitsim :8200 · mavfleet :8400 — relative-path fetch + <span className="font-semibold">XTransformPort</span> gateway routing
+            rustsitsim :8200 · catalog :8300 · mavfleet :8400 — relative-path fetch + <span className="font-semibold">XTransformPort</span> gateway routing
           </p>
-          <p className="font-mono text-[10px] text-muted-foreground">10 Hz sim frames · 10 Hz fleet frames · vehicle setup per ADR-0016 · operator map per ADR-0017</p>
+          <p className="font-mono text-[10px] text-muted-foreground">
+            Plan View (GCS_SPEC §5.1/§8.1) · 10 Hz sim/fleet · setup per ADR-0016 · op-map per ADR-0017 · catalog per ADR-0019/0020/0026
+          </p>
         </div>
       </footer>
     </div>

@@ -231,6 +231,31 @@
   opacity: 0.8;
 }
 
+/* Plan View fence vertex marker (small green numbered circle) */
+.rsim-fvert-icon {
+  background: transparent;
+  border: 0;
+}
+
+.rsim-fvert {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--vc, #10b981);
+  border-radius: 999px;
+  background: rgb(16 185 129 / 0.25);
+  color: var(--foreground);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+/* Plan View fence-drawing cursor (cell) */
+.rsim-fence-cursor {
+  cursor: cell !important;
+}
+
 .leaflet-popup-content {
   margin: 8px 10px;
   font-size: 11px;
