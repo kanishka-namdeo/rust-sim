@@ -2,24 +2,25 @@
 
 /**
  * Single-page operator console for rustsitsim (:8200) + mavfleet (:8400)
- * + fleet-catalog (:8300). Mode switcher: Plan / Sim Console / Fleet C2 /
- * Operator Map / Vehicle Setup. All consoles stay mounted (hidden by CSS)
- * so their telemetry engines keep running across mode switches.
+ * + fleet-catalog (:8300). Mode switcher: Plan / Fly / Sim Console / Fleet
+ * C2 / Operator Map / Vehicle Setup. All consoles stay mounted (hidden by
+ * CSS) so their telemetry engines keep running across mode switches.
  */
 
 import { useState } from 'react'
-import { Drone, MapPin, Network, Route, Wrench } from 'lucide-react'
+import { Drone, MapPin, Network, PlaneTakeoff, Route, Wrench } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { SimConsole } from '@/components/dashboard/SimConsole'
 import { FleetC2 } from '@/components/dashboard/FleetC2'
 import { OperatorMap } from '@/components/dashboard/OperatorMap'
 import { VehicleSetup } from '@/components/dashboard/VehicleSetup'
 import { PlanView } from '@/components/dashboard/PlanView'
+import { FlyView } from '@/components/dashboard/FlyView'
 import { ThemeToggle } from '@/components/dashboard/ThemeToggle'
 import { useVehicleSetup } from '@/hooks/useVehicleSetup'
 import { useOperatorMap } from '@/hooks/useOperatorMap'
 
-type Mode = 'plan' | 'sim' | 'fleet' | 'map' | 'setup'
+type Mode = 'plan' | 'fly' | 'sim' | 'fleet' | 'map' | 'setup'
 
 export default function Home() {
   const [mode, setMode] = useState<Mode>('plan')
@@ -49,11 +50,16 @@ export default function Home() {
 
           <nav aria-label="Console mode" className="order-3 w-full sm:order-none sm:w-auto">
             <Tabs value={mode} onValueChange={(v) => setMode(v as Mode)}>
-              <TabsList className="grid h-10 w-full grid-cols-5 sm:w-auto">
+              <TabsList className="grid h-10 w-full grid-cols-6 sm:w-auto">
                 <TabsTrigger value="plan" className="gap-1.5 px-3">
                   <Route className="size-3.5" aria-hidden="true" />
                   Plan
                   <span className="sr-only">mission editor with map, geofence drawing, validate, save, upload</span>
+                </TabsTrigger>
+                <TabsTrigger value="fly" className="gap-1.5 px-3">
+                  <PlaneTakeoff className="size-3.5" aria-hidden="true" />
+                  Fly
+                  <span className="sr-only">live map, attitude HUD, instruments, pre-arm checks, action bar</span>
                 </TabsTrigger>
                 <TabsTrigger value="sim" className="gap-1.5 px-3">
                   <Drone className="size-3.5" aria-hidden="true" />
@@ -93,6 +99,9 @@ export default function Home() {
           <TabsContent value="plan" forceMount className="mt-0 data-[state=inactive]:hidden">
             <PlanView />
           </TabsContent>
+          <TabsContent value="fly" forceMount className="mt-0 data-[state=inactive]:hidden">
+            <FlyView op={op} />
+          </TabsContent>
           <TabsContent value="sim" forceMount className="mt-0 data-[state=inactive]:hidden">
             <SimConsole />
           </TabsContent>
@@ -114,7 +123,7 @@ export default function Home() {
             rustsitsim :8200 · catalog :8300 · mavfleet :8400 — relative-path fetch + <span className="font-semibold">XTransformPort</span> gateway routing
           </p>
           <p className="font-mono text-[10px] text-muted-foreground">
-            Plan View (GCS_SPEC §5.1/§8.1) · 10 Hz sim/fleet · setup per ADR-0016 · op-map per ADR-0017 · catalog per ADR-0019/0020/0026
+            Plan View (GCS_SPEC §5.1/§8.1) · Fly View (GCS_SPEC §5.2/§8.2) · 10 Hz sim/fleet · setup per ADR-0016 · op-map per ADR-0017 · catalog per ADR-0019/0020/0026
           </p>
         </div>
       </footer>
