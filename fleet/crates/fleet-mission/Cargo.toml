@@ -3,13 +3,28 @@ name = "fleet-mission"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Scenario DSL, mission compiler, task runner and run report for mavfleet"
+description = "Scenario DSL, mission compiler, task runner, run report, and GCS catalog server for mavfleet"
+
+[lib]
+name = "fleet_mission"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fleet-catalog"
+path = "src/main.rs"
 
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+clap = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 fleet-core = { path = "../fleet-core" }
 fleet-safety = { path = "../fleet-safety" }
 fleet-alloc = { path = "../fleet-alloc" }
 fleet-modes = { path = "../fleet-modes" }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
