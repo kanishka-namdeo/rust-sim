@@ -205,12 +205,14 @@ pub fn crc_extra(msgid: u32) -> Option<u8> {
         242 => 104, // HOME_POSITION
         253 => 83, // STATUSTEXT
         // Mission protocol messages (mavlink.io Mission Protocol, Aug 2026)
+        // CRC extras cross-checked against pymavlink 2.4.49 v2.0 common dialect
+        // (MAVLink_mission_*_message.crc_extra — the authoritative source).
         43 => 132, // MISSION_REQUEST_LIST
         44 => 221, // MISSION_COUNT
         47 => 153, // MISSION_ACK
-        51 => 226, // MISSION_REQUEST_INT
+        51 => 196, // MISSION_REQUEST_INT (was 226 — wrong; pymavlink says 196)
         73 => 38,  // MISSION_ITEM_INT
-        40 => 228, // MISSION_REQUEST
+        40 => 230, // MISSION_REQUEST (was 228 — wrong; pymavlink says 230)
         _ => return None,
     })
 }

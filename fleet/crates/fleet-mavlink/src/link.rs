@@ -853,6 +853,117 @@ pub async fn run(
             }
         }
 
+        // Check for pending commands BEFORE the select! so mission upload/
+        // download commands are not starved by the 10 Hz telemetry flood.
+        // The select! below is fair (random branch order), so without this
+        // pre-check a command can wait multiple tick cycles before cmd_rx
+        // wins — long enough for the mission protocol to time out.
+        while let Ok(cmd) = cmd_rx.try_recv() {
+            match cmd {
+                LinkCommand::SendCommand { command, params, ack } => {
+                    queue.push_back(Queued { command, params, ack });
+                }
+                LinkCommand::SetParam { param_id, value, param_type, reply } => {
+                    let mut id = [0u8; 16];
+                    for (i, b) in param_id.as_bytes().iter().take(15).enumerate() {
+                        id[i] = *b;
+                    }
+                    let frame = param_set_frame(&cfg, &id, value, param_type);
+                    send_frame(&sock, &frame, seq)?;
+                    seq = seq.wrapping_add(1);
+                    shared.stats.lock().unwrap().sent += 1;
+                    pending_param = Some(PendingParam {
+                        param_id: id,
+                        value,
+                        param_type,
+                        reply,
+                        attempts: 1,
+                        deadline: Instant::now() + Duration::from_millis(600),
+                    });
+                }
+                LinkCommand::RequestParamList { ack } => {
+                    let frame = Frame {
+                        seq: 0,
+                        sysid: cfg.manager_sysid,
+                        compid: cfg.manager_compid,
+                        msgid: ids::PARAM_REQUEST_LIST,
+                        payload: crate::messages::ParamRequestList {
+                            target_system: cfg.instance + 1,
+                            target_component: 1,
+                        }
+                        .pack(),
+                        crc_ok: true,
+                    };
+                    send_frame(&sock, &frame, seq)?;
+                    seq = seq.wrapping_add(1);
+                    {
+                        let mut st = shared.stats.lock().unwrap();
+                        st.sent += 1;
+                        st.param_list_requests_sent += 1;
+                    }
+                    shared
+                        .params
+                        .lock()
+                        .unwrap()
+                        .mark_requested(started.elapsed().as_millis() as u64);
+                    let _ = ack.send(true);
+                }
+                LinkCommand::MissionUpload { items, mission_type, ack } => {
+                    let count = items.len() as u16;
+                    let frame = Frame {
+                        seq: 0,
+                        sysid: cfg.manager_sysid,
+                        compid: cfg.manager_compid,
+                        msgid: ids::MISSION_COUNT,
+                        payload: MissionCount {
+                            count,
+                            target_system: cfg.instance + 1,
+                            target_component: 1,
+                            mission_type,
+                        }.pack(),
+                        crc_ok: true,
+                    };
+                    send_frame(&sock, &frame, seq)?;
+                    seq = seq.wrapping_add(1);
+                    shared.stats.lock().unwrap().sent += 1;
+                    pending_mission_upload = Some(PendingMissionUpload {
+                        items,
+                        mission_type,
+                        ack: Some(ack),
+                        items_sent: 0,
+                        items_acked: 0,
+                        deadline: Instant::now() + Duration::from_secs(30),
+                        started: Instant::now(),
+                    });
+                }
+                LinkCommand::MissionDownload { mission_type, reply } => {
+                    let frame = Frame {
+                        seq: 0,
+                        sysid: cfg.manager_sysid,
+                        compid: cfg.manager_compid,
+                        msgid: ids::MISSION_REQUEST_LIST,
+                        payload: MissionRequestList {
+                            target_system: cfg.instance + 1,
+                            target_component: 1,
+                            mission_type,
+                        }.pack(),
+                        crc_ok: true,
+                    };
+                    send_frame(&sock, &frame, seq)?;
+                    seq = seq.wrapping_add(1);
+                    shared.stats.lock().unwrap().sent += 1;
+                    pending_mission_download = Some(PendingMissionDownload {
+                        mission_type,
+                        reply: Some(reply),
+                        expected_count: 0,
+                        items: Vec::new(),
+                        deadline: Instant::now() + Duration::from_secs(30),
+                        started: Instant::now(),
+                    });
+                }
+            }
+        }
+
         tokio::select! {
             r = sock.recv_from(&mut buf) => {
                 let (n, _src) = r?;
