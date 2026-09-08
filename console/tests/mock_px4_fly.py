@@ -102,6 +102,14 @@ DEFAULT_LON_E7 = 85455800    # 8.545580  deg * 1e7
 MAVLINK_TYPE_INT32 = 6
 MAVLINK_TYPE_REAL32 = 9
 
+
+def _i32_to_f32(n: int) -> float:
+    """Bit-cast an INT32 value into the wire f32 PX4 sends on the wire
+    for INT32 params (the same bit pattern fleet-mavlink's
+    ``ParamVal::Int32(n).to_wire()`` produces — see link.rs:307)."""
+    return struct.unpack("<f", struct.pack("<I", n & 0xFFFFFFFF))[0]
+
+
 # (id, wire_value, param_type) — order matters: this is the wire order the
 # mock streams them in response to PARAM_REQUEST_LIST (PX4 streams them in
 # ROMFS-load order; we just need a stable, indexed order).
@@ -124,10 +132,10 @@ MOCK_PARAMS: list[tuple[str, float, int]] = [
     ("FW_AIRSPD_TRIM",  15.0,   MAVLINK_TYPE_REAL32),
     # INT32 params: the wire value is the integer bit-cast into f32
     # (f32::from_bits(4) and f32::from_bits(0) — the same PX4 wires).
-    ("BAT_N_CELLS",     float.frombits(4 & 0xFFFFFFFF), MAVLINK_TYPE_INT32),
+    ("BAT_N_CELLS",     _i32_to_f32(4), MAVLINK_TYPE_INT32),
     ("BAT_V_EMPTY",      3.4, MAVLINK_TYPE_REAL32),
     ("BAT_V_CHARGED",     4.1, MAVLINK_TYPE_REAL32),
-    ("NAV_DLL_ACT",     float.frombits(0 & 0xFFFFFFFF), MAVLINK_TYPE_INT32),
+    ("NAV_DLL_ACT",     _i32_to_f32(0), MAVLINK_TYPE_INT32),
 ]
 assert len(MOCK_PARAMS) == 20
 

@@ -360,7 +360,7 @@ async fn list_param_presets(
     Path(vehicle_id): Path<u8>,
 ) -> Response {
     match state.store.list_presets(vehicle_id) {
-        Ok(list) => Json(json!(list)).into_response(),
+        Ok(list) => Json(json!({"ok": true, "data": list})).into_response(),
         Err(e) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "STORE_ERROR",
@@ -426,6 +426,8 @@ async fn load_param_preset(
     match state.store.load_preset(vehicle_id, &name) {
         Ok(preset) => Json(json!({
             "ok": true,
+            "name": preset.name,
+            "created_at": preset.created_at,
             "params": preset.params,
         })).into_response(),
         Err(e) => match e {
@@ -721,7 +723,8 @@ inclusion = [
             "",
         ).await;
         assert_eq!(status, StatusCode::OK);
-        let arr = body.as_array().unwrap();
+        assert!(body["ok"].as_bool().unwrap());
+        let arr = body["data"].as_array().unwrap();
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["name"], "aggressive-corners");
         assert_eq!(arr[0]["param_count"], 3);
@@ -761,7 +764,7 @@ inclusion = [
             &sample_preset_json("to-delete"),
         ).await;
         let (status, body) = send_request(app.clone(), "GET", "/api/vehicles/0/param-presets", "").await;
-        assert_eq!(body.as_array().unwrap().len(), 1);
+        assert_eq!(body["data"].as_array().unwrap().len(), 1);
 
         // Delete then list — 0 presets
         let (status, _) = send_request(
@@ -772,7 +775,7 @@ inclusion = [
         ).await;
         assert_eq!(status, StatusCode::OK);
         let (status, body) = send_request(app.clone(), "GET", "/api/vehicles/0/param-presets", "").await;
-        assert_eq!(body.as_array().unwrap().len(), 0);
+        assert_eq!(body["data"].as_array().unwrap().len(), 0);
 
         // Deleting again returns 404
         let (status, body) = send_request(
@@ -826,7 +829,7 @@ inclusion = [
 
         // The list is still empty (nothing saved)
         let (_, body) = send_request(app, "GET", "/api/vehicles/0/param-presets", "").await;
-        assert_eq!(body.as_array().unwrap().len(), 0);
+        assert_eq!(body["data"].as_array().unwrap().len(), 0);
     }
 
     #[tokio::test]
@@ -845,14 +848,14 @@ inclusion = [
         // Each vehicle sees only its own presets
         let (_, v0) = send_request(app.clone(), "GET", "/api/vehicles/0/param-presets", "").await;
         let (_, v1) = send_request(app.clone(), "GET", "/api/vehicles/1/param-presets", "").await;
-        assert_eq!(v0.as_array().unwrap().len(), 1);
-        assert_eq!(v1.as_array().unwrap().len(), 1);
-        assert_eq!(v0.as_array().unwrap()[0]["name"], "v0-preset");
-        assert_eq!(v1.as_array().unwrap()[0]["name"], "v1-preset");
+        assert_eq!(v0["data"].as_array().unwrap().len(), 1);
+        assert_eq!(v1["data"].as_array().unwrap().len(), 1);
+        assert_eq!(v0["data"].as_array().unwrap()[0]["name"], "v0-preset");
+        assert_eq!(v1["data"].as_array().unwrap()[0]["name"], "v1-preset");
 
         // Vehicle 2 has no presets → empty list, not an error
         let (status, v2) = send_request(app, "GET", "/api/vehicles/2/param-presets", "").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(v2.as_array().unwrap().len(), 0);
+        assert_eq!(v2["data"].as_array().unwrap().len(), 0);
     }
 }
