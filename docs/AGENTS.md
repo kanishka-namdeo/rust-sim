@@ -32,15 +32,22 @@ here: component specs/ADRs (see `../sim/AGENTS.md`, `../fleet/AGENTS.md`,
   with `Caddyfile.example`'s binding (:81 all interfaces, backends
   localhost) and the console's two routing modes.
 - `GCS_SPEC.md` is the binding engineering spec for turning `console/`
-  into a QGC/MP-class GCS for PX4 SITL only (v1). It defines the 5
-  feature areas (Plan, Fly, Setup, Fleet C2, Analyze), the new `:8300`
-  mission-catalog + replay server, the G-1..G-12 verification gates
-  that extend the existing I/F/S/O/R ladder, and the M1..M6 milestone
-  roadmap. ADRs that block M1 (0019, 0020, 0026) must be accepted
-  before implementation begins; the remaining ADRs (0021..0025, 0027)
-  can be resolved in parallel with their owning milestone. Update this
-  spec only when scope, architecture, or the G-ladder changes — not for
-  ADR-level decisions (those go in `console/docs/adr/`).
+  into a QGC/MP-class GCS for PX4 SITL only (v1). It defines the 6
+  feature areas (Plan, Fly, Setup, Fleet C2, Analyze, Survey Patterns),
+  the new `:8300` mission-catalog + replay server, the G-0..G-13
+  verification gates that extend the existing I/F/S/O/R ladder, the
+  M1..M7 milestone roadmap, and is grounded in 2026 market research
+  (§1.1 Market Context, §2.3 Competitive Landscape). All UX flows in
+  §8 are zero-assumption step-by-step procedures: each step specifies
+  the exact UI element label, the pre-condition that must hold, the
+  action, the resulting state change, the post-condition, and any
+  error paths — no implicit assumptions remain. ADRs that block M1
+  (0019, 0020, 0026, 0029) must be accepted before implementation
+  begins; the remaining ADRs (0021..0025, 0027, 0028) can be resolved
+  in parallel with their owning milestone. Update this spec only when
+  scope, architecture, the G-ladder, or the market/competitive context
+  changes — not for ADR-level decisions (those go in
+  `console/docs/adr/`).
 
 ## Work Guidance
 
