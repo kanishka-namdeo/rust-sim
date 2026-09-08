@@ -20,7 +20,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { fetchGw, gw, unwrapEnvelope } from '@/lib/conn'
 import type { ConnState } from '@/lib/types'
 import {
+  normalizeMissionItemIntWire,
   normalizePlanMissionFile,
+  wireItemToWaypoint,
+  type MissionDownloadResult,
+  type MissionItemIntWire,
+  type MissionType,
   type PlanMissionFile,
   type PlanMissionSummary,
   type PlanValidationResult,
@@ -46,7 +51,7 @@ export interface SaveOutcome {
   status: number
 }
 
-/** Result of an upload call. */
+/** Result of an upload call (M2 — real MAVLink mission protocol). */
 export interface UploadOutcome {
   ok: boolean
   /** HTTP status code (0 = network error). */
@@ -55,7 +60,13 @@ export interface UploadOutcome {
   code: string | null
   /** Human-readable message. */
   message: string
-  /** Raw unwrapped response body (for the UI to display details). */
+  /** Numeric mission_type the catalog uploaded (0=mission, 1=fence, 2=rally). */
+  missionType: number | null
+  /** Items sent to the vehicle via MISSION_ITEM_INT (0 on failure before send). */
+  itemsSent: number
+  /** Items the vehicle ack'd with MISSION_ACK result=0 (0 on failure). */
+  itemsAcked: number
+  /** Raw unwrapped response body (for the UI to display extra details). */
   data: unknown
 }
 
@@ -233,43 +244,123 @@ export function usePlanCatalog() {
     }
   }, [])
 
-  // -------------------------------------------------------------- upload
+  // -------------------------------------------------------------- upload (M2)
+  // The catalog proxies this through :8400 which speaks the real MAVLink
+  // mission protocol. The response carries items_sent + items_acked from
+  // the protocol exchange (or an UPLOAD_FAILED error envelope with the
+  // partial counts in `details`).
   const uploadToVehicle = useCallback(async (vehicleId: number, missionId: string): Promise<UploadOutcome> => {
+    const zero = (code: string | null, message: string, status: number, data: unknown): UploadOutcome => ({
+      ok: false,
+      status,
+      code,
+      message,
+      missionType: null,
+      itemsSent: 0,
+      itemsAcked: 0,
+      data,
+    })
     if (!missionId) {
-      return { ok: false, status: 0, code: 'NO_MISSION', message: 'mission not saved (click Save first)', data: null }
+      return zero('NO_MISSION', 'mission not saved (click Save first)', 0, null)
     }
     const url = gw(CATALOG_PORT, `/api/vehicles/${vehicleId}/mission/upload`, { mission_id: missionId })
     try {
-      const res = await fetchGw(url, { method: 'POST' }, 8000)
+      const res = await fetchGw(url, { method: 'POST' }, 35_000)
       const j = (await res.json().catch(() => null)) as
-        | { ok: boolean; data?: unknown; error?: { code?: string; message?: string; details?: unknown } }
+        | {
+            ok: boolean
+            data?: { mission_type?: number; items_sent?: number; items_acked?: number }
+            error?: { code?: string; message?: string; details?: { mission_type?: number; items_sent?: number; items_acked?: number } }
+          }
         | null
       if (res.ok && j?.ok) {
+        const d = j.data ?? {}
+        const mt = typeof d.mission_type === 'number' ? d.mission_type : null
+        const sent = typeof d.items_sent === 'number' ? d.items_sent : 0
+        const acked = typeof d.items_acked === 'number' ? d.items_acked : 0
         return {
           ok: true,
           status: res.status,
           code: null,
-          message: 'validated + version-checked (M1 stub — MAVLink upload is M2 scope)',
-          data: j?.data ?? null,
+          message: `MAVLink upload complete · ${acked}/${sent} items ack'd`,
+          missionType: mt,
+          itemsSent: sent,
+          itemsAcked: acked,
+          data: j.data ?? null,
         }
       }
+      // Failure path — the error envelope carries partial counts in details.
+      const err = j?.error ?? {}
+      const det = err.details ?? {}
+      const mt = typeof det.mission_type === 'number' ? det.mission_type : null
+      const sent = typeof det.items_sent === 'number' ? det.items_sent : 0
+      const acked = typeof det.items_acked === 'number' ? det.items_acked : 0
       return {
         ok: false,
         status: res.status,
-        code: j?.error?.code ?? null,
-        message: j?.error?.message ?? `HTTP ${res.status}`,
+        code: err.code ?? null,
+        message: err.message ?? `HTTP ${res.status}`,
+        missionType: mt,
+        itemsSent: sent,
+        itemsAcked: acked,
         data: j ?? null,
       }
     } catch (e) {
-      return {
-        ok: false,
-        status: 0,
-        code: 'NETWORK_ERROR',
-        message: e instanceof Error ? e.message : String(e),
-        data: null,
-      }
+      return zero('NETWORK_ERROR', e instanceof Error ? e.message : String(e), 0, null)
     }
   }, [])
+
+  // ------------------------------------------------------- download (M2 — new)
+  // GET /api/vehicles/{i}/mission?type={mission|fence|rally} proxies to :8400
+  // which speaks the MAVLink mission protocol's download side: GCS sends
+  // MISSION_REQUEST_LIST, the vehicle replies with MISSION_COUNT, GCS polls
+  // each MISSION_ITEM_INT, GCS sends MISSION_ACK. The response carries the
+  // items in wire format (int32 E7 lat/lon); we normalize to PlanWaypoint
+  // for the comparison view.
+  const downloadMission = useCallback(
+    async (vehicleId: number, missionType: MissionType): Promise<MissionDownloadResult> => {
+      const fail = (status: number, code: string | null, error: string): MissionDownloadResult => ({
+        ok: false,
+        status,
+        code,
+        error,
+        missionType: null,
+        items: null,
+        rawItems: null,
+      })
+      try {
+        const url = gw(CATALOG_PORT, `/api/vehicles/${vehicleId}/mission`, { type: missionType })
+        const res = await fetchGw(url, { method: 'GET' }, 35_000)
+        const j = (await res.json().catch(() => null)) as
+          | {
+              ok: boolean
+              data?: { mission_type?: number; items?: unknown[] }
+              error?: { code?: string; message?: string }
+            }
+          | null
+        if (!res.ok || !j || !j.ok) {
+          return fail(res.status, j?.error?.code ?? null, j?.error?.message ?? `HTTP ${res.status}`)
+        }
+        const data = j.data ?? {}
+        const mt = typeof data.mission_type === 'number' ? data.mission_type : null
+        const itemsRaw = Array.isArray(data.items) ? data.items : []
+        const rawItems: MissionItemIntWire[] = itemsRaw.map((it, i) => normalizeMissionItemIntWire(it, i))
+        const items = rawItems.map((w, i) => wireItemToWaypoint(w, i))
+        return {
+          ok: true,
+          status: res.status,
+          code: null,
+          error: null,
+          missionType: mt,
+          items,
+          rawItems,
+        }
+      } catch (e) {
+        return fail(0, 'NETWORK_ERROR', e instanceof Error ? e.message : String(e))
+      }
+    },
+    [],
+  )
 
   // -------------------------------------------------------------- run-with-busy
   const runBusy = useCallback(
@@ -296,6 +387,7 @@ export function usePlanCatalog() {
     deleteMission,
     validateMission,
     uploadToVehicle,
+    downloadMission,
     runBusy,
   }
 }

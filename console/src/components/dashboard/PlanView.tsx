@@ -18,17 +18,21 @@
  *   5. Validate         → POST /api/missions/{id}/validate → toast
  *   6. Save             → modal: name → POST or PUT to catalog
  *   7. Upload to Vehicle → modal: vehicle index → POST /api/vehicles/{i}/mission/upload
+ *   8. Download from Vehicle (M2) → modal: vehicle + mission_type →
+ *      GET /api/vehicles/{i}/mission?type={mission|fence|rally} → comparison view
  *
  * The catalog assigns the ULID on POST (we send `id=""`); PUT bumps the
- * version. The upload path is a version-checked stub at M1 — the actual
- * MAVLink mission protocol upload is M2 scope (the endpoint returns
- * "validated + version-checked (M1 stub)" or PX4_VERSION_UNAVAILABLE).
+ * version. The M2 upload path runs the real MAVLink mission protocol
+ * (:8300 → :8400 → PX4 SITL) and returns `{items_sent, items_acked}`;
+ * the three sub-bars below reflect real progress, not a stub.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
+  ArrowRightLeft,
   CheckCircle2,
   CircleSlash,
+  Download,
   Eraser,
   FilePlus2,
   Hexagon,
@@ -37,7 +41,6 @@ import {
   PlaneTakeoff,
   RefreshCw,
   Save,
-  Send,
   Trash2,
   TriangleAlert,
   Upload,
@@ -71,9 +74,13 @@ import {
   DEFAULT_WP_HOLD_S,
   PX4_TEST_FIELD,
   emptyPlanMission,
+  waypointsMatch,
+  type MissionDownloadResult,
+  type MissionType,
   type PlanMissionFile,
   type PlanValidationError,
   type PlanValidationResult,
+  type PlanWaypoint,
 } from '@/lib/plan-types'
 
 const FLEET_PORT = 8400
@@ -81,16 +88,23 @@ const FLEET_PORT = 8400
 /** Edit mode (matches §8.1 step-by-step). */
 type EditMode = 'idle' | 'waypoint' | 'fence'
 
-/** Upload progress (three sub-bars per spec §8.1 step 12). */
+/** Upload progress (three sub-bars per spec §8.1 step 12 — M2 real progress). */
 interface UploadProgress {
+  /** Expected per-type counts from the saved mission (Mission/Fence/Rally). */
   missionTotal: number
   fenceTotal: number
   rallyTotal: number
-  /** 'validated' = M1 stub returned successfully; 'failed' = error */
-  status: 'validated' | 'failed'
+  /** 'pending' = request in flight; 'success' = items_acked == items_sent; 'failed' = error. */
+  status: 'pending' | 'success' | 'failed'
+  /** Items the catalog reported sent to the vehicle (MISSION_ITEM_INT count). */
+  itemsSent: number
+  /** Items the vehicle ack'd (MISSION_ACK result=0). */
+  itemsAcked: number
+  /** Mission type the catalog uploaded (0=mission, 1=fence, 2=rally). */
+  missionType: number | null
   /** Status message (the catalog's response or error). */
   message: string
-  /** Stable error code (e.g. PX4_VERSION_UNAVAILABLE) on failure. */
+  /** Stable error code (e.g. UPLOAD_FAILED, PX4_VERSION_UNAVAILABLE) on failure. */
   code: string | null
   /** HTTP status (0 = network). */
   httpStatus: number
@@ -126,6 +140,16 @@ export function PlanView() {
   const [uploadVehicle, setUploadVehicle] = useState(0)
   const [fleetConn, setFleetConn] = useState<'connecting' | 'live' | 'simulated'>('connecting')
   const [vehicleCount, setVehicleCount] = useState(DEFAULT_VEHICLE_COUNT)
+
+  // --------------------------------------------------------------- download state (M2)
+  // Download modal: vehicle + mission_type select; the result is rendered
+  // as a side-by-side comparison table against the saved mission.
+  const [downloadOpen, setDownloadOpen] = useState(false)
+  const [downloadVehicle, setDownloadVehicle] = useState(0)
+  const [downloadType, setDownloadType] = useState<MissionType>('mission')
+  const [downloadResult, setDownloadResult] = useState<MissionDownloadResult | null>(null)
+  const [compareOpen, setCompareOpen] = useState(false)
+  const [downloading, setDownloading] = useState(false)
 
   // Open the Save modal — preset the name input from the current mission
   // (NOT in an effect, to avoid the react-hooks/set-state-in-effect rule).
@@ -391,59 +415,95 @@ export function PlanView() {
     [catalog, file, toast],
   )
 
-  // --------------------------------------------------------------- upload
+  // --------------------------------------------------------------- upload (M2)
+  // The catalog proxies POST /api/vehicles/{i}/mission/upload?mission_id={id}
+  // through :8400 which speaks the real MAVLink mission protocol. The
+  // response carries items_sent + items_acked (or an UPLOAD_FAILED envelope
+  // with partial counts in `details`). We surface those in the three
+  // sub-bars below (per spec §8.1 step 12, "all 3 in one call").
   const doUpload = useCallback(
     async (vehicleId: number) => {
       if (!file.mission.id) {
         toast({ title: 'Save first', description: 'click Save before uploading', variant: 'destructive' })
         return
       }
-      // optimistic: show validated counts immediately (M1 stub returns synchronously)
       const totalMission = file.waypoints.length
       const totalFence = file.geofence.inclusion.length
       const totalRally = file.rally.length
+      // Optimistic 'pending' state while the request is in flight.
       setUploadProgress({
         missionTotal: totalMission,
         fenceTotal: totalFence,
         rallyTotal: totalRally,
-        status: 'validated',
-        message: 'in progress…',
+        status: 'pending',
+        itemsSent: 0,
+        itemsAcked: 0,
+        missionType: null,
+        message: 'uploading via MAVLink mission protocol…',
         code: null,
         httpStatus: 0,
       })
       const r = await catalog.runBusy(() => catalog.uploadToVehicle(vehicleId, file.mission.id))
+      setUploadProgress({
+        missionTotal: totalMission,
+        fenceTotal: totalFence,
+        rallyTotal: totalRally,
+        status: r.ok ? 'success' : 'failed',
+        itemsSent: r.itemsSent,
+        itemsAcked: r.itemsAcked,
+        missionType: r.missionType,
+        message: r.message,
+        code: r.code,
+        httpStatus: r.status,
+      })
       if (r.ok) {
-        setUploadProgress({
-          missionTotal: totalMission,
-          fenceTotal: totalFence,
-          rallyTotal: totalRally,
-          status: 'validated',
-          message: r.message,
-          code: null,
-          httpStatus: r.status,
-        })
         toast({
-          title: `Upload accepted (M1 stub)`,
-          description: `mission "${file.mission.name}" → vehicle ${vehicleId} · ${totalMission} waypoints · ${totalFence} fence · ${totalRally} rally`,
+          title: 'Mission uploaded',
+          description: `${r.itemsSent}/${r.itemsAcked} items ack'd · vehicle ${vehicleId} · "${file.mission.name}"`,
         })
       } else {
-        setUploadProgress({
-          missionTotal: totalMission,
-          fenceTotal: totalFence,
-          rallyTotal: totalRally,
-          status: 'failed',
-          message: r.message,
-          code: r.code,
-          httpStatus: r.status,
-        })
         toast({
-          title: `Upload rejected`,
-          description: r.code ? `${r.code}: ${r.message}` : r.message,
+          title: 'Upload failed',
+          description: `Upload failed: ${r.message}, ${r.itemsSent}/${r.itemsAcked} items ack'd`,
           variant: 'destructive',
         })
       }
     },
     [catalog, file.mission.id, file.mission.name, file.waypoints.length, file.geofence.inclusion.length, file.rally.length, toast],
+  )
+
+  // ------------------------------------------------------- download (M2 — new)
+  // GET /api/vehicles/{i}/mission?type={mission|fence|rally} proxies through
+  // :8400 which speaks the MAVLink download protocol (GCS sends
+  // MISSION_REQUEST_LIST → vehicle replies MISSION_COUNT → GCS polls each
+  // MISSION_ITEM_INT → GCS sends MISSION_ACK). Items come back in wire
+  // format (int32 E7 lat/lon); the hook normalizes to PlanWaypoint for
+  // the comparison view.
+  const doDownload = useCallback(
+    async (vehicleId: number, missionType: MissionType) => {
+      setDownloading(true)
+      try {
+        const r = await catalog.downloadMission(vehicleId, missionType)
+        setDownloadResult(r)
+        setCompareOpen(true)
+        setDownloadOpen(false)
+        if (r.ok && r.items) {
+          toast({
+            title: `Downloaded ${missionType} from vehicle ${vehicleId}`,
+            description: `${r.items.length} items · mission_type ${r.missionType ?? '?'} · parity ${r.items.length === file.waypoints.length ? 'count matches' : 'count differs'}`,
+          })
+        } else {
+          toast({
+            title: 'Download failed',
+            description: r.error ? `${r.code ?? 'error'}: ${r.error}` : 'unknown error',
+            variant: 'destructive',
+          })
+        }
+      } finally {
+        setDownloading(false)
+      }
+    },
+    [catalog, file.waypoints.length, toast],
   )
 
   // --------------------------------------------------------------- derived
@@ -862,7 +922,7 @@ export function PlanView() {
               </Button>
               <Button
                 size="sm"
-                className="col-span-2 gap-1.5"
+                className="gap-1.5"
                 onClick={() => setUploadOpen(true)}
                 disabled={!canUpload || catalog.busy}
                 title={canUpload ? 'POST /api/vehicles/{i}/mission/upload' : 'validate first (must pass)'}
@@ -870,7 +930,48 @@ export function PlanView() {
                 <Upload className="size-3.5" aria-hidden="true" />
                 Upload to Vehicle
               </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                className="gap-1.5"
+                onClick={() => setDownloadOpen(true)}
+                disabled={catalog.busy || downloading}
+                title="GET /api/vehicles/{i}/mission?type={mission|fence|rally} — M2 download"
+              >
+                {downloading ? (
+                  <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Download className="size-3.5" aria-hidden="true" />
+                )}
+                Download from Vehicle
+              </Button>
             </div>
+
+            {/* download-result quick badge (full table is in the compare modal) */}
+            {downloadResult && (
+              <button
+                type="button"
+                onClick={() => setCompareOpen(true)}
+                className={`flex items-center gap-1.5 rounded-md border p-2 text-left text-[11px] transition-colors hover:bg-muted/40 ${
+                  downloadResult.ok
+                    ? 'border-emerald-600/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
+                    : 'border-rose-600/40 bg-rose-500/10 text-rose-700 dark:text-rose-400'
+                }`}
+                aria-label="open download comparison view"
+              >
+                <ArrowRightLeft className="size-3.5" aria-hidden="true" />
+                <span className="flex-1">
+                  <span className="font-semibold">
+                    {downloadResult.ok
+                      ? `Downloaded ${downloadResult.items?.length ?? 0} items from vehicle`
+                      : `Download failed · ${downloadResult.code ?? 'error'}`}
+                  </span>
+                  <span className="block font-mono text-[10px] text-muted-foreground">
+                    click to open comparison view
+                  </span>
+                </span>
+              </button>
+            )}
 
             {/* validation status */}
             {validated && (
@@ -910,38 +1011,64 @@ export function PlanView() {
               </div>
             )}
 
-            {/* upload progress (M1 stub status) */}
+            {/* upload progress (M2 — real MAVLink items_sent / items_acked) */}
             {uploadProgress && (
               <div
                 className={`rounded-md border p-2 text-[11px] ${
-                  uploadProgress.status === 'validated'
-                    ? 'border-sky-600/40 bg-sky-500/10 text-sky-700 dark:text-sky-400'
-                    : 'border-rose-600/40 bg-rose-500/10 text-rose-700 dark:text-rose-400'
+                  uploadProgress.status === 'success'
+                    ? 'border-emerald-600/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
+                    : uploadProgress.status === 'pending'
+                      ? 'border-sky-600/40 bg-sky-500/10 text-sky-700 dark:text-sky-400'
+                      : 'border-rose-600/40 bg-rose-500/10 text-rose-700 dark:text-rose-400'
                 }`}
                 role="status"
                 aria-live="polite"
               >
                 <div className="mb-1.5 flex items-center gap-1.5">
-                  {uploadProgress.status === 'validated' ? (
-                    <Send className="size-3.5" aria-hidden="true" />
+                  {uploadProgress.status === 'success' ? (
+                    <CheckCircle2 className="size-3.5" aria-hidden="true" />
+                  ) : uploadProgress.status === 'pending' ? (
+                    <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
                   ) : (
                     <CircleSlash className="size-3.5" aria-hidden="true" />
                   )}
                   <span className="font-semibold">
-                    {uploadProgress.status === 'validated' ? 'Upload accepted (M1 stub)' : `Upload failed · ${uploadProgress.code ?? 'error'}`}
+                    {uploadProgress.status === 'success'
+                      ? `Upload complete · ${uploadProgress.itemsAcked}/${uploadProgress.itemsSent} ack'd`
+                      : uploadProgress.status === 'pending'
+                        ? 'Uploading…'
+                        : `Upload failed · ${uploadProgress.code ?? 'error'}`}
                   </span>
+                  {uploadProgress.missionType != null && (
+                    <Badge variant="outline" className="ml-auto font-mono text-[10px]">
+                      type {uploadProgress.missionType}
+                    </Badge>
+                  )}
                 </div>
-                <UploadBar label="Mission (flight plan)" total={uploadProgress.missionTotal} ok={uploadProgress.status === 'validated'} />
-                <UploadBar label="Fence" total={uploadProgress.fenceTotal} ok={uploadProgress.status === 'validated'} />
-                <UploadBar label="Rally" total={uploadProgress.rallyTotal} ok={uploadProgress.status === 'validated'} />
+                <UploadBar
+                  label="Mission (flight plan)"
+                  expected={uploadProgress.missionTotal}
+                  sent={uploadProgress.itemsSent}
+                  acked={uploadProgress.itemsAcked}
+                  status={uploadProgress.status}
+                />
+                <UploadBar
+                  label="Fence"
+                  expected={uploadProgress.fenceTotal}
+                  sent={uploadProgress.itemsSent}
+                  acked={uploadProgress.itemsAcked}
+                  status={uploadProgress.status}
+                />
+                <UploadBar
+                  label="Rally"
+                  expected={uploadProgress.rallyTotal}
+                  sent={uploadProgress.itemsSent}
+                  acked={uploadProgress.itemsAcked}
+                  status={uploadProgress.status}
+                />
                 <p className="mt-1.5 font-mono text-[10px] text-muted-foreground">
                   HTTP {uploadProgress.httpStatus} · {uploadProgress.message}
                 </p>
-                {uploadProgress.status === 'validated' && (
-                  <p className="mt-0.5 text-[10px] text-muted-foreground/70">
-                    M1 stub — MAVLink upload is M2 scope (see GCS_SPEC §5.1 AC-5.1.6)
-                  </p>
-                )}
               </div>
             )}
           </CardContent>
@@ -1044,27 +1171,301 @@ export function PlanView() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* --------------------------------------------- download modal (M2) */}
+      <AlertDialog open={downloadOpen} onOpenChange={setDownloadOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <Download className="size-4 text-muted-foreground" aria-hidden="true" />
+              Download from Vehicle
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Pull the current mission/fence/rally from a SITL vehicle's MAVLink mission
+              pool via <span className="font-mono">GET /api/vehicles/{'{i}'}/mission?type=…</span>.
+              The downloaded items are shown side-by-side with the saved mission for parity
+              checking (lat/lon values are int32 E7 on the wire — converted to degrees here).
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="grid grid-cols-2 gap-2 py-1">
+            <Label htmlFor="dl-vehicle" className="text-xs">
+              Vehicle
+            </Label>
+            <Label htmlFor="dl-type" className="text-xs">
+              Mission type (MAV_MISSION_TYPE)
+            </Label>
+            <Select
+              value={String(downloadVehicle)}
+              onValueChange={(v) => setDownloadVehicle(Number(v))}
+            >
+              <SelectTrigger id="dl-vehicle" className="font-mono text-sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {Array.from({ length: Math.max(vehicleCount, 4) }).map((_, i) => (
+                  <SelectItem key={i} value={String(i)}>
+                    Vehicle {i} (sysid {i + 1})
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select
+              value={downloadType}
+              onValueChange={(v) => setDownloadType(v as MissionType)}
+            >
+              <SelectTrigger id="dl-type" className="font-mono text-sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="mission">mission (0)</SelectItem>
+                <SelectItem value="fence">fence (1)</SelectItem>
+                <SelectItem value="rally">rally (2)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={catalog.busy || downloading}
+              onClick={() => void doDownload(downloadVehicle, downloadType)}
+            >
+              {downloading ? 'Downloading…' : 'Download'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* --------------------------------------- comparison modal (M2) */}
+      <AlertDialog open={compareOpen} onOpenChange={setCompareOpen}>
+        <AlertDialogContent className="sm:max-w-2xl">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <ArrowRightLeft className="size-4 text-muted-foreground" aria-hidden="true" />
+              Download comparison — {downloadType}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Side-by-side parity check of the saved mission waypoints against the items
+              downloaded from vehicle {downloadVehicle}. Mismatches are highlighted in red;
+              rows missing on one side are amber. Lat/lon are int32 E7 on the MAVLink wire
+              and round-trip with ≈1e-7° jitter (≈ 11 mm at the equator).
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <DownloadComparison saved={file.waypoints} result={downloadResult} />
+          <AlertDialogFooter>
+            <AlertDialogCancel>Close</AlertDialogCancel>
+            <AlertDialogAction onClick={() => setCompareOpen(false)}>Done</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
 
-/** One of the three upload sub-bars (Mission / Fence / Rally). */
-function UploadBar({ label, total, ok }: { label: string; total: number; ok: boolean }) {
+/** One of the three upload sub-bars (Mission / Fence / Rally) — M2 real progress. */
+function UploadBar({
+  label,
+  expected,
+  sent,
+  acked,
+  status,
+}: {
+  label: string
+  /** Expected count from the saved mission (informational; what we intended to send). */
+  expected: number
+  /** Items the catalog reported sent via MISSION_ITEM_INT. */
+  sent: number
+  /** Items the vehicle ack'd with MISSION_ACK result=0. */
+  acked: number
+  /** Transaction status — drives bar color. */
+  status: 'pending' | 'success' | 'failed'
+}) {
+  // Bar fill: acked/sent ratio on success/failure, 0 on pending.
+  // 100% if vacuously true (0/0 + success); 0% on failure with 0 sent.
+  const pct =
+    status === 'pending'
+      ? 0
+      : sent > 0
+        ? Math.min(100, Math.round((acked / sent) * 100))
+        : status === 'success'
+          ? 100
+          : 0
+  const barColor =
+    status === 'success'
+      ? '[&>div]:bg-emerald-500'
+      : status === 'failed'
+        ? '[&>div]:bg-rose-500'
+        : '[&>div]:bg-sky-500'
+  const statusGlyph = status === 'success' ? '✓' : status === 'failed' ? '✗' : '…'
   return (
     <div className="mb-1 last:mb-0">
       <div className="flex items-center justify-between text-[10px]">
         <span>{label}</span>
         <span className="font-mono text-muted-foreground">
-          {total} item{total === 1 ? '' : 's'} {ok ? '✓ validated' : '— failed'}
+          {statusGlyph} {acked}/{sent} ack'd{expected > 0 ? ` · ${expected} expected` : ''}
         </span>
       </div>
       <Progress
-        value={ok ? 100 : 0}
-        className={`mt-0.5 h-1.5 ${
-          ok ? '[&>div]:bg-sky-500' : '[&>div]:bg-rose-500'
-        }`}
-        aria-label={`${label} upload progress`}
+        value={pct}
+        className={`mt-0.5 h-1.5 ${barColor}`}
+        aria-label={`${label} upload progress: ${acked} of ${sent} items ack'd`}
       />
+    </div>
+  )
+}
+
+/**
+ * Side-by-side comparison of saved vs downloaded mission items.
+ * Highlight rows that don't match (count mismatch or field delta beyond tolerance).
+ */
+function DownloadComparison({
+  saved,
+  result,
+}: {
+  saved: PlanWaypoint[]
+  result: MissionDownloadResult | null
+}) {
+  if (!result) {
+    return (
+      <div className="rounded-md border border-border bg-muted/30 p-3 text-[11px] text-muted-foreground">
+        No download result yet.
+      </div>
+    )
+  }
+  if (!result.ok || !result.items) {
+    return (
+      <div className="rounded-md border border-rose-600/40 bg-rose-500/10 p-3 text-[11px] text-rose-700 dark:text-rose-400">
+        <div className="font-semibold">Download failed</div>
+        <div className="mt-0.5 font-mono text-[10px]">
+          {result.code ?? 'error'}: {result.error ?? 'unknown'}
+        </div>
+        <div className="mt-0.5 font-mono text-[10px] text-muted-foreground">
+          HTTP {result.status}
+        </div>
+      </div>
+    )
+  }
+  const downloaded = result.items
+  const maxLen = Math.max(saved.length, downloaded.length)
+  const countMismatch = saved.length !== downloaded.length
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-2 text-[11px]">
+        <Badge variant={countMismatch ? 'destructive' : 'default'} className="font-mono text-[10px]">
+          saved: {saved.length} items
+        </Badge>
+        <Badge variant={countMismatch ? 'destructive' : 'default'} className="font-mono text-[10px]">
+          vehicle: {downloaded.length} items
+        </Badge>
+        <Badge variant="outline" className="font-mono text-[10px]">
+          mission_type {result.missionType ?? '?'}
+        </Badge>
+        <span className="ml-auto font-mono text-[10px] text-muted-foreground">
+          HTTP {result.status}
+        </span>
+      </div>
+      <div className="max-h-[360px] overflow-auto rounded-md border border-border">
+        <Table>
+          <TableHeader>
+            <TableRow className="hover:bg-transparent">
+              <TableHead className="h-7 w-6 px-1 text-[10px]">#</TableHead>
+              <TableHead className="h-7 px-1 text-[10px]" colSpan={2}>
+                Saved mission (catalog)
+              </TableHead>
+              <TableHead className="h-7 px-1 text-[10px]" colSpan={2}>
+                Vehicle (MAVLink download)
+              </TableHead>
+              <TableHead className="h-7 w-10 px-1 text-[10px]">match</TableHead>
+            </TableRow>
+            <TableRow className="hover:bg-transparent">
+              <TableHead className="h-6 px-1 text-[9px]" />
+              <TableHead className="h-6 px-1 text-[9px]">lat, lon</TableHead>
+              <TableHead className="h-6 px-1 text-[9px]">alt / cmd</TableHead>
+              <TableHead className="h-6 px-1 text-[9px]">lat, lon</TableHead>
+              <TableHead className="h-6 px-1 text-[9px]">alt / cmd</TableHead>
+              <TableHead className="h-6 px-1 text-[9px]" />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {maxLen === 0 && (
+              <TableRow>
+                <TableCell colSpan={6} className="py-3 text-center text-[11px] text-muted-foreground">
+                  both sides empty
+                </TableCell>
+              </TableRow>
+            )}
+            {Array.from({ length: maxLen }).map((_, i) => {
+              const s = saved[i]
+              const d = downloaded[i]
+              const matched = s && d ? waypointsMatch(s, d) : false
+              const rowClass =
+                !s || !d
+                  ? 'bg-amber-500/10'
+                  : matched
+                    ? 'bg-emerald-500/5'
+                    : 'bg-rose-500/10'
+              return (
+                <TableRow key={i} className={`${rowClass} hover:bg-transparent`}>
+                  <TableCell className="py-1 px-1 font-mono text-[11px]">{i + 1}</TableCell>
+                  <TableCell className="py-1 px-1 font-mono text-[9px] leading-tight">
+                    {s ? (
+                      <>
+                        {s.x.toFixed(7)}
+                        <br />
+                        {s.y.toFixed(7)}
+                      </>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </TableCell>
+                  <TableCell className="py-1 px-1 font-mono text-[9px] leading-tight">
+                    {s ? (
+                      <>
+                        {s.z.toFixed(1)} m
+                        <br />
+                        cmd {s.command}
+                      </>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </TableCell>
+                  <TableCell className="py-1 px-1 font-mono text-[9px] leading-tight">
+                    {d ? (
+                      <>
+                        {d.x.toFixed(7)}
+                        <br />
+                        {d.y.toFixed(7)}
+                      </>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </TableCell>
+                  <TableCell className="py-1 px-1 font-mono text-[9px] leading-tight">
+                    {d ? (
+                      <>
+                        {d.z.toFixed(1)} m
+                        <br />
+                        cmd {d.command}
+                      </>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </TableCell>
+                  <TableCell className="py-1 px-1 text-center text-[11px]">
+                    {matched ? (
+                      <CheckCircle2 className="size-3 text-emerald-600 dark:text-emerald-400" aria-label="match" />
+                    ) : (
+                      <TriangleAlert className="size-3 text-rose-600 dark:text-rose-400" aria-label="mismatch" />
+                    )}
+                  </TableCell>
+                </TableRow>
+              )
+            })}
+          </TableBody>
+        </Table>
+      </div>
+      <p className="font-mono text-[10px] text-muted-foreground">
+        tolerance: lat/lon ±1e-6° (≈ 11 mm) · alt/params ±1e-3 — MAVLink int32 E7 round-trip jitter.
+      </p>
     </div>
   )
 }
