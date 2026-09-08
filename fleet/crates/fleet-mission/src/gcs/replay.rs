@@ -326,6 +326,8 @@ fn sanitize_filename(name: &str) -> Result<String, ReplayError> {
 }
 
 /// List all `.replay` files in `dir`, sorted by filename (stable, ASCII).
+/// Skips sub-directories (even if they happen to have a `.replay`
+/// extension) — only regular files and symlinks-to-files are listed.
 pub fn list_replay_files(dir: &Path) -> Result<Vec<ReplaySummary>, ReplayError> {
     if !dir.exists() {
         return Ok(Vec::new());
@@ -335,6 +337,14 @@ pub fn list_replay_files(dir: &Path) -> Result<Vec<ReplaySummary>, ReplayError> 
         let entry = entry?;
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) != Some("replay") {
+            continue;
+        }
+        // Skip sub-directories named like `subdir.replay` (a directory
+        // matches the extension check, but is not a readable replay
+        // file). Symlinks-to-files are accepted (the catalog supports
+        // symlinked .replay files per ADR-0027).
+        let ftype = entry.file_type()?;
+        if !ftype.is_file() && !ftype.is_symlink() {
             continue;
         }
         let filename = match path.file_name().and_then(|s| s.to_str()) {
@@ -360,6 +370,8 @@ pub fn list_replay_files(dir: &Path) -> Result<Vec<ReplaySummary>, ReplayError> 
 
 /// List all `.ulg` files in `dir`, sorted by filename. Filesystem-only —
 /// does not invoke `pyulog`. Used by `GET /api/ulogs` (GCS_SPEC.md §5.5).
+/// Skips sub-directories named like `subdir.ulg` (same path-injection
+/// guard as `list_replay_files`).
 pub fn list_ulog_files(dir: &Path) -> Result<Vec<ReplaySummary>, ReplayError> {
     if !dir.exists() {
         return Ok(Vec::new());
@@ -369,6 +381,10 @@ pub fn list_ulog_files(dir: &Path) -> Result<Vec<ReplaySummary>, ReplayError> {
         let entry = entry?;
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) != Some("ulg") {
+            continue;
+        }
+        let ftype = entry.file_type()?;
+        if !ftype.is_file() && !ftype.is_symlink() {
             continue;
         }
         let filename = match path.file_name().and_then(|s| s.to_str()) {
