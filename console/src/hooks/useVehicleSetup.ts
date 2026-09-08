@@ -1,13 +1,20 @@
 'use client'
 
 /**
- * Vehicle Setup data hook (:8400, ADR-0016 — the QGC/Mission-Planner
- * configuration workflow).
+ * Vehicle Setup data hook (:8400 fleet REST plane + :8300 catalog
+ * param-presets, ADR-0016 — the QGC/Mission-Planner configuration workflow).
  *
  * Same dual-mode lifecycle as the other console hooks: probe the REST
  * plane → LIVE (poll the setup summary + param store, run the actions
  * against the endpoints) or SIMULATED (MockSetupEngine, with periodic
  * live retries). Catalog and modes are static-shaped in both modes.
+ *
+ * v1 (GCS_SPEC §5.3) adds four preset round-trip methods that hit the
+ * catalog on :8300 — `listPresets`, `savePreset`, `loadPreset`,
+ * `deletePreset` — and a `searchParams` helper that re-queries the
+ * :8400 param endpoint with `?search=&group=` filters (server-side
+ * filtering, AC-5.3.1). `loadPreset` fans each loaded param out through
+ * the existing `writeParam` path so the write hits PX4 via PARAM_SET.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -17,15 +24,52 @@ import type {
   AirframeGroup,
   CalSensor,
   ModeEntry,
+  ParamEntry,
   ParamStoreView,
+  PresetSummary,
   VehicleSetupSummary,
 } from '@/lib/types'
 
 export const FLEET_PORT = 8400
+export const CATALOG_PORT = 8300
 
 export type SetupActionOutcome = {
   ok: boolean
   /** Human detail for the toast (live: backend message; sim: demo text). */
+  detail?: string
+}
+
+/** Structured result of `searchParams` — the filtered subset of the store. */
+export type SearchOutcome = {
+  ok: boolean
+  /** Filtered ParamStoreView (or null on hard failure). */
+  store: ParamStoreView | null
+  /** Source flag: 'live' (server filtered) | 'simulated' (client filtered) | 'error'. */
+  source: 'live' | 'simulated' | 'error'
+  detail?: string
+}
+
+/** Structured result of `listPresets`. */
+export type ListPresetsOutcome = {
+  ok: boolean
+  presets: PresetSummary[]
+  detail?: string
+}
+
+/** Structured result of `savePreset` / `deletePreset`. */
+export type PresetOpOutcome = {
+  ok: boolean
+  detail?: string
+}
+
+/** Structured result of `loadPreset` — the loaded params + how many
+ *  were applied to the vehicle via PARAM_SET. */
+export type LoadPresetOutcome = {
+  ok: boolean
+  /** Params the catalog returned from the preset file. */
+  params: { id: string; value: number; type: number }[]
+  /** How many of those were successfully written via PARAM_SET. */
+  applied: number
   detail?: string
 }
 
@@ -43,6 +87,9 @@ export function useVehicleSetup(vehicleCount: number) {
   const engineRef = useRef<MockSetupEngine | null>(null)
   const connRef = useRef<'connecting' | 'live' | 'simulated'>('connecting')
   const idxRef = useRef(0)
+  // mirror of `paramStore` so the preset-save action can read the latest
+  // cached params without re-binding its useCallback on every poll tick.
+  const paramStoreRef = useRef<ParamStoreView | null>(null)
 
   const setIndexBoth = useCallback((i: number) => {
     idxRef.current = i
@@ -71,7 +118,9 @@ export function useVehicleSetup(vehicleCount: number) {
       const res = await fetchGw(gw(FLEET_PORT, `/api/vehicles/${i}/params`), { method: 'GET' }, 2500)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const j = await res.json()
-      setParamStore(normalizeParamStore(unwrapEnvelope(j)))
+      const next = normalizeParamStore(unwrapEnvelope(j))
+      paramStoreRef.current = next
+      setParamStore(next)
     } catch {
       /* params polling is best-effort too */
     }
@@ -105,8 +154,11 @@ export function useVehicleSetup(vehicleCount: number) {
           fresh.step()
           const v = fresh.vehicles[idxRef.current] ?? fresh.vehicles[0]
           if (v) {
-            setSummary(v.summary())
-            setParamStore(v.paramStoreView())
+            const sum = v.summary()
+            const store = v.paramStoreView()
+            paramStoreRef.current = store
+            setSummary(sum)
+            setParamStore(store)
           }
         }, 1000)
       }
@@ -212,6 +264,222 @@ export function useVehicleSetup(vehicleCount: number) {
     [act],
   )
 
+  // -- v1: server-side parameter search/filter (:8400 /api/vehicles/{i}/params?search=&group=)
+  //
+  // Hits the same endpoint the 1 Hz polling uses, but with the
+  // `?search=&group=` query (server-side substring + group filter, AC-5.3.1).
+  // In SIMULATED mode the backend is offline, so we client-filter the mock
+  // store (the mock has 31 params, well under the 100 ms AC budget).
+  const searchParams = useCallback(
+    async (query: string, group?: string): Promise<SearchOutcome> => {
+      const q = query.trim()
+      const g = (group ?? '').trim()
+      // SIMULATED: filter the mock store locally.
+      if (connRef.current !== 'live') {
+        const v = engineRef.current?.vehicles[idxRef.current]
+        if (!v) {
+          return { ok: false, store: null, source: 'error', detail: 'no vehicle' }
+        }
+        await new Promise((r) => setTimeout(r, 120)) // demo latency
+        const store = v.paramStoreView()
+        const ql = q.toUpperCase()
+        const filtered: ParamEntry[] = store.params.filter((p) => {
+          const okSearch = ql === '' || p.id.toUpperCase().includes(ql)
+          const okGroup = g === '' || g === '__all__' || p.group === g
+          return okSearch && okGroup
+        })
+        return {
+          ok: true,
+          source: 'simulated',
+          store: { ...store, params: filtered, received: filtered.length },
+          detail: `${filtered.length} of ${store.params.length} (simulated filter)`,
+        }
+      }
+      // LIVE: hand the query to the backend.
+      const qs: Record<string, string | number> = {}
+      if (q) qs.search = q
+      if (g && g !== '__all__') qs.group = g
+      const url = gw(FLEET_PORT, `/api/vehicles/${idxRef.current}/params`, qs)
+      try {
+        const res = await fetchGw(url, { method: 'GET' }, 4000)
+        if (!res.ok) {
+          return { ok: false, store: null, source: 'error', detail: `HTTP ${res.status}` }
+        }
+        const j = await res.json()
+        const store = normalizeParamStore(unwrapEnvelope(j))
+        return { ok: true, source: 'live', store, detail: store ? `${store.params.length} rows` : 'no store' }
+      } catch (e) {
+        return { ok: false, store: null, source: 'error', detail: `network: ${e instanceof Error ? e.message : 'failed'}` }
+      }
+    },
+    [],
+  )
+
+  // -- v1: param-presets (:8300 catalog) ------------------------------------
+  //
+  // GET /api/vehicles/{i}/param-presets → [{name, created_at, param_count}]
+  const listPresets = useCallback(async (): Promise<ListPresetsOutcome> => {
+    // SIMULATED: return an in-memory list (mock engine keeps a tiny map).
+    if (connRef.current !== 'live') {
+      const v = engineRef.current?.vehicles[idxRef.current]
+      const presets = v ? v.listPresets() : []
+      await new Promise((r) => setTimeout(r, 150))
+      return { ok: true, presets, detail: `${presets.length} preset(s) (simulated)` }
+    }
+    const url = gw(CATALOG_PORT, `/api/vehicles/${idxRef.current}/param-presets`)
+    try {
+      const res = await fetchGw(url, { method: 'GET' }, 4000)
+      if (!res.ok) {
+        return { ok: false, presets: [], detail: `HTTP ${res.status}` }
+      }
+      const j = unwrapEnvelope(await res.json())
+      const arr = Array.isArray(j) ? j : (Array.isArray((j as Record<string, unknown>)?.presets) ? (j as { presets: unknown[] }).presets : [])
+      const presets = arr.map(normalizePresetSummary).filter((p): p is PresetSummary => p != null)
+      return { ok: true, presets, detail: `${presets.length} preset(s)` }
+    } catch (e) {
+      return { ok: false, presets: [], detail: `network: ${e instanceof Error ? e.message : 'failed'}` }
+    }
+  }, [])
+
+  // POST /api/vehicles/{i}/param-presets {name, params:[{id,value,type}, ...]}
+  const savePreset = useCallback(
+    async (name: string): Promise<PresetOpOutcome> => {
+      const trimmed = name.trim()
+      if (!trimmed) return { ok: false, detail: 'preset name required' }
+      // SIMULATED: hand the params to the mock engine.
+      if (connRef.current !== 'live') {
+        const v = engineRef.current?.vehicles[idxRef.current]
+        if (!v) return { ok: false, detail: 'no vehicle' }
+        const count = v.savePreset(trimmed, v.paramStoreView().params)
+        await new Promise((r) => setTimeout(r, 250))
+        return { ok: true, detail: `Preset '${trimmed}' saved (${count} params, simulated)` }
+      }
+      // LIVE: collect the current polled paramStore, post to the catalog.
+      const store = paramStoreRef.current
+      if (!store || store.params.length === 0) {
+        return { ok: false, detail: 'no params cached — press Download first' }
+      }
+      const body = {
+        name: trimmed,
+        params: store.params.map((p) => ({ id: p.id, value: p.value, type: p.type })),
+      }
+      const url = gw(CATALOG_PORT, `/api/vehicles/${idxRef.current}/param-presets`)
+      try {
+        const res = await fetchGw(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        }, 5000)
+        const j: unknown = await res.json().catch(() => null)
+        const env = (j && typeof j === 'object' && 'ok' in (j as Record<string, unknown>))
+          ? (j as { ok: unknown; error?: unknown; data?: unknown })
+          : null
+        if (!res.ok || (env && env.ok === false)) {
+          const msg = env?.error ?? `HTTP ${res.status}`
+          return { ok: false, detail: String(msg) }
+        }
+        const data = (env && env.data ? env.data : {}) as { param_count?: number; name?: string }
+        const count = typeof data.param_count === 'number' ? data.param_count : store.params.length
+        return { ok: true, detail: `Preset '${trimmed}' saved (${count} params)` }
+      } catch (e) {
+        return { ok: false, detail: `network: ${e instanceof Error ? e.message : 'failed'}` }
+      }
+    },
+    [],
+  )
+
+  // POST /api/vehicles/{i}/param-presets/{name}/load → {params:[{id,value,type},...]}
+  //
+  // Then fans each loaded param out through the live PARAM_SET write path
+  // (`act` against `/api/vehicles/{i}/params`) so PX4 actually receives and
+  // echo-confirms each value — the spec's "applied via the existing
+  // writeParam method" (§5.3) and the QGC §8.3 step-10 post-condition.
+  const loadPreset = useCallback(
+    async (name: string): Promise<LoadPresetOutcome> => {
+      const trimmed = name.trim()
+      if (!trimmed) return { ok: false, params: [], applied: 0, detail: 'preset name required' }
+      // SIMULATED: pull params from the mock engine and write them locally.
+      if (connRef.current !== 'live') {
+        const v = engineRef.current?.vehicles[idxRef.current]
+        if (!v) return { ok: false, params: [], applied: 0, detail: 'no vehicle' }
+        const params = v.loadPreset(trimmed)
+        if (params.length === 0) {
+          return { ok: false, params: [], applied: 0, detail: `preset '${trimmed}' not found` }
+        }
+        let applied = 0
+        for (const p of params) {
+          if (v.writeParam(p.id, p.value).ok) applied++
+        }
+        await new Promise((r) => setTimeout(r, 400))
+        return { ok: true, params, applied, detail: `${applied}/${params.length} params written (simulated)` }
+      }
+      // LIVE: ask the catalog for the params, then write each via PARAM_SET.
+      const url = gw(CATALOG_PORT, `/api/vehicles/${idxRef.current}/param-presets/${encodeURIComponent(trimmed)}/load`)
+      let params: { id: string; value: number; type: number }[]
+      try {
+        const res = await fetchGw(url, { method: 'POST' }, 6000)
+        if (!res.ok) {
+          return { ok: false, params: [], applied: 0, detail: `HTTP ${res.status}` }
+        }
+        const j = unwrapEnvelope(await res.json())
+        const arr = Array.isArray(j) ? j : (Array.isArray((j as Record<string, unknown>)?.params) ? (j as { params: unknown[] }).params : [])
+        params = arr
+          .map((p) => {
+            const r = (p && typeof p === 'object' ? p : {}) as Record<string, unknown>
+            const id = typeof r.id === 'string' ? r.id : ''
+            const value = typeof r.value === 'number' ? r.value : Number(r.value)
+            const type = typeof r.type === 'number' ? r.type : 9
+            if (!id || !Number.isFinite(value)) return null
+            return { id, value, type }
+          })
+          .filter((p): p is { id: string; value: number; type: number } => p != null)
+      } catch (e) {
+        return { ok: false, params: [], applied: 0, detail: `network: ${e instanceof Error ? e.message : 'failed'}` }
+      }
+      // fan each loaded param out through PARAM_SET (the live write path)
+      let applied = 0
+      for (const p of params) {
+        const r = await act(`/api/vehicles/${idxRef.current}/params`, { id: p.id, value: p.value }, () => ({ ok: true, detail: '' }))
+        if (r.ok) applied++
+      }
+      return { ok: true, params, applied, detail: `${applied}/${params.length} params written via PARAM_SET` }
+    },
+    [act],
+  )
+
+  // DELETE /api/vehicles/{i}/param-presets/{name}
+  const deletePreset = useCallback(
+    async (name: string): Promise<PresetOpOutcome> => {
+      const trimmed = name.trim()
+      if (!trimmed) return { ok: false, detail: 'preset name required' }
+      if (connRef.current !== 'live') {
+        const v = engineRef.current?.vehicles[idxRef.current]
+        if (!v) return { ok: false, detail: 'no vehicle' }
+        const ok = v.deletePreset(trimmed)
+        await new Promise((r) => setTimeout(r, 200))
+        return ok
+          ? { ok: true, detail: `Preset '${trimmed}' deleted (simulated)` }
+          : { ok: false, detail: `preset '${trimmed}' not found` }
+      }
+      const url = gw(CATALOG_PORT, `/api/vehicles/${idxRef.current}/param-presets/${encodeURIComponent(trimmed)}`)
+      try {
+        const res = await fetchGw(url, { method: 'DELETE' }, 4000)
+        if (!res.ok) {
+          const j: unknown = await res.json().catch(() => null)
+          const env = (j && typeof j === 'object' && 'error' in (j as Record<string, unknown>))
+            ? (j as { error?: unknown })
+            : null
+          const msg = env?.error ?? `HTTP ${res.status}`
+          return { ok: false, detail: String(msg) }
+        }
+        return { ok: true, detail: `Preset '${trimmed}' deleted` }
+      } catch (e) {
+        return { ok: false, detail: `network: ${e instanceof Error ? e.message : 'failed'}` }
+      }
+    },
+    [],
+  )
+
   const writeParam = useCallback(
     (id: string, value: number) =>
       act(`/api/vehicles/${idxRef.current}/params`, { id, value }, () => {
@@ -263,6 +531,7 @@ export function useVehicleSetup(vehicleCount: number) {
   return {
     conn,
     port: FLEET_PORT,
+    catalogPort: CATALOG_PORT,
     lastError,
     retryAt,
     index,
@@ -278,6 +547,12 @@ export function useVehicleSetup(vehicleCount: number) {
     applyAirframe,
     calibrate,
     setMode,
+    // v1 — param search/filter + presets
+    searchParams,
+    listPresets,
+    savePreset,
+    loadPreset,
+    deletePreset,
   }
 }
 
@@ -361,11 +636,36 @@ function normalizeParamStore(raw: unknown): ParamStoreView | null {
   const r = raw as Record<string, unknown>
   const params = Array.isArray(r.params)
     ? r.params
-        .map((p) => {
+        .map((p, i) => {
           const e = (p && typeof p === 'object' ? p : {}) as Record<string, unknown>
           const id = str(e.id)
           if (!id) return null
-          return { id, value: num(e.value) ?? 0, type: num(e.type) ?? 9, index: num(e.index) ?? 0 }
+          const value = num(e.value) ?? 0
+          const type = num(e.type) ?? 9
+          const defaultVal = num(e.default)
+          // group: explicit `group` field, else fall back to the id's
+          // leading token (PX4 convention: `MPC_XY_VEL_MAX` → `MPC`).
+          const groupStr = str(e.group)
+          const group = groupStr !== '' ? groupStr : id.split('_')[0] ?? ''
+          const isChanged =
+            e.is_changed === true
+              ? true
+              : e.is_changed === false
+                ? false
+                : defaultVal == null
+                  ? false
+                  : Math.abs(defaultVal - value) > 1e-9
+          return {
+            id,
+            value,
+            raw: num(e.raw) ?? value,
+            type,
+            kind: str(e.kind, type === 9 ? 'real32' : type === 6 ? 'int32' : 'custom'),
+            index: num(e.index) ?? i,
+            group,
+            default: defaultVal,
+            is_changed: isChanged,
+          }
         })
         .filter((p): p is ParamStoreView['params'][number] => p != null)
     : []
@@ -376,6 +676,19 @@ function normalizeParamStore(raw: unknown): ParamStoreView | null {
     requested_ms: num(r.requested_ms),
     last_value_ms: num(r.last_value_ms),
     params,
+  }
+}
+
+/** Tolerant normalizer for a `PresetSummary` row. */
+function normalizePresetSummary(raw: unknown): PresetSummary | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const r = raw as Record<string, unknown>
+  const name = str(r.name)
+  if (!name) return null
+  return {
+    name,
+    created_at: str(r.created_at, r.createdAt ?? ''),
+    param_count: num(r.param_count, r.paramCount) ?? 0,
   }
 }
 

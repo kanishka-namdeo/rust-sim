@@ -240,12 +240,26 @@ export interface ModeEntry {
 /** Param-download state (fleet-mavlink ParamDownloadState). */
 export type ParamDownloadState = 'Idle' | 'Downloading' | 'Complete' | 'Stalled' | 'NoLink' | (string & {})
 
-/** One parameter row in the live cache (GET /api/vehicles/{i}/params). */
+/** One parameter row in the live cache (GET /api/vehicles/{i}/params).
+ *
+ * v1 (GCS_SPEC §5.3) extends this row with the PX4-default comparison
+ * fields so the operator can diff the live vehicle against the
+ * compiled-in defaults: `group` (PX4 param-group prefix), `default`
+ * (null = unknown; the backend may not have the catalog default for
+ * every param), and `is_changed` (the row's diff flag, the UX basis
+ * for the pale-yellow highlight). `raw` + `kind` preserve the wire
+ * shape (MAVLink PARAM_VALUE's `param_value` is a tagged union; the
+ * server emits both the decoded `value` and the raw form). */
 export interface ParamEntry {
   id: string
   value: number
+  raw: number
   type: number
+  kind: string
   index: number
+  group: string
+  default: number | null
+  is_changed: boolean
 }
 
 /** The parameter store snapshot with download progress. */
@@ -256,6 +270,28 @@ export interface ParamStoreView {
   requested_ms: number | null
   last_value_ms: number | null
   params: ParamEntry[]
+}
+
+/** One preset summary row (GET /api/vehicles/{i}/param-presets — :8300). */
+export interface PresetSummary {
+  name: string
+  created_at: string
+  param_count: number
+}
+
+/** One parameter inside a saved preset (POST body / load response). */
+export interface PresetParam {
+  id: string
+  value: number
+  type: number
+}
+
+/** Full preset file (saved on the catalog side). */
+export interface PresetFile {
+  name: string
+  created_at: string
+  vehicle_id: number
+  params: PresetParam[]
 }
 
 /** Airframe as resolved against the live SYS_AUTOSTART (setup summary). */

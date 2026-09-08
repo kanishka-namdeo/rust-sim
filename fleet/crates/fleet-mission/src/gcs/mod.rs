@@ -5,6 +5,7 @@
 //! the modules directly.
 
 pub mod mission_file;
+pub mod preset;
 pub mod server;
 pub mod store;
 pub mod validation;

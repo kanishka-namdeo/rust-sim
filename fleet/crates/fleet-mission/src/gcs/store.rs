@@ -12,6 +12,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::gcs::mission_file::MissionFile;
+use crate::gcs::preset::PresetFile;
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -364,6 +365,128 @@ impl Store {
             .map_err(|_| StoreError::NotFound(id.to_string()))?;
         MissionFile::from_toml_str(&toml_str).map_err(Into::into)
     }
+
+    // -----------------------------------------------------------------
+    // Param presets (ADR-0025, GCS_SPEC.md §5.3 — Vehicle Setup)
+    // -----------------------------------------------------------------
+    //
+    // One TOML file per preset, at
+    // `<root>/presets/vehicle_<i>/<name>.toml`. Vehicle is the fleet
+    // index (0..count-1) — presets are per-vehicle because each
+    // vehicle's param store is its own. The `name` is the operator's
+    // chosen preset identifier ("aggressive-corners", "high-wind").
+    //
+    // Names are constrained to `[A-Za-z0-9_-]+` (no path separators,
+    // no shell metachars, no leading dots) — the name becomes a path
+    // component, so this is the path-injection guard. Matches QGC's
+    // own preset-name validation regex.
+
+    /// Path to the directory holding vehicle `i`'s presets.
+    pub fn presets_dir(&self, vehicle_id: u8) -> PathBuf {
+        self.root.join("presets").join(format!("vehicle_{vehicle_id}"))
+    }
+
+    /// Path to a specific preset file. Caller is responsible for having
+    /// already validated the name (see [`validate_preset_name`]).
+    fn preset_path(&self, vehicle_id: u8, name: &str) -> PathBuf {
+        self.presets_dir(vehicle_id).join(format!("{name}.toml"))
+    }
+
+    /// List all param presets saved for vehicle `i`. Returns the
+    /// summary form (name, created_at, param_count) — QGC's preset
+    /// picker shows the summary; the full preset body is fetched
+    /// separately via [`Self::load_preset`]. Stable name-sorted order.
+    pub fn list_presets(
+        &self,
+        vehicle_id: u8,
+    ) -> Result<Vec<PresetSummary>, StoreError> {
+        let dir = self.presets_dir(vehicle_id);
+        if !dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut summaries = Vec::new();
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("toml") {
+                continue;
+            }
+            let stem = match path.file_stem().and_then(|s| s.to_str()) {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+            let toml_str = match fs::read_to_string(&path) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let preset: PresetFile = match PresetFile::from_toml_str(&toml_str) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            summaries.push(PresetSummary {
+                name: preset.name,
+                created_at: preset.created_at,
+                param_count: preset.params.len(),
+            });
+            let _ = stem; // stem is unused; we trust the TOML's `name` field
+        }
+        // Stable, name-sorted order (QGC sorts its preset picker the same).
+        summaries.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(summaries)
+    }
+
+    /// Save a param preset for vehicle `i`. Overwrites an existing
+    /// preset of the same name (QGC's "Save As" replaces silently when
+    /// the operator confirms the overwrite dialog). Atomic write
+    /// (temp-file + fsync + rename) — same protocol as mission writes.
+    /// Returns the saved [`PresetFile`] with `created_at` filled in.
+    pub fn save_preset(
+        &self,
+        vehicle_id: u8,
+        name: &str,
+        params: Vec<crate::gcs::preset::PresetParam>,
+    ) -> Result<PresetFile, StoreError> {
+        validate_preset_name(name)?;
+        let preset = PresetFile {
+            name: name.to_string(),
+            created_at: now_rfc3339(),
+            vehicle_id,
+            params,
+        };
+        let dir = self.presets_dir(vehicle_id);
+        fs::create_dir_all(&dir)?;
+        let path = self.preset_path(vehicle_id, name);
+        let toml_str = preset.to_toml_pretty()?;
+        Self::write_atomic(&path, &toml_str)?;
+        Ok(preset)
+    }
+
+    /// Load a param preset by name. Returns the full preset body so
+    /// the catalog's `/load` endpoint can hand the param list back to
+    /// the operator (or push it to the vehicle via PARAM_SET).
+    pub fn load_preset(&self, vehicle_id: u8, name: &str) -> Result<PresetFile, StoreError> {
+        validate_preset_name(name)?;
+        let path = self.preset_path(vehicle_id, name);
+        if !path.exists() {
+            return Err(StoreError::NotFound(format!("preset '{name}'")));
+        }
+        let toml_str = fs::read_to_string(&path)
+            .map_err(|_| StoreError::NotFound(format!("preset '{name}'")))?;
+        PresetFile::from_toml_str(&toml_str).map_err(Into::into)
+    }
+
+    /// Delete a param preset by name. Errors if the preset does not
+    /// exist (QGC's "Delete" button only appears on existing presets,
+    /// so a 404 here surfaces a real race the operator should see).
+    pub fn delete_preset(&self, vehicle_id: u8, name: &str) -> Result<(), StoreError> {
+        validate_preset_name(name)?;
+        let path = self.preset_path(vehicle_id, name);
+        if !path.exists() {
+            return Err(StoreError::NotFound(format!("preset '{name}'")));
+        }
+        fs::remove_file(&path)?;
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -380,6 +503,42 @@ pub struct MissionSummary {
     pub fence_count: usize,
     pub rally_count: usize,
     pub deleted: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Preset summary (for the list-presets endpoint)
+// ---------------------------------------------------------------------------
+
+/// Summary form returned by `GET /api/vehicles/{i}/param-presets`
+/// (GCS_SPEC.md §5.3): QGC's preset picker shows name + count, not the
+/// full body — the full body is fetched separately via `/load`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PresetSummary {
+    pub name: String,
+    pub created_at: String,
+    pub param_count: usize,
+}
+
+/// Validate a preset name: non-empty, 1..=64 chars, filesystem-safe
+/// (`[A-Za-z0-9_-]+` — no path separators, no shell metachars, no
+/// leading dots). The name becomes a path component under
+/// `<catalog>/presets/vehicle_<i>/`, so this is the path-injection
+/// guard. Matches QGC's own preset-name validation regex.
+fn validate_preset_name(name: &str) -> Result<(), StoreError> {
+    if name.is_empty() || name.len() > 64 {
+        return Err(StoreError::InvalidId(format!(
+            "preset name '{name}' must be 1..=64 chars"
+        )));
+    }
+    let valid = name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if !valid {
+        return Err(StoreError::InvalidId(format!(
+            "preset name '{name}' must match [A-Za-z0-9_-]+"
+        )));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -672,5 +831,179 @@ mod tests {
         assert_eq!(ts.as_bytes()[4], b'-');
         assert_eq!(ts.as_bytes()[10], b'T');
         assert_eq!(ts.as_bytes()[19], b'Z');
+    }
+
+    // -----------------------------------------------------------------
+    // Param preset tests (M4 — GCS_SPEC.md §5.3)
+    // -----------------------------------------------------------------
+
+    use crate::gcs::preset::PresetParam;
+
+    fn sample_preset_params() -> Vec<PresetParam> {
+        vec![
+            PresetParam { id: "MPC_XY_VEL_MAX".into(), value: 8.0, param_type: 9 },
+            PresetParam { id: "MC_ROLLRATE_P".into(), value: 7.5, param_type: 9 },
+            PresetParam { id: "BAT_N_CELLS".into(), value: 6.0, param_type: 6 },
+        ]
+    }
+
+    #[test]
+    fn preset_save_load_roundtrip() {
+        let dir = test_dir();
+        let store = Store::new(&dir).unwrap();
+
+        // Save
+        let saved = store
+            .save_preset(0, "aggressive-corners", sample_preset_params())
+            .unwrap();
+        assert_eq!(saved.name, "aggressive-corners");
+        assert_eq!(saved.vehicle_id, 0);
+        assert_eq!(saved.params.len(), 3);
+        assert!(!saved.created_at.is_empty());
+
+        // List — one preset, with param_count=3
+        let list = store.list_presets(0).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "aggressive-corners");
+        assert_eq!(list[0].param_count, 3);
+        assert_eq!(list[0].created_at, saved.created_at);
+
+        // Load — params match what we saved
+        let loaded = store.load_preset(0, "aggressive-corners").unwrap();
+        assert_eq!(loaded.name, "aggressive-corners");
+        assert_eq!(loaded.vehicle_id, 0);
+        assert_eq!(loaded.params.len(), 3);
+        assert_eq!(loaded.params[0].id, "MPC_XY_VEL_MAX");
+        assert_eq!(loaded.params[0].value, 8.0);
+        assert_eq!(loaded.params[0].param_type, 9);
+        assert_eq!(loaded.params[1].id, "MC_ROLLRATE_P");
+        assert_eq!(loaded.params[1].value, 7.5);
+        assert_eq!(loaded.params[2].id, "BAT_N_CELLS");
+        assert_eq!(loaded.params[2].value, 6.0);
+        assert_eq!(loaded.params[2].param_type, 6); // INT32 preserved
+
+        // The on-disk file is TOML at the spec-defined path.
+        let path = dir.join("presets").join("vehicle_0").join("aggressive-corners.toml");
+        assert!(path.exists(), "preset file must exist at {path:?}");
+        let on_disk = fs::read_to_string(&path).unwrap();
+        assert!(on_disk.contains("name = \"aggressive-corners\""));
+        assert!(on_disk.contains("vehicle_id = 0"));
+        assert!(on_disk.contains("[[params]]"));
+        assert!(on_disk.contains("type = 9"));
+        assert!(on_disk.contains("type = 6"));
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn preset_delete_removes_file() {
+        let dir = test_dir();
+        let store = Store::new(&dir).unwrap();
+
+        // Save then list — 1 preset
+        store.save_preset(0, "to-delete", sample_preset_params()).unwrap();
+        assert_eq!(store.list_presets(0).unwrap().len(), 1);
+
+        // Delete then list — 0 presets
+        store.delete_preset(0, "to-delete").unwrap();
+        assert_eq!(store.list_presets(0).unwrap().len(), 0);
+
+        // The on-disk file is gone
+        let path = dir.join("presets").join("vehicle_0").join("to-delete.toml");
+        assert!(!path.exists());
+
+        // Deleting again returns NotFound (QGC's "Delete" only appears on
+        // existing presets; a 404 here surfaces a real race).
+        let err = store.delete_preset(0, "to-delete").unwrap_err();
+        assert!(matches!(err, StoreError::NotFound(_)));
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn preset_list_isolated_per_vehicle() {
+        let dir = test_dir();
+        let store = Store::new(&dir).unwrap();
+        store.save_preset(0, "v0-preset", sample_preset_params()).unwrap();
+        store.save_preset(1, "v1-preset", sample_preset_params()).unwrap();
+        // Each vehicle sees only its own presets
+        assert_eq!(store.list_presets(0).unwrap().len(), 1);
+        assert_eq!(store.list_presets(1).unwrap().len(), 1);
+        assert_eq!(store.list_presets(0).unwrap()[0].name, "v0-preset");
+        assert_eq!(store.list_presets(1).unwrap()[0].name, "v1-preset");
+        // Vehicle 2 has no presets → empty list (not an error)
+        assert_eq!(store.list_presets(2).unwrap().len(), 0);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn preset_save_overwrites_existing() {
+        let dir = test_dir();
+        let store = Store::new(&dir).unwrap();
+        // Save v1
+        store.save_preset(0, "evolving", vec![
+            PresetParam { id: "MPC_XY_VEL_MAX".into(), value: 8.0, param_type: 9 },
+        ]).unwrap();
+        assert_eq!(store.list_presets(0).unwrap()[0].param_count, 1);
+        // Save v2 with the same name — overwrites
+        store.save_preset(0, "evolving", vec![
+            PresetParam { id: "MPC_XY_VEL_MAX".into(), value: 10.0, param_type: 9 },
+            PresetParam { id: "MC_ROLLRATE_P".into(), value: 7.5, param_type: 9 },
+        ]).unwrap();
+        let list = store.list_presets(0).unwrap();
+        assert_eq!(list.len(), 1); // not 2 — overwrite, not duplicate
+        assert_eq!(list[0].param_count, 2);
+        let loaded = store.load_preset(0, "evolving").unwrap();
+        assert_eq!(loaded.params[0].value, 10.0); // latest value, not the original 8.0
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn preset_name_validation_rejects_path_traversal() {
+        let dir = test_dir();
+        let store = Store::new(&dir).unwrap();
+        // Path separators → rejected
+        let err = store.save_preset(0, "../escape", sample_preset_params()).unwrap_err();
+        assert!(matches!(err, StoreError::InvalidId(_)));
+        // Leading dot → rejected
+        let err = store.save_preset(0, ".hidden", sample_preset_params()).unwrap_err();
+        assert!(matches!(err, StoreError::InvalidId(_)));
+        // Spaces → rejected
+        let err = store.save_preset(0, "has space", sample_preset_params()).unwrap_err();
+        assert!(matches!(err, StoreError::InvalidId(_)));
+        // Empty name → rejected
+        let err = store.save_preset(0, "", sample_preset_params()).unwrap_err();
+        assert!(matches!(err, StoreError::InvalidId(_)));
+        // Valid names accepted
+        store.save_preset(0, "aggressive-corners", sample_preset_params()).unwrap();
+        store.save_preset(0, "high_wind_2026", sample_preset_params()).unwrap();
+        store.save_preset(0, "Preset1", sample_preset_params()).unwrap();
+        assert_eq!(store.list_presets(0).unwrap().len(), 3);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn preset_load_nonexistent_returns_not_found() {
+        let dir = test_dir();
+        let store = Store::new(&dir).unwrap();
+        let err = store.load_preset(0, "never-saved").unwrap_err();
+        assert!(matches!(err, StoreError::NotFound(_)));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn presets_dir_returns_spec_path() {
+        let dir = test_dir();
+        let store = Store::new(&dir).unwrap();
+        // GCS_SPEC.md §5.3 + ADR-0025: <root>/presets/vehicle_<i>/
+        assert_eq!(
+            store.presets_dir(0),
+            dir.join("presets").join("vehicle_0")
+        );
+        assert_eq!(
+            store.presets_dir(7),
+            dir.join("presets").join("vehicle_7")
+        );
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

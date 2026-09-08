@@ -89,37 +89,69 @@ export const MOCK_MODES: ModeEntry[] = [
 
 const CATEGORY_BY_COMPAT = new Set(['Multirotor (UAV)', 'Simulator (SITL models)'])
 
-/** The demo param table (ids the setup view actually reads/edits). */
+/** The demo param table (ids the setup view actually reads/edits).
+ *
+ * Each entry is `[id, defaultValue, group]` — `value` is seeded equal to
+ * `default` (so `is_changed=false` for the freshly-booted mock), and a
+ * handful of rows are marked `changed=true` to exercise the
+ * diff-against-defaults highlight (QGC §8.3 step 4: "highlighted in pale
+ * yellow"). */
 function freshMockParams(sysAutostart: number): ParamEntry[] {
-  const rows: [string, number][] = [
-    ['SYS_AUTOSTART', sysAutostart],
-    ['CAL_ACC0_ID', 1310988],
-    ['CAL_GYRO0_ID', 1310988],
-    ['CAL_MAG0_ID', 19700492],
-    ['CAL_MAG1_ID', 0],
-    ['CAL_MAG2_ID', 0],
-    ['CAL_LEVEL', 0],
-    ['BAT1_N_CELLS', 4],
-    ['BAT1_V_EMPTY', 3.1],
-    ['BAT1_V_CHARGED', 4.1],
-    ['BAT_LOW_THR', 0.15],
-    ['BAT_CRIT_THR', 0.07],
-    ['BAT_EMERGEN_THR', 0.05],
-    ['BAT1_R_INTERNAL', 0.008],
-    ['NAV_RCL_ACT', 3],
-    ['NAV_DLL_ACT', 0],
-    ['COM_LOW_BAT_ACT', 2],
-    ['COM_OBL_RC_ACT', 3],
-    ['GF_ACTION', 2],
-    ['GF_MAX_HOR_DIST', 900],
-    ['GF_MAX_VER_DIST', 150],
-    ['RTL_RETURN_ALT', 60],
-    ['MC_ROLLRATE_MAX', 720],
-    ['MPC_TILTMAX_AIR', 35],
-    ['COM_RC_LOSS_T', 0.5],
-    ['LNDMC_ALT_MAX', 2],
+  const rows: [string, number, string][] = [
+    ['SYS_AUTOSTART', sysAutostart, 'SYS'],
+    ['CAL_ACC0_ID', 1310988, 'CAL'],
+    ['CAL_GYRO0_ID', 1310988, 'CAL'],
+    ['CAL_MAG0_ID', 19700492, 'CAL'],
+    ['CAL_MAG1_ID', 0, 'CAL'],
+    ['CAL_MAG2_ID', 0, 'CAL'],
+    ['CAL_LEVEL', 0, 'CAL'],
+    ['BAT1_N_CELLS', 4, 'BAT'],
+    ['BAT1_V_EMPTY', 3.1, 'BAT'],
+    ['BAT1_V_CHARGED', 4.1, 'BAT'],
+    ['BAT_LOW_THR', 0.15, 'BAT'],
+    ['BAT_CRIT_THR', 0.07, 'BAT'],
+    ['BAT_EMERGEN_THR', 0.05, 'BAT'],
+    ['BAT1_R_INTERNAL', 0.008, 'BAT'],
+    ['NAV_RCL_ACT', 3, 'NAV'],
+    ['NAV_DLL_ACT', 0, 'NAV'],
+    ['COM_LOW_BAT_ACT', 2, 'COM'],
+    ['COM_OBL_RC_ACT', 3, 'COM'],
+    ['GF_ACTION', 2, 'GF'],
+    ['GF_MAX_HOR_DIST', 900, 'GF'],
+    ['GF_MAX_VER_DIST', 150, 'GF'],
+    ['RTL_RETURN_ALT', 60, 'RTL'],
+    ['MC_ROLLRATE_MAX', 720, 'MC'],
+    ['MC_ROLLRATE_P', 6.5, 'MC'],
+    ['MC_PITCHRATE_P', 6.5, 'MC'],
+    ['MPC_TILTMAX_AIR', 35, 'MPC'],
+    ['MPC_XY_VEL_MAX', 12.0, 'MPC'],
+    ['MPC_Z_VEL_MAX_UP', 3.0, 'MPC'],
+    ['MPC_LAND_SPEED', 0.7, 'MPC'],
+    ['COM_RC_LOSS_T', 0.5, 'COM'],
+    ['LNDMC_ALT_MAX', 2, 'LND'],
   ]
-  return rows.map(([id, value], i) => ({ id, value, type: 9, index: i }))
+  // tag a few rows as "changed from default" so the diff view has signal
+  // even before the operator touches anything (simulates a vehicle that
+  // already has a tuned config).
+  const changed: Record<string, number> = {
+    MC_ROLLRATE_P: 7.5,
+    MPC_XY_VEL_MAX: 8.0,
+    RTL_RETURN_ALT: 80,
+  }
+  return rows.map(([id, defaultValue, group], i) => {
+    const value = changed[id] != null ? changed[id] : defaultValue
+    return {
+      id,
+      value,
+      raw: value,
+      type: 9,
+      kind: 'real32',
+      index: i,
+      group,
+      default: defaultValue,
+      is_changed: changed[id] != null,
+    }
+  })
 }
 
 /**
@@ -243,7 +275,11 @@ export class MockSetupVehicle {
     return true
   }
 
-  /** Echo-confirmed write: 'unknown' ids get created (PX4 would reject). */
+  /** Echo-confirmed write: 'unknown' ids get created (PX4 would reject).
+   *
+   * After a write, `is_changed` is recomputed against the cached
+   * `default` (null defaults → true once written, matching the
+   * "operator-set" semantic of QGC). */
   writeParam(id: string, value: number): { ok: boolean; confirmed: number | null } {
     if (this.armed && id === 'SYS_AUTOSTART') {
       return { ok: false, confirmed: null }
@@ -251,8 +287,21 @@ export class MockSetupVehicle {
     const row = this.params.find((p) => p.id === id)
     if (row) {
       row.value = value
+      row.raw = value
+      row.is_changed = row.default == null ? true : Math.abs(row.default - value) > 1e-9
     } else {
-      this.params.push({ id, value, type: 9, index: this.params.length })
+      // newly-created param has no known default → mark as changed
+      this.params.push({
+        id,
+        value,
+        raw: value,
+        type: 9,
+        kind: 'real32',
+        index: this.params.length,
+        group: id.split('_')[0] ?? '',
+        default: null,
+        is_changed: true,
+      })
     }
     return { ok: true, confirmed: value }
   }
@@ -290,6 +339,37 @@ export class MockSetupVehicle {
     this.mode = m.name
     this.modeWord = m.mode_word
     return true
+  }
+
+  // -- v1: param presets (in-memory mirror of the :8300 catalog) ------------
+
+  /** In-memory preset store (per-vehicle). Replaced on airframe reboot. */
+  private presets: Map<string, { created_at: string; params: { id: string; value: number; type: number }[] }> = new Map()
+
+  listPresets(): { name: string; created_at: string; param_count: number }[] {
+    return Array.from(this.presets.entries())
+      .map(([name, p]) => ({ name, created_at: p.created_at, param_count: p.params.length }))
+      .sort((a, b) => a.name.localeCompare(b.name))
+  }
+
+  savePreset(name: string, params: ParamEntry[]): number {
+    const trimmed = name.trim()
+    if (!trimmed) return 0
+    this.presets.set(trimmed, {
+      created_at: new Date().toISOString(),
+      params: params.map((p) => ({ id: p.id, value: p.value, type: p.type })),
+    })
+    return params.length
+  }
+
+  loadPreset(name: string): { id: string; value: number; type: number }[] {
+    const trimmed = name.trim()
+    const p = this.presets.get(trimmed)
+    return p ? p.params : []
+  }
+
+  deletePreset(name: string): boolean {
+    return this.presets.delete(name.trim())
   }
 }
 

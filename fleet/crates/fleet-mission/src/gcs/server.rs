@@ -15,11 +15,12 @@ use std::sync::Arc;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::Router;
 use serde_json::json;
 
 use crate::gcs::mission_file::MissionFile;
+use crate::gcs::preset::PresetParam;
 use crate::gcs::store::{MissionSummary, Store};
 use crate::gcs::validation::{validate as validate_mission, ValidationResult};
 use crate::gcs::version_check::{check_vehicle_version, VersionCheckResult};
@@ -48,6 +49,19 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/missions/{id}/rollback", post(rollback_mission))
         // Vehicle mission upload/download (version-checked)
         .route("/api/vehicles/{vehicle_id}/mission/upload", post(upload_mission))
+        // Vehicle param presets (GCS_SPEC.md §5.3, ADR-0025 — Vehicle Setup)
+        .route(
+            "/api/vehicles/{vehicle_id}/param-presets",
+            get(list_param_presets).post(save_param_preset),
+        )
+        .route(
+            "/api/vehicles/{vehicle_id}/param-presets/{name}",
+            delete(delete_param_preset),
+        )
+        .route(
+            "/api/vehicles/{vehicle_id}/param-presets/{name}/load",
+            post(load_param_preset),
+        )
         // Health
         .route("/api/health", get(health))
         .with_state(state)
@@ -80,6 +94,10 @@ async fn index() -> Json<serde_json::Value> {
             "GET /api/missions/{id}/versions/{version}",
             "POST /api/missions/{id}/rollback",
             "POST /api/vehicles/{vehicle_id}/mission/upload",
+            "GET /api/vehicles/{vehicle_id}/param-presets",
+            "POST /api/vehicles/{vehicle_id}/param-presets",
+            "POST /api/vehicles/{vehicle_id}/param-presets/{name}/load",
+            "DELETE /api/vehicles/{vehicle_id}/param-presets/{name}",
         ]
     }))
 }
@@ -317,6 +335,150 @@ async fn upload_mission(
 }
 
 // ---------------------------------------------------------------------------
+// Vehicle param presets (GCS_SPEC.md §5.3, ADR-0025 — Vehicle Setup)
+// ---------------------------------------------------------------------------
+//
+// The four endpoints QGC's Vehicle-Setup "Parameters" tab calls for its
+// preset picker:
+//
+//   GET    /api/vehicles/{i}/param-presets          — list summaries
+//   POST   /api/vehicles/{i}/param-presets          — save current as preset
+//   POST   /api/vehicles/{i}/param-presets/{name}/load — load preset body
+//   DELETE /api/vehicles/{i}/param-presets/{name}   — delete a preset
+//
+// All persistence goes through `Store::save_preset`/`load_preset`/… which
+// writes TOML at `<catalog>/presets/vehicle_<i>/<name>.toml` (ADR-0025).
+// The catalog server is a thin axum layer over the library; the store
+// is the source of truth (and the unit-test surface).
+
+/// `GET /api/vehicles/{i}/param-presets` — list saved presets for vehicle
+/// `i`. Returns the summary form: `[{name, created_at, param_count}]`
+/// (QGC's preset picker shows name + count; the full body is fetched on
+/// load). Always 200 — an empty list when the vehicle has no presets.
+async fn list_param_presets(
+    State(state): State<Arc<AppState>>,
+    Path(vehicle_id): Path<u8>,
+) -> Response {
+    match state.store.list_presets(vehicle_id) {
+        Ok(list) => Json(json!(list)).into_response(),
+        Err(e) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "STORE_ERROR",
+            &format!("{e}"),
+        ),
+    }
+}
+
+/// `POST /api/vehicles/{i}/param-presets` — save a preset (QGC's "Save As").
+///
+/// Body: `{"name": "aggressive-corners", "params": [{"id": "...",
+/// "value": <f64>, "type": <u8>}, …]}`. `type` is the MAVLink param_type
+/// byte (6 = INT32, 9 = REAL32) — the same byte PARAM_SET carries on the
+/// wire, so a preset can faithfully reproduce a typed param write.
+///
+/// Returns: `{"ok": true, "name": "...", "param_count": N}` (GCS_SPEC.md
+/// §5.3 — the preset-picker summary form). HTTP 422 + INVALID_NAME when
+/// the name fails `validate_preset_name` (path-injection guard).
+#[derive(serde::Deserialize)]
+struct SavePresetBody {
+    name: String,
+    #[serde(default)]
+    params: Vec<PresetParam>,
+}
+
+async fn save_param_preset(
+    State(state): State<Arc<AppState>>,
+    Path(vehicle_id): Path<u8>,
+    body: axum::extract::Json<SavePresetBody>,
+) -> Response {
+    match state.store.save_preset(vehicle_id, &body.name, body.params.clone()) {
+        Ok(saved) => Json(json!({
+            "ok": true,
+            "name": saved.name,
+            "param_count": saved.params.len(),
+        })).into_response(),
+        Err(e) => match e {
+            crate::gcs::store::StoreError::InvalidId(msg) => error_response(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "INVALID_NAME",
+                &msg,
+            ),
+            other => error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "STORE_ERROR",
+                &format!("{other}"),
+            ),
+        },
+    }
+}
+
+/// `POST /api/vehicles/{i}/param-presets/{name}/load` — load a preset
+/// (QGC's "Load"). Returns the full preset body so the console can
+/// apply it via `POST /api/vehicles/{i}/params` one param at a time
+/// (the spec's exact flow — §5.3 AC-5.3.2).
+///
+/// Returns: `{"ok": true, "params": [...]}` — the param list the console
+/// posts back to `:8400`. HTTP 404 when the preset does not exist.
+async fn load_param_preset(
+    State(state): State<Arc<AppState>>,
+    Path((vehicle_id, name)): Path<(u8, String)>,
+) -> Response {
+    match state.store.load_preset(vehicle_id, &name) {
+        Ok(preset) => Json(json!({
+            "ok": true,
+            "params": preset.params,
+        })).into_response(),
+        Err(e) => match e {
+            crate::gcs::store::StoreError::InvalidId(msg) => error_response(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "INVALID_NAME",
+                &msg,
+            ),
+            crate::gcs::store::StoreError::NotFound(_) => error_response(
+                StatusCode::NOT_FOUND,
+                "PRESET_NOT_FOUND",
+                &format!("param preset '{name}' not found for vehicle {vehicle_id}"),
+            ),
+            other => error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "STORE_ERROR",
+                &format!("{other}"),
+            ),
+        },
+    }
+}
+
+/// `DELETE /api/vehicles/{i}/param-presets/{name}` — delete a preset.
+/// HTTP 404 when the preset does not exist (QGC's "Delete" button only
+/// appears on existing presets, so a 404 here surfaces a real race the
+/// operator should see, unlike the idempotent delete some APIs prefer).
+async fn delete_param_preset(
+    State(state): State<Arc<AppState>>,
+    Path((vehicle_id, name)): Path<(u8, String)>,
+) -> Response {
+    match state.store.delete_preset(vehicle_id, &name) {
+        Ok(()) => Json(json!({"ok": true, "deleted": name})).into_response(),
+        Err(e) => match e {
+            crate::gcs::store::StoreError::InvalidId(msg) => error_response(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "INVALID_NAME",
+                &msg,
+            ),
+            crate::gcs::store::StoreError::NotFound(_) => error_response(
+                StatusCode::NOT_FOUND,
+                "PRESET_NOT_FOUND",
+                &format!("param preset '{name}' not found for vehicle {vehicle_id}"),
+            ),
+            other => error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "STORE_ERROR",
+                &format!("{other}"),
+            ),
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -513,5 +675,184 @@ inclusion = [
         let arr = body.as_array().unwrap();
         assert_eq!(arr.len(), 1);
         assert!(arr[0]["deleted"].as_bool().unwrap());
+    }
+
+    // -----------------------------------------------------------------
+    // Param preset endpoints (M4 — GCS_SPEC.md §5.3)
+    // -----------------------------------------------------------------
+
+    fn sample_preset_json(name: &str) -> String {
+        serde_json::json!({
+            "name": name,
+            "params": [
+                {"id": "MPC_XY_VEL_MAX", "value": 8.0, "type": 9},
+                {"id": "MC_ROLLRATE_P", "value": 7.5, "type": 9},
+                {"id": "BAT_N_CELLS", "value": 6.0, "type": 6},
+            ]
+        }).to_string()
+    }
+
+    #[tokio::test]
+    async fn param_preset_save_list_load_roundtrip() {
+        let store = test_store();
+        let state = Arc::new(AppState {
+            store,
+            fleet_base_url: "http://127.0.0.1:8400".into(),
+        });
+        let app = router(state);
+
+        // Save
+        let (status, body) = send_request(
+            app.clone(),
+            "POST",
+            "/api/vehicles/0/param-presets",
+            &sample_preset_json("aggressive-corners"),
+        ).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body["ok"].as_bool().unwrap());
+        assert_eq!(body["name"], "aggressive-corners");
+        assert_eq!(body["param_count"], 3);
+
+        // List
+        let (status, body) = send_request(
+            app.clone(),
+            "GET",
+            "/api/vehicles/0/param-presets",
+            "",
+        ).await;
+        assert_eq!(status, StatusCode::OK);
+        let arr = body.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["name"], "aggressive-corners");
+        assert_eq!(arr[0]["param_count"], 3);
+
+        // Load
+        let (status, body) = send_request(
+            app.clone(),
+            "POST",
+            "/api/vehicles/0/param-presets/aggressive-corners/load",
+            "",
+        ).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body["ok"].as_bool().unwrap());
+        let params = body["params"].as_array().unwrap();
+        assert_eq!(params.len(), 3);
+        assert_eq!(params[0]["id"], "MPC_XY_VEL_MAX");
+        assert_eq!(params[0]["value"], 8.0);
+        assert_eq!(params[0]["type"], 9);
+        assert_eq!(params[2]["id"], "BAT_N_CELLS");
+        assert_eq!(params[2]["type"], 6); // INT32 preserved
+    }
+
+    #[tokio::test]
+    async fn param_preset_delete_removes_file() {
+        let store = test_store();
+        let state = Arc::new(AppState {
+            store,
+            fleet_base_url: "http://127.0.0.1:8400".into(),
+        });
+        let app = router(state);
+
+        // Save then list — 1 preset
+        send_request(
+            app.clone(),
+            "POST",
+            "/api/vehicles/0/param-presets",
+            &sample_preset_json("to-delete"),
+        ).await;
+        let (status, body) = send_request(app.clone(), "GET", "/api/vehicles/0/param-presets", "").await;
+        assert_eq!(body.as_array().unwrap().len(), 1);
+
+        // Delete then list — 0 presets
+        let (status, _) = send_request(
+            app.clone(),
+            "DELETE",
+            "/api/vehicles/0/param-presets/to-delete",
+            "",
+        ).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, body) = send_request(app.clone(), "GET", "/api/vehicles/0/param-presets", "").await;
+        assert_eq!(body.as_array().unwrap().len(), 0);
+
+        // Deleting again returns 404
+        let (status, body) = send_request(
+            app,
+            "DELETE",
+            "/api/vehicles/0/param-presets/to-delete",
+            "",
+        ).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"]["code"], "PRESET_NOT_FOUND");
+    }
+
+    #[tokio::test]
+    async fn param_preset_load_nonexistent_returns_404() {
+        let store = test_store();
+        let state = Arc::new(AppState {
+            store,
+            fleet_base_url: "http://127.0.0.1:8400".into(),
+        });
+        let app = router(state);
+
+        let (status, body) = send_request(
+            app,
+            "POST",
+            "/api/vehicles/0/param-presets/never-saved/load",
+            "",
+        ).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"]["code"], "PRESET_NOT_FOUND");
+    }
+
+    #[tokio::test]
+    async fn param_preset_invalid_name_returns_422() {
+        let store = test_store();
+        let state = Arc::new(AppState {
+            store,
+            fleet_base_url: "http://127.0.0.1:8400".into(),
+        });
+        let app = router(state);
+
+        // Path-traversal name → 422 INVALID_NAME
+        let bad_body = sample_preset_json("../escape");
+        let (status, body) = send_request(
+            app.clone(),
+            "POST",
+            "/api/vehicles/0/param-presets",
+            &bad_body,
+        ).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body["error"]["code"], "INVALID_NAME");
+
+        // The list is still empty (nothing saved)
+        let (_, body) = send_request(app, "GET", "/api/vehicles/0/param-presets", "").await;
+        assert_eq!(body.as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn param_presets_isolated_per_vehicle() {
+        let store = test_store();
+        let state = Arc::new(AppState {
+            store,
+            fleet_base_url: "http://127.0.0.1:8400".into(),
+        });
+        let app = router(state);
+
+        // Vehicle 0 saves "v0-preset"; vehicle 1 saves "v1-preset"
+        send_request(app.clone(), "POST", "/api/vehicles/0/param-presets", &sample_preset_json("v0-preset")).await;
+        send_request(app.clone(), "POST", "/api/vehicles/1/param-presets", &sample_preset_json("v1-preset")).await;
+
+        // Each vehicle sees only its own presets
+        let (_, v0) = send_request(app.clone(), "GET", "/api/vehicles/0/param-presets", "").await;
+        let (_, v1) = send_request(app.clone(), "GET", "/api/vehicles/1/param-presets", "").await;
+        assert_eq!(v0.as_array().unwrap().len(), 1);
+        assert_eq!(v1.as_array().unwrap().len(), 1);
+        assert_eq!(v0.as_array().unwrap()[0]["name"], "v0-preset");
+        assert_eq!(v1.as_array().unwrap()[0]["name"], "v1-preset");
+
+        // Vehicle 2 has no presets → empty list, not an error
+        let (status, v2) = send_request(app, "GET", "/api/vehicles/2/param-presets", "").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(v2.as_array().unwrap().len(), 0);
     }
 }

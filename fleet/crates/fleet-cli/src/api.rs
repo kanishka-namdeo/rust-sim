@@ -437,9 +437,28 @@ async fn vehicle_setup_get(
 /// `GET /api/vehicles/{i}/params` — the live parameter cache with
 /// download progress. 404 when the index is out of range; a link-less
 /// vehicle reports an empty store (the console shows "no link yet").
+///
+/// Query params (GCS_SPEC.md §5.3 — Vehicle Setup search/filter):
+///   - `search` — case-insensitive substring on the param id (QGC's
+///     param-search box; AC-5.3.1).
+///   - `group`  — exact group match (PX4's grouping convention: the
+///     param id's underscore-separated prefix — `MPC`, `MC`, `BAT` …).
+///
+/// The summary fields (`total`/`received`/`state`/`requested_ms`/
+/// `last_value_ms`) always reflect the FULL store — the filters only
+/// narrow the `params` array the operator sees.
+#[derive(serde::Deserialize, Default)]
+struct ParamsQuery {
+    #[serde(default)]
+    search: Option<String>,
+    #[serde(default)]
+    group: Option<String>,
+}
+
 async fn vehicle_params_get(
     State(s): State<Arc<AppState>>,
     Path(index): Path<u8>,
+    Query(q): Query<ParamsQuery>,
 ) -> Response {
     if index >= s.count {
         return err(
@@ -447,9 +466,13 @@ async fn vehicle_params_get(
             &format!("vehicle index {index} out of range (fleet count {})", s.count),
         );
     }
+    let filter = setup::ParamsFilter {
+        search: q.search,
+        group: q.group,
+    };
     let store = s.link(index).map(|h| h.param_store());
     let data = match store {
-        Some(st) => setup::build_params_json(&st),
+        Some(st) => setup::build_params_json(&st, &filter),
         None => json!({
             "total": 0, "received": 0, "state": "NoLink",
             "requested_ms": null, "last_value_ms": null, "params": [],

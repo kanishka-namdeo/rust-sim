@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mock PX4 SITL for the G-5/G-6/G-7 Fly-View + arm/disarm harnesses.
+"""Mock PX4 SITL for the G-5/G-6/G-7/G-8 Fly-View + arm/disarm + setup harnesses.
 
 Wire topology follows ``fleet-mavlink/src/link.rs`` §3.1 (the same convention
 the G-3/G-4 mock uses): the Rust GCS link **binds** 127.0.0.1:14540+i and
@@ -25,6 +25,28 @@ actually changes the armed flag. The mock remembers its armed state across
 heartbeats so the GCS-side snapshot's ``armed`` field flips within one
 heartbeat period (1 s) of the COMMAND_LONG round-trip.
 
+For G-8 (Vehicle Setup extensions), the mock also responds to:
+  * ``PARAM_REQUEST_LIST`` (msgid 21) by streaming 20 ``PARAM_VALUE``
+    (msgid 22) messages — the same 20 params the backend's defaults table
+    knows about (``fleet-cli/src/setup.rs::PARAM_DEFAULTS``). Each frame
+    carries the right ``param_count`` (20), ``param_index`` (0..19) and
+    ``param_type`` (6 = INT32, 9 = REAL32) so the link's param-store
+    completion logic flips to ``Complete`` after the last frame.
+  * ``PARAM_SET`` (msgid 23) by echoing back a ``PARAM_VALUE`` with the
+    new value (PX4's echo-confirmation pattern). The mock's param store
+    is updated in-memory so subsequent ``PARAM_REQUEST_LIST`` requests
+    reflect the new value — the same PX4 autosave behaviour.
+
+The 20 params and their compiled-in defaults (PX4 v1.16.2):
+
+    MPC_XY_VEL_MAX=12.0, MPC_Z_VEL_MAX_UP=3.0, MPC_Z_VEL_MAX_DN=1.0,
+    MPC_XY_CRUISE=5.0, MPC_CRUISE_90=5.0, MPC_TKO_SPEED=1.0,
+    MC_ROLLRATE_P=6.5, MC_ROLLRATE_I=0.0, MC_ROLLRATE_D=0.003,
+    MC_PITCHRATE_P=6.5, MC_PITCHRATE_I=0.0, MC_PITCHRATE_D=0.003,
+    MC_YAWRATE_P=200.0, MC_YAWRATE_I=0.0, MC_YAWRATE_D=0.0,
+    FW_AIRSPD_TRIM=15.0, BAT_N_CELLS=4 (int), BAT_V_EMPTY=3.4,
+    BAT_V_CHARGED=4.1, NAV_DLL_ACT=0 (int)
+
 CLI:
     python3 mock_px4_fly.py [--port 14580] [--gcs-port 14540]
                             [--state PATH] [--instance 0]
@@ -40,6 +62,7 @@ import math
 import os
 import signal
 import socket
+import struct
 import sys
 import threading
 import time
@@ -64,6 +87,51 @@ DEFAULT_LAT_E7 = 473977700   # 47.397770 deg * 1e7
 DEFAULT_LON_E7 = 85455800    # 8.545580  deg * 1e7
 
 # ---------------------------------------------------------------------------
+# G-8 param store — the 20 PX4 v1.16.2 defaults the backend's
+# ``fleet-cli/src/setup.rs::PARAM_DEFAULTS`` table also knows about. Every
+# entry is the wire f32 the mock should send on the wire: REAL32 params
+# carry the float as-is, INT32 params (BAT_N_CELLS=4, NAV_DLL_ACT=0) carry
+# the integer bit-cast into the f32 field (PX4's own wire convention — see
+# ``fleet-mavlink/src/link.rs::ParamVal::to_wire``).
+#
+# ``type`` is the MAVLink param_type byte: 6 = INT32, 9 = REAL32 (PX4's
+# own param-groupings — fleet-cli/src/setup.rs's PARAM_DEFAULTS table
+# mirrors this exactly so ``is_changed`` is false after the initial
+# download).
+# ---------------------------------------------------------------------------
+MAVLINK_TYPE_INT32 = 6
+MAVLINK_TYPE_REAL32 = 9
+
+# (id, wire_value, param_type) — order matters: this is the wire order the
+# mock streams them in response to PARAM_REQUEST_LIST (PX4 streams them in
+# ROMFS-load order; we just need a stable, indexed order).
+MOCK_PARAMS: list[tuple[str, float, int]] = [
+    ("MPC_XY_VEL_MAX",  12.0, MAVLINK_TYPE_REAL32),
+    ("MPC_Z_VEL_MAX_UP", 3.0, MAVLINK_TYPE_REAL32),
+    ("MPC_Z_VEL_MAX_DN", 1.0, MAVLINK_TYPE_REAL32),
+    ("MPC_XY_CRUISE",    5.0, MAVLINK_TYPE_REAL32),
+    ("MPC_CRUISE_90",    5.0, MAVLINK_TYPE_REAL32),
+    ("MPC_TKO_SPEED",    1.0, MAVLINK_TYPE_REAL32),
+    ("MC_ROLLRATE_P",    6.5,   MAVLINK_TYPE_REAL32),
+    ("MC_ROLLRATE_I",    0.0,   MAVLINK_TYPE_REAL32),
+    ("MC_ROLLRATE_D",    0.003, MAVLINK_TYPE_REAL32),
+    ("MC_PITCHRATE_P",   6.5,   MAVLINK_TYPE_REAL32),
+    ("MC_PITCHRATE_I",   0.0,   MAVLINK_TYPE_REAL32),
+    ("MC_PITCHRATE_D",   0.003, MAVLINK_TYPE_REAL32),
+    ("MC_YAWRATE_P",    200.0,  MAVLINK_TYPE_REAL32),
+    ("MC_YAWRATE_I",     0.0,   MAVLINK_TYPE_REAL32),
+    ("MC_YAWRATE_D",     0.0,   MAVLINK_TYPE_REAL32),
+    ("FW_AIRSPD_TRIM",  15.0,   MAVLINK_TYPE_REAL32),
+    # INT32 params: the wire value is the integer bit-cast into f32
+    # (f32::from_bits(4) and f32::from_bits(0) — the same PX4 wires).
+    ("BAT_N_CELLS",     float.frombits(4 & 0xFFFFFFFF), MAVLINK_TYPE_INT32),
+    ("BAT_V_EMPTY",      3.4, MAVLINK_TYPE_REAL32),
+    ("BAT_V_CHARGED",     4.1, MAVLINK_TYPE_REAL32),
+    ("NAV_DLL_ACT",     float.frombits(0 & 0xFFFFFFFF), MAVLINK_TYPE_INT32),
+]
+assert len(MOCK_PARAMS) == 20
+
+# ---------------------------------------------------------------------------
 # State (guarded by `state_lock`)
 # ---------------------------------------------------------------------------
 state_lock = threading.Lock()
@@ -78,6 +146,32 @@ last_command_result: int = 0
 command_count: int = 0
 armed: bool = False
 running: bool = True
+
+# G-8: in-memory param store, keyed by param id. The mock seeds itself from
+# ``MOCK_PARAMS`` (PX4's compiled-in defaults) on startup. ``PARAM_SET``
+# updates this dict in place (PX4's autosave behaviour) so subsequent
+# ``PARAM_REQUEST_LIST`` streams reflect the new value — the same way a real
+# PX4 makes the written value persistent across a fresh download. Each value
+# is ``(wire_value, param_type)`` — the wire f32 + MAVLink param_type byte.
+param_store: dict[str, tuple[float, int]] = {pid: (val, ptype) for pid, val, ptype in MOCK_PARAMS}
+# How many PARAM_REQUEST_LIST requests the mock has seen — the harness can
+# read this from the state file to verify the catalog's full download
+# actually fired (a regression guard: if the catalog stops sending
+# PARAM_REQUEST_LIST, G-8 fails on the param-search test before the mock
+# ever streams anything).
+param_list_request_count: int = 0
+param_value_send_count: int = 0
+param_set_count: int = 0
+
+
+def reset_param_store() -> None:
+    """Restore the param store to the PX4-compiled-in defaults.
+
+    Called once at startup; safe to call again to roll back any in-memory
+    writes (the harness doesn't, but it's useful for ad-hoc testing).
+    """
+    global param_store
+    param_store = {pid: (val, ptype) for pid, val, ptype in MOCK_PARAMS}
 
 
 def log(msg: str) -> None:
@@ -98,6 +192,15 @@ def write_state(state_path: str, *, instance: int, sysid: int,
         "last_command_param1": last_command_param1,
         "last_command_result": last_command_result,
         "command_count": command_count,
+        # G-8: param-protocol counters — the harness can assert
+        # ``param_list_request_count >= 1`` after the refresh endpoint
+        # fires, and ``param_value_send_count >= 20`` once the burst
+        # completes. ``param_set_count`` flips to >= 1 after Test 4's
+        # MPC_XY_VEL_MAX=8.0 write.
+        "param_list_request_count": param_list_request_count,
+        "param_value_send_count": param_value_send_count,
+        "param_set_count": param_set_count,
+        "params_known": len(param_store),
         "ts": time.time(),
     }
     tmp = state_path + ".tmp"
@@ -356,6 +459,7 @@ class MockPX4:
 
     def _dispatch(self, msg) -> None:
         global last_command, last_command_param1, last_command_result, command_count, armed
+        global param_list_request_count, param_value_send_count, param_set_count
         t = msg.get_type()
         if t == "COMMAND_LONG":
             command = int(msg.command)
@@ -399,10 +503,53 @@ class MockPX4:
         elif t == "PING":
             # Ignore — the link's watchdog probes don't expect a reply here.
             pass
+        elif t == "PARAM_REQUEST_LIST":
+            # G-8 (Vehicle Setup): the GCS sent a PARAM_REQUEST_LIST
+            # (msgid 21). PX4 responds by streaming every param it has
+            # as a burst of PARAM_VALUE frames — one per param id, each
+            # carrying the right ``param_count`` (total) and ``param_index``
+            # (this param's position in the stream). The link's param store
+            # flips to ``Complete`` once ``received_unique >= total``.
+            with state_lock:
+                param_list_request_count += 1
+                # Snapshot the store under the lock so the burst loop
+                # doesn't race with a concurrent PARAM_SET write.
+                snapshot = list(param_store.items())
+                total = len(snapshot)
+            log(f"PARAM_REQUEST_LIST -> streaming {total} PARAM_VALUE frames")
+            # Send each PARAM_VALUE frame. PX4 sends them at full tilt
+            # (the link's parser keeps up; the link's recv task buffers
+            # in a 2048-byte datagram and processes synchronously). We
+            # interleave the heartbeat/telemetry pumps' send_lock so we
+            # don't corrupt the encoder's sequence counter.
+            for idx, (pid, (wire_value, ptype)) in enumerate(snapshot):
+                pid_bytes = pid.encode("ascii", errors="replace")
+                try:
+                    with send_lock:
+                        self.mav.param_value_send(
+                            pid_bytes.ljust(16, b"\x00")[:16],
+                            wire_value,
+                            ptype,
+                            total,
+                            idx,
+                        )
+                    with state_lock:
+                        param_value_send_count += 1
+                except Exception as e:  # pragma: no cover — defensive
+                    log(f"param_value_send error (id={pid}): {e}")
+            write_state(self.state_path, instance=self._instance_from_port(),
+                        sysid=self.sysid, lat_e7=self.lat_e7_start,
+                        lon_e7=self.lon_e7_start, armed_=armed)
         elif t == "PARAM_SET":
-            # ADR-0009: NAV_DLL_ACT=0 is written once at READY. Reply with a
-            # PARAM_VALUE echo so the link's pending_param slot completes.
-            # We don't model the full param store — just echo back.
+            # G-8: A parameter write from the GCS's param editor
+            # (POST /api/vehicles/{i}/params). PX4's receiver accepts the
+            # new value, persists it (autosave), and echoes back a
+            # PARAM_VALUE with the new value as confirmation. We model
+            # both halves: update the in-memory param store (so a
+            # subsequent PARAM_REQUEST_LIST reflects the new value — the
+            # same way PX4's autosave makes it visible across reboots),
+            # and send the PARAM_VALUE echo so the link's pending_param
+            # slot completes (link.rs:set_param_typed awaits the echo).
             raw = msg.param_id
             if isinstance(raw, (bytes, bytearray)):
                 param_id_bytes = bytes(raw).rstrip(b"\x00")
@@ -413,17 +560,35 @@ class MockPX4:
             param_id_str = param_id_bytes.decode("ascii", errors="replace")
             value = float(msg.param_value)
             ptype = int(msg.param_type)
+            with state_lock:
+                # Persist the new value in the mock's param store. The
+                # wire f32 we keep is the value PX4 sent — for INT32
+                # params this is the integer bit-cast, which is what
+                # the link's ingest() will decode back through
+                # typed_value().
+                param_store[param_id_str] = (value, ptype)
+                param_set_count += 1
             try:
                 with send_lock:
                     self.mav.param_value_send(
                         param_id_bytes.ljust(16, b"\x00")[:16],
                         value,
                         ptype,
-                        1,   # param_count
-                        0,   # param_index
+                        len(param_store),
+                        # The mock doesn't track per-param index for the
+                        # echo; PX4 itself echoes back the param's own
+                        # index. The link's pending_param correlation
+                        # matches on param_id, not param_index, so 0 is
+                        # fine for the wire.
+                        0,
                     )
+                with state_lock:
+                    param_value_send_count += 1
             except Exception as e:  # pragma: no cover
                 log(f"param_value_send error: {e}")
+            write_state(self.state_path, instance=self._instance_from_port(),
+                        sysid=self.sysid, lat_e7=self.lat_e7_start,
+                        lon_e7=self.lon_e7_start, armed_=armed)
             log(f"PARAM_SET id={param_id_str!r} value={value} -> PARAM_VALUE echo")
         else:
             # Silent ignore — PX4 drops unknown msgids.
@@ -434,7 +599,7 @@ class MockPX4:
 # CLI
 # ---------------------------------------------------------------------------
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Mock PX4 for G-5/G-6/G-7 harnesses")
+    ap = argparse.ArgumentParser(description="Mock PX4 for G-5/G-6/G-7/G-8 harnesses")
     ap.add_argument("--port", type=int, default=14580,
                     help="PX4 onboard listen port (default: 14580)")
     ap.add_argument("--gcs-port", type=int, default=14540,
