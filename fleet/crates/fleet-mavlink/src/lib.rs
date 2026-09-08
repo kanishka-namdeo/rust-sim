@@ -13,11 +13,13 @@ pub mod link;
 
 pub use frame::{crc_extra, Decoder, Frame};
 pub use link::{
-    spawn_link, CmdAck, LinkCommand, LinkConfig, LinkHandle, LinkShared, LinkStats, ParamDownloadState,
-    ParamEntry, ParamStore, ParamVal, SetpointGoal, SetpointSlot,
+    spawn_link, CmdAck, LinkCommand, LinkConfig, LinkHandle, LinkShared, LinkStats,
+    MissionDownloadResult, MissionUploadResult, ParamDownloadState, ParamEntry, ParamStore,
+    ParamVal, SetpointGoal, SetpointSlot,
 };
 pub use messages::{
     decode_event, cmds, enums, ids, Attitude, BatteryStatus, CommandAck, CommandLong,
-    GlobalPositionInt, Heartbeat, HomePosition, LocalPositionNed, ParamRequestList, ParamRequestRead,
-    ParamSet, ParamValue, Ping, SetPositionTargetLocalNed, StatusText, SysStatus, TelemetryEvent,
+    GlobalPositionInt, Heartbeat, HomePosition, LocalPositionNed, MissionItemInt,
+    ParamRequestList, ParamRequestRead, ParamSet, ParamValue, Ping, SetPositionTargetLocalNed,
+    StatusText, SysStatus, TelemetryEvent,
 };

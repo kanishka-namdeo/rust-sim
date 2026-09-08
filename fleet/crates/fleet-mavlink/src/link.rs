@@ -166,7 +166,13 @@ pub enum LinkCommand {
 }
 
 /// Result of a mission upload transaction.
-#[derive(Debug, Clone)]
+///
+/// `Serialize` (M2-API): the REST plane returns this verbatim as the
+/// `data` field of `POST /api/vehicles/{i}/mission/upload`'s envelope.
+/// The `status` tag (`ok` / `failed` / `timeout`) lets the client
+/// branch without inspecting the inner fields.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
 pub enum MissionUploadResult {
     Ok {
         mission_type: u8,
@@ -187,7 +193,11 @@ pub enum MissionUploadResult {
 }
 
 /// Result of a mission download transaction.
-#[derive(Debug, Clone)]
+///
+/// `Serialize` (M2-API): the REST plane returns this verbatim as the
+/// `data` field of `GET /api/vehicles/{i}/mission`'s envelope.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
 pub enum MissionDownloadResult {
     Ok {
         mission_type: u8,

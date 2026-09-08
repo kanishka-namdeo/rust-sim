@@ -605,7 +605,12 @@ impl MissionCount {
 /// z(f32), seq(u16), command(u16), target_system(u8), target_component(u8),
 /// frame(u8), current(u8), autocontinue(u8); ext: mission_type(u8).
 /// Total: 38 bytes. CRC extra = 38.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// `Serialize` + `Deserialize` (M2-API): the field names match the JSON
+/// shape the REST plane (`POST /api/vehicles/{i}/mission/upload` body and
+/// `GET /api/vehicles/{i}/mission` response) serves verbatim — QGC's
+/// MISSION_ITEM_INT JSON, with x/y as i32 (lat/lon × 1e7).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MissionItemInt {
     pub param1: f32,
     pub param2: f32,

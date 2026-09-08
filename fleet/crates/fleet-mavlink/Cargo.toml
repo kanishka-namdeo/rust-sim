@@ -8,6 +8,9 @@ description = "Self-contained GCS-side MAVLink v2 codec and per-vehicle UDP link
 [dependencies]
 tokio = { workspace = true }
 fleet-modes = { path = "../fleet-modes" }
+# serde for the wire-shaped structs the REST plane (de)serialises directly
+# (MissionItemInt, MissionUploadResult, MissionDownloadResult — M2-API).
+serde = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

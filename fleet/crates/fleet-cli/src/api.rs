@@ -64,6 +64,12 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/vehicles/{index}/rtl", post(vehicle_rtl_post))
         .route("/api/vehicles/{index}/hold", post(vehicle_hold_post))
         .route("/api/vehicles/{index}/goto", post(vehicle_goto_post))
+        // -- MAVLink mission upload/download (M2-API): direct proxies to the
+        // link's mission-protocol state machine (commit 99993f5). Distinct
+        // from ADR-0017's `POST /api/mission` (geo→NED + auction): these
+        // endpoints pass raw MISSION_ITEM_INT items through to PX4.
+        .route("/api/vehicles/{index}/mission", get(vehicle_mission_get))
+        .route("/api/vehicles/{index}/mission/upload", post(vehicle_mission_upload_post))
         // WS plane: the spec path plus the gateway-forwarded root path.
         .route("/ws/fleet", get(ws_entry))
         .route("/ws", get(ws_entry))
@@ -1207,6 +1213,150 @@ async fn vehicle_goto_post(
 }
 
 // ---------------------------------------------------------------------------
+// MAVLink mission upload/download (M2-API): the QGC Plan View's
+// Upload/Download buttons — direct proxies to the per-vehicle link's
+// mission-protocol state machine (commit 99993f5, fleet-mavlink/src/link.rs).
+// These endpoints are distinct from ADR-0017's `POST /api/mission`
+// (geo→NED conversion + supervisor-drained auction): the M2 endpoints
+// pass raw MISSION_ITEM_INT items straight through to PX4's mission
+// protocol, tagged with mission_type (0=mission / 1=fence / 2=rally).
+// ---------------------------------------------------------------------------
+
+/// `POST /api/vehicles/{i}/mission/upload` body — QGC's MISSION_ITEM_INT
+/// JSON shape (field-for-field the wire struct, x/y as i32 lat/lon × 1e7).
+#[derive(serde::Deserialize)]
+struct MissionUploadBody {
+    items: Vec<fleet_mavlink::MissionItemInt>,
+    /// 0 = mission, 1 = fence, 2 = rally (MAV_MISSION_TYPE).
+    mission_type: u8,
+}
+
+/// `POST /api/vehicles/{i}/mission/upload` — proxy to
+/// `LinkHandle::mission_upload`. Body carries the raw MISSION_ITEM_INT
+/// items and the mission_type tag; the result enum is returned verbatim
+/// in the envelope's `data` field (status: ok/failed/timeout).
+async fn vehicle_mission_upload_post(
+    State(s): State<Arc<AppState>>,
+    Path(index): Path<u8>,
+    body: Result<
+        axum::extract::Json<MissionUploadBody>,
+        axum::extract::rejection::JsonRejection,
+    >,
+) -> Response {
+    if index >= s.count {
+        return err(
+            StatusCode::NOT_FOUND,
+            &format!("vehicle index {index} out of range (fleet count {})", s.count),
+        );
+    }
+    let axum::extract::Json(MissionUploadBody { items, mission_type }) = match body {
+        Ok(b) => b,
+        Err(e) => {
+            return err(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                &format!("invalid body: {e}"),
+            )
+        }
+    };
+    if items.is_empty() {
+        return err(StatusCode::UNPROCESSABLE_ENTITY, "items must not be empty");
+    }
+    if items.len() > 1024 {
+        return err(StatusCode::UNPROCESSABLE_ENTITY, "too many items (max 1024)");
+    }
+    if mission_type > 2 {
+        return err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "mission_type must be 0 (mission), 1 (fence), or 2 (rally)",
+        );
+    }
+    let Some(link) = s.link(index) else {
+        return err(
+            StatusCode::NOT_FOUND,
+            "vehicle link not registered (vehicle not connected)",
+        );
+    };
+    let n_items = items.len() as u16;
+    let result = link.mission_upload(items, mission_type).await;
+    s.log.log(
+        fleet_core::events::EventKind::SupervisorAction,
+        Some(index),
+        format!(
+            "operator: MAVLink mission upload via API (type={mission_type}, items={n_items}) — {}",
+            match &result {
+                fleet_mavlink::MissionUploadResult::Ok { items_acked, .. } =>
+                    format!("OK ({items_acked} acked)"),
+                fleet_mavlink::MissionUploadResult::Failed { reason, .. } =>
+                    format!("FAILED ({reason})"),
+                fleet_mavlink::MissionUploadResult::Timeout { .. } => "TIMEOUT".into(),
+            }
+        ),
+    );
+    let data = serde_json::to_value(&result).unwrap_or(json!(null));
+    ok(data).into_response()
+}
+
+/// `GET /api/vehicles/{i}/mission?type={mission|fence|rally}` query.
+#[derive(serde::Deserialize, Default)]
+struct MissionTypeQuery {
+    /// "mission" (default), "fence", or "rally".
+    #[serde(default)]
+    r#type: Option<String>,
+}
+
+/// `GET /api/vehicles/{i}/mission?type=mission|fence|rally` — proxy to
+/// `LinkHandle::mission_download`. Returns the MissionDownloadResult enum
+/// verbatim (status: ok/failed/timeout; ok carries the items array).
+async fn vehicle_mission_get(
+    State(s): State<Arc<AppState>>,
+    Path(index): Path<u8>,
+    Query(q): Query<MissionTypeQuery>,
+) -> Response {
+    if index >= s.count {
+        return err(
+            StatusCode::NOT_FOUND,
+            &format!("vehicle index {index} out of range (fleet count {})", s.count),
+        );
+    }
+    let mission_type: u8 = match q.r#type.as_deref().unwrap_or("mission") {
+        "" | "mission" => 0,
+        "fence" => 1,
+        "rally" => 2,
+        other => {
+            return err(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                &format!(
+                    "type must be one of mission|fence|rally, got '{other}'"
+                ),
+            )
+        }
+    };
+    let Some(link) = s.link(index) else {
+        return err(
+            StatusCode::NOT_FOUND,
+            "vehicle link not registered (vehicle not connected)",
+        );
+    };
+    let result = link.mission_download(mission_type).await;
+    s.log.log(
+        fleet_core::events::EventKind::SupervisorAction,
+        Some(index),
+        format!(
+            "operator: MAVLink mission download via API (type={mission_type}) — {}",
+            match &result {
+                fleet_mavlink::MissionDownloadResult::Ok { items, .. } =>
+                    format!("OK ({} items)", items.len()),
+                fleet_mavlink::MissionDownloadResult::Failed { reason, .. } =>
+                    format!("FAILED ({reason})"),
+                fleet_mavlink::MissionDownloadResult::Timeout { .. } => "TIMEOUT".into(),
+            }
+        ),
+    );
+    let data = serde_json::to_value(&result).unwrap_or(json!(null));
+    ok(data).into_response()
+}
+
+// ---------------------------------------------------------------------------
 // WS plane
 // ---------------------------------------------------------------------------
 
@@ -1235,6 +1385,8 @@ async fn ws_entry(State(s): State<Arc<AppState>>, mut parts: Parts) -> Response 
                 "POST /api/vehicles/{i}/arm", "POST /api/vehicles/{i}/takeoff",
                 "POST /api/vehicles/{i}/land", "POST /api/vehicles/{i}/rtl",
                 "POST /api/vehicles/{i}/hold", "POST /api/vehicles/{i}/goto",
+                "GET /api/vehicles/{i}/mission?type=mission|fence|rally",
+                "POST /api/vehicles/{i}/mission/upload",
                 "WS /ws/fleet | /ws | /"
             ],
             "phase": s.phase(),
@@ -2182,5 +2334,244 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // -- MAVLink mission upload/download (M2-API) ----------------------------
+
+    /// `POST /api/vehicles/{i}/mission/upload` with no link registered → 404
+    /// (vehicle exists in the fleet but the MAVLink link task isn't up, so
+    /// the proxy can't reach PX4). The validation gates still run first, so a
+    /// well-formed body is required before the 404 fires.
+    #[tokio::test]
+    async fn mission_upload_post_returns_404_when_no_link() {
+        let state = test_state();
+        let app = router(Arc::clone(&state));
+        // out of range -> 404 (the index check fires before the link check)
+        let (st, j) = post_json(
+            app.clone(),
+            "/api/vehicles/5/mission/upload",
+            r#"{"items":[{"param1":0.0,"param2":2.0,"param3":0.0,"param4":0.0,"x":473977700,"y":854558000,"z":12.0,"seq":0,"command":16,"target_system":1,"target_component":1,"frame":3,"current":0,"autocontinue":1,"mission_type":0}],"mission_type":0}"#,
+        ).await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
+        assert!(j["error"].as_str().unwrap().contains("out of range"));
+        // valid body + index 0 but no link -> 404 (vehicle not connected)
+        let (st, j) = post_json(
+            app,
+            "/api/vehicles/0/mission/upload",
+            r#"{"items":[{"param1":0.0,"param2":2.0,"param3":0.0,"param4":0.0,"x":473977700,"y":854558000,"z":12.0,"seq":0,"command":16,"target_system":1,"target_component":1,"frame":3,"current":0,"autocontinue":1,"mission_type":0}],"mission_type":0}"#,
+        ).await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
+        assert!(j["error"].as_str().unwrap().contains("link"));
+        assert!(state.log.total() >= 1, "the link gate fired (not the call) — log untouched");
+    }
+
+    /// `POST /api/vehicles/{i}/mission/upload` validation gates (these fire
+    /// before the link check, so they hold even with no link registered).
+    #[tokio::test]
+    async fn mission_upload_post_validation_errors() {
+        let state = test_state();
+        let app = router(state);
+        // empty items -> 422
+        let (st, j) = post_json(
+            app.clone(),
+            "/api/vehicles/0/mission/upload",
+            r#"{"items":[],"mission_type":0}"#,
+        ).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(j["error"].as_str().unwrap().contains("empty"));
+        // mission_type out of range -> 422
+        let (st, j) = post_json(
+            app.clone(),
+            "/api/vehicles/0/mission/upload",
+            r#"{"items":[{"param1":0.0,"param2":0.0,"param3":0.0,"param4":0.0,"x":473977700,"y":854558000,"z":12.0,"seq":0,"command":16,"target_system":1,"target_component":1,"frame":3,"current":0,"autocontinue":1,"mission_type":0}],"mission_type":5}"#,
+        ).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(j["error"].as_str().unwrap().contains("mission_type"));
+        // malformed body (missing items) -> 422 wrapped in the envelope
+        let (st, j) = post_json(
+            app,
+            "/api/vehicles/0/mission/upload",
+            r#"{"mission_type":0}"#,
+        ).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(j["error"].as_str().unwrap().contains("invalid body"));
+    }
+
+    /// `GET /api/vehicles/{i}/mission?type=...` with no link registered → 404
+    /// (same gate as upload: the vehicle exists, but the link isn't up).
+    #[tokio::test]
+    async fn mission_download_get_returns_404_when_no_link() {
+        let state = test_state();
+        let app = router(Arc::clone(&state));
+        // default type (mission) + valid index, but no link
+        let resp = app
+            .clone()
+            .oneshot(Request::get("/api/vehicles/0/mission").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let j = body_json(resp).await;
+        assert!(j["error"].as_str().unwrap().contains("link"));
+        // explicit type=fence
+        let resp = app
+            .clone()
+            .oneshot(Request::get("/api/vehicles/1/mission?type=fence").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert!(state.log.total() >= 1);
+        // out of range -> 404 (before the link check)
+        let resp = app
+            .oneshot(Request::get("/api/vehicles/9/mission").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// `GET /api/vehicles/{i}/mission?type=...` query-string validation.
+    #[tokio::test]
+    async fn mission_download_get_validates_type_query() {
+        let state = test_state();
+        let app = router(state);
+        // unknown type string -> 422
+        let resp = app
+            .clone()
+            .oneshot(Request::get("/api/vehicles/0/mission?type=warpspeed").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let j = body_json(resp).await;
+        assert!(j["error"].as_str().unwrap().contains("mission|fence|rally"));
+        // empty type= -> defaults to mission (404 fires from the link gate,
+        // not from the type parse — proving the default took effect)
+        let resp = app
+            .clone()
+            .oneshot(Request::get("/api/vehicles/0/mission?type=").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert!(body_json(resp).await["error"].as_str().unwrap().contains("link"));
+        // no type at all -> defaults to mission (same gate)
+        let resp = app
+            .oneshot(Request::get("/api/vehicles/0/mission").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// The MISSION_ITEM_INT JSON shape round-trips through serde cleanly
+    /// (the field-name contract the QGC Plan View depends on — M2-API's
+    /// wire-shape pin). This is the only place we exercise the new
+    /// `Serialize`/`Deserialize` derives on `MissionItemInt` directly.
+    #[test]
+    fn mission_item_int_json_round_trip() {
+        let item = fleet_mavlink::MissionItemInt {
+            param1: 0.0,
+            param2: 2.0,
+            param3: 0.0,
+            param4: 0.0,
+            x: 473977700,
+            y: 854558000,
+            z: 12.0,
+            seq: 0,
+            command: 16, // MAV_CMD_NAV_WAYPOINT
+            target_system: 1,
+            target_component: 1,
+            frame: 3, // MAV_FRAME_GLOBAL_RELATIVE_ALT
+            current: 0,
+            autocontinue: 1,
+            mission_type: 0,
+        };
+        let s = serde_json::to_string(&item).expect("serialize");
+        // QGC's exact field names appear verbatim in the wire JSON
+        for field in [
+            "param1","param2","param3","param4","x","y","z","seq","command",
+            "target_system","target_component","frame","current","autocontinue","mission_type",
+        ] {
+            assert!(s.contains(&format!("\"{field}\":")), "missing field '{field}' in {s}");
+        }
+        let back: fleet_mavlink::MissionItemInt = serde_json::from_str(&s).expect("deserialize");
+        assert_eq!(back, item, "round trip preserves all fields");
+        // x/y are i32 (lat/lon × 1e7), not floats — QGC's MISSION_ITEM_INT shape
+        assert!(s.contains("\"x\":473977700"));
+        assert!(s.contains("\"y\":854558000"));
+    }
+
+    /// The result enums serialize into the tagged shape the REST envelope
+    /// carries — `{"status": "ok"|"failed"|"timeout", ...}` — so the Plan
+    /// View can branch on `status` without inspecting inner fields.
+    #[test]
+    fn mission_result_enums_serialize_tagged() {
+        let ok = fleet_mavlink::MissionUploadResult::Ok {
+            mission_type: 0,
+            items_sent: 5,
+            items_acked: 5,
+        };
+        let v = serde_json::to_value(&ok).unwrap();
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["mission_type"], 0);
+        assert_eq!(v["items_sent"], 5);
+        assert_eq!(v["items_acked"], 5);
+
+        let failed = fleet_mavlink::MissionUploadResult::Failed {
+            mission_type: 1,
+            reason: "unsupported frame".into(),
+            items_sent: 3,
+            items_acked: 1,
+        };
+        let v = serde_json::to_value(&failed).unwrap();
+        assert_eq!(v["status"], "failed");
+        assert_eq!(v["reason"], "unsupported frame");
+        assert_eq!(v["items_acked"], 1);
+
+        let timeout = fleet_mavlink::MissionUploadResult::Timeout {
+            mission_type: 2,
+            items_sent: 2,
+            items_acked: 0,
+        };
+        let v = serde_json::to_value(&timeout).unwrap();
+        assert_eq!(v["status"], "timeout");
+
+        let dl_ok = fleet_mavlink::MissionDownloadResult::Ok {
+            mission_type: 0,
+            items: vec![fleet_mavlink::MissionItemInt {
+                param1: 0.0, param2: 0.0, param3: 0.0, param4: 0.0,
+                x: 473977700, y: 854558000, z: 12.0,
+                seq: 0, command: 16, target_system: 1, target_component: 1,
+                frame: 3, current: 0, autocontinue: 1, mission_type: 0,
+            }],
+        };
+        let v = serde_json::to_value(&dl_ok).unwrap();
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["items"].as_array().unwrap().len(), 1);
+        assert_eq!(v["items"][0]["command"], 16);
+
+        let dl_timeout = fleet_mavlink::MissionDownloadResult::Timeout { mission_type: 1 };
+        let v = serde_json::to_value(&dl_timeout).unwrap();
+        assert_eq!(v["status"], "timeout");
+        assert_eq!(v["mission_type"], 1);
+    }
+
+    /// The root JSON index (the non-WS GET `/` response) advertises the two
+    /// new endpoints so QGC-style clients can discover them.
+    #[tokio::test]
+    async fn root_index_advertises_mission_upload_download() {
+        let state = test_state();
+        let app = router(state);
+        let resp = app
+            .oneshot(Request::get("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let j = body_json(resp).await;
+        let eps = j["data"]["endpoints"].as_array().unwrap();
+        assert!(
+            eps.iter().any(|e| e.as_str().unwrap().contains("mission/upload")),
+            "upload endpoint advertised"
+        );
+        assert!(
+            eps.iter().any(|e| e.as_str().unwrap().contains("/mission?type=")),
+            "download endpoint advertised"
+        );
     }
 }
