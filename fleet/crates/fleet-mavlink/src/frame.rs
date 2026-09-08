@@ -204,6 +204,13 @@ pub fn crc_extra(msgid: u32) -> Option<u8> {
         147 => 154, // BATTERY_STATUS
         242 => 104, // HOME_POSITION
         253 => 83, // STATUSTEXT
+        // Mission protocol messages (mavlink.io Mission Protocol, Aug 2026)
+        43 => 132, // MISSION_REQUEST_LIST
+        44 => 221, // MISSION_COUNT
+        47 => 153, // MISSION_ACK
+        51 => 226, // MISSION_REQUEST_INT
+        73 => 38,  // MISSION_ITEM_INT
+        40 => 228, // MISSION_REQUEST
         _ => return None,
     })
 }

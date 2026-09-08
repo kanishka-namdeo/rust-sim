@@ -31,6 +31,18 @@ pub mod ids {
     /// PARAM_REQUEST_LIST (21): request the full parameter dump — the
     /// QGroundControl-style initial parameter download.
     pub const PARAM_REQUEST_LIST: u32 = 21;
+    /// MISSION_REQUEST_LIST (43): GCS requests the mission list from the vehicle.
+    pub const MISSION_REQUEST_LIST: u32 = 43;
+    /// MISSION_COUNT (44): Vehicle/GCS announces the number of mission items.
+    pub const MISSION_COUNT: u32 = 44;
+    /// MISSION_ACK (47): Final ack/nack for a mission upload/download transaction.
+    pub const MISSION_ACK: u32 = 47;
+    /// MISSION_REQUEST (40): Vehicle requests a specific mission item.
+    pub const MISSION_REQUEST: u32 = 40;
+    /// MISSION_REQUEST_INT (51): Vehicle requests a specific mission item (INT variant).
+    pub const MISSION_REQUEST_INT: u32 = 51;
+    /// MISSION_ITEM_INT (73): A single mission item with scaled-integer coordinates.
+    pub const MISSION_ITEM_INT: u32 = 73;
 }
 
 pub mod cmds {
@@ -58,6 +70,23 @@ pub mod enums {
     pub const MAV_FRAME_LOCAL_NED: u8 = 1;
     pub const MAV_RESULT_ACCEPTED: u8 = 0;
     pub const MAV_RESULT_TEMPORARILY_REJECTED: u8 = 1;
+
+    /// MAV_MISSION_TYPE enum (mavlink.io Mission Protocol, Aug 2026):
+    /// 0 = flight plan, 1 = geofence, 2 = rally points.
+    pub const MAV_MISSION_TYPE_MISSION: u8 = 0;
+    pub const MAV_MISSION_TYPE_FENCE: u8 = 1;
+    pub const MAV_MISSION_TYPE_RALLY: u8 = 2;
+
+    /// MAV_MISSION_RESULT enum (MISSION_ACK.type field):
+    /// 0 = accepted, 1 = error, 2 = unsupported frame, 3 = unsupported command,
+    /// 4 = not enough space, 5 = invalid, 6 = invalid param 1-4,
+    /// 7 = no valid mission items, 8 = unsupported mode.
+    pub const MAV_MISSION_ACCEPTED: u8 = 0;
+    pub const MAV_MISSION_ERROR: u8 = 1;
+    pub const MAV_MISSION_UNSUPPORTED_FRAME: u8 = 2;
+    pub const MAV_MISSION_UNSUPPORTED: u8 = 3;
+    pub const MAV_MISSION_NO_SPACE: u8 = 4;
+    pub const MAV_MISSION_INVALID: u8 = 5;
     pub const MAV_RESULT_DENIED: u8 = 2;
     pub const MAV_RESULT_UNSUPPORTED: u8 = 3;
     pub const MAV_RESULT_FAILED: u8 = 4;
@@ -540,6 +569,242 @@ impl Ping {
 // High-level decoded enum published by the link task
 // ---------------------------------------------------------------------------
 
+/// MISSION_COUNT (44): announce the number of items in a mission transaction.
+/// Wire order (non-ext by size desc): count(u16), target_system(u8),
+/// target_component(u8); ext: mission_type(u8). CRC extra = 221.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MissionCount {
+    pub count: u16,
+    pub target_system: u8,
+    pub target_component: u8,
+    pub mission_type: u8,
+}
+
+impl MissionCount {
+    pub fn pack(&self) -> Vec<u8> {
+        let mut v = Vec::with_capacity(5);
+        v.extend_from_slice(&self.count.to_le_bytes());
+        v.push(self.target_system);
+        v.push(self.target_component);
+        v.push(self.mission_type);
+        v
+    }
+    pub fn unpack(p: &[u8]) -> Option<Self> {
+        let p = padded(p, 5);
+        Some(MissionCount {
+            count: u16::from_le_bytes(p[0..2].try_into().ok()?),
+            target_system: *p.get(2)?,
+            target_component: *p.get(3)?,
+            mission_type: *p.get(4).unwrap_or(&0),
+        })
+    }
+}
+
+/// MISSION_ITEM_INT (73): one mission item with scaled-integer lat/lon.
+/// Wire order (non-ext by size desc): param1-4(f32×4), x(i32), y(i32),
+/// z(f32), seq(u16), command(u16), target_system(u8), target_component(u8),
+/// frame(u8), current(u8), autocontinue(u8); ext: mission_type(u8).
+/// Total: 38 bytes. CRC extra = 38.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MissionItemInt {
+    pub param1: f32,
+    pub param2: f32,
+    pub param3: f32,
+    pub param4: f32,
+    pub x: i32, // lat × 1e7
+    pub y: i32, // lon × 1e7
+    pub z: f32, // alt in metres
+    pub seq: u16,
+    pub command: u16,
+    pub target_system: u8,
+    pub target_component: u8,
+    pub frame: u8,
+    pub current: u8,
+    pub autocontinue: u8,
+    pub mission_type: u8,
+}
+
+impl MissionItemInt {
+    pub fn pack(&self) -> Vec<u8> {
+        let mut v = Vec::with_capacity(38);
+        v.extend_from_slice(&self.param1.to_le_bytes());
+        v.extend_from_slice(&self.param2.to_le_bytes());
+        v.extend_from_slice(&self.param3.to_le_bytes());
+        v.extend_from_slice(&self.param4.to_le_bytes());
+        v.extend_from_slice(&self.x.to_le_bytes());
+        v.extend_from_slice(&self.y.to_le_bytes());
+        v.extend_from_slice(&self.z.to_le_bytes());
+        v.extend_from_slice(&self.seq.to_le_bytes());
+        v.extend_from_slice(&self.command.to_le_bytes());
+        v.push(self.target_system);
+        v.push(self.target_component);
+        v.push(self.frame);
+        v.push(self.current);
+        v.push(self.autocontinue);
+        v.push(self.mission_type);
+        v
+    }
+    pub fn unpack(p: &[u8]) -> Option<Self> {
+        let p = padded(p, 38);
+        Some(MissionItemInt {
+            param1: f32::from_le_bytes(p[0..4].try_into().ok()?),
+            param2: f32::from_le_bytes(p[4..8].try_into().ok()?),
+            param3: f32::from_le_bytes(p[8..12].try_into().ok()?),
+            param4: f32::from_le_bytes(p[12..16].try_into().ok()?),
+            x: i32::from_le_bytes(p[16..20].try_into().ok()?),
+            y: i32::from_le_bytes(p[20..24].try_into().ok()?),
+            z: f32::from_le_bytes(p[24..28].try_into().ok()?),
+            seq: u16::from_le_bytes(p[28..30].try_into().ok()?),
+            command: u16::from_le_bytes(p[30..32].try_into().ok()?),
+            target_system: *p.get(32)?,
+            target_component: *p.get(33)?,
+            frame: *p.get(34)?,
+            current: *p.get(35)?,
+            autocontinue: *p.get(36)?,
+            mission_type: *p.get(37).unwrap_or(&0),
+        })
+    }
+
+    /// Convert lat/lon from scaled-integer (1e7) to degrees.
+    pub fn lat_deg(&self) -> f64 {
+        self.x as f64 / 1e7
+    }
+    pub fn lon_deg(&self) -> f64 {
+        self.y as f64 / 1e7
+    }
+    /// Convert degrees to scaled-integer (1e7).
+    pub fn lat_to_i32(deg: f64) -> i32 {
+        (deg * 1e7).round() as i32
+    }
+    pub fn lon_to_i32(deg: f64) -> i32 {
+        (deg * 1e7).round() as i32
+    }
+}
+
+/// MISSION_REQUEST (40): vehicle requests item at seq.
+/// Wire order: seq(u16), target_system(u8), target_component(u8);
+/// ext: mission_type(u8). CRC extra = 228.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MissionRequest {
+    pub seq: u16,
+    pub target_system: u8,
+    pub target_component: u8,
+    pub mission_type: u8,
+}
+
+impl MissionRequest {
+    pub fn pack(&self) -> Vec<u8> {
+        let mut v = Vec::with_capacity(5);
+        v.extend_from_slice(&self.seq.to_le_bytes());
+        v.push(self.target_system);
+        v.push(self.target_component);
+        v.push(self.mission_type);
+        v
+    }
+    pub fn unpack(p: &[u8]) -> Option<Self> {
+        let p = padded(p, 5);
+        Some(MissionRequest {
+            seq: u16::from_le_bytes(p[0..2].try_into().ok()?),
+            target_system: *p.get(2)?,
+            target_component: *p.get(3)?,
+            mission_type: *p.get(4).unwrap_or(&0),
+        })
+    }
+}
+
+/// MISSION_REQUEST_INT (51): same layout as MISSION_REQUEST, different msgid.
+/// Vehicle requests item at seq (INT variant). CRC extra = 226.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MissionRequestInt {
+    pub seq: u16,
+    pub target_system: u8,
+    pub target_component: u8,
+    pub mission_type: u8,
+}
+
+impl MissionRequestInt {
+    pub fn pack(&self) -> Vec<u8> {
+        let mut v = Vec::with_capacity(5);
+        v.extend_from_slice(&self.seq.to_le_bytes());
+        v.push(self.target_system);
+        v.push(self.target_component);
+        v.push(self.mission_type);
+        v
+    }
+    pub fn unpack(p: &[u8]) -> Option<Self> {
+        let p = padded(p, 5);
+        Some(MissionRequestInt {
+            seq: u16::from_le_bytes(p[0..2].try_into().ok()?),
+            target_system: *p.get(2)?,
+            target_component: *p.get(3)?,
+            mission_type: *p.get(4).unwrap_or(&0),
+        })
+    }
+}
+
+/// MISSION_ACK (47): final result of a mission transaction.
+/// Wire order: target_system(u8), target_component(u8), type(u8);
+/// ext: mission_type(u8). CRC extra = 153.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MissionAck {
+    pub target_system: u8,
+    pub target_component: u8,
+    /// MAV_MISSION_RESULT enum (0 = accepted, 1 = error, etc.)
+    pub mission_result: u8,
+    pub mission_type: u8,
+}
+
+impl MissionAck {
+    pub fn pack(&self) -> Vec<u8> {
+        let mut v = Vec::with_capacity(4);
+        v.push(self.target_system);
+        v.push(self.target_component);
+        v.push(self.mission_result);
+        v.push(self.mission_type);
+        v
+    }
+    pub fn unpack(p: &[u8]) -> Option<Self> {
+        let p = padded(p, 4);
+        Some(MissionAck {
+            target_system: *p.get(0)?,
+            target_component: *p.get(1)?,
+            mission_result: *p.get(2)?,
+            mission_type: *p.get(3).unwrap_or(&0),
+        })
+    }
+}
+
+/// MISSION_REQUEST_LIST (43): GCS requests the mission list from the vehicle.
+/// Wire order: target_system(u8), target_component(u8); ext: mission_type(u8).
+/// CRC extra = 132.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MissionRequestList {
+    pub target_system: u8,
+    pub target_component: u8,
+    pub mission_type: u8,
+}
+
+impl MissionRequestList {
+    pub fn pack(&self) -> Vec<u8> {
+        let mut v = Vec::with_capacity(3);
+        v.push(self.target_system);
+        v.push(self.target_component);
+        v.push(self.mission_type);
+        v
+    }
+    pub fn unpack(p: &[u8]) -> Option<Self> {
+        let p = padded(p, 3);
+        Some(MissionRequestList {
+            target_system: *p.get(0)?,
+            target_component: *p.get(1)?,
+            mission_type: *p.get(2).unwrap_or(&0),
+        })
+    }
+}
+
+// High-level decoded enum published by the link task
+// ---------------------------------------------------------------------------
+
 /// One decoded inbound message, published to the aggregator.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TelemetryEvent {
@@ -611,6 +876,35 @@ pub enum TelemetryEvent {
     Ping {
         time_usec: u64,
         seq: u32,
+    },
+    /// Inbound MISSION_COUNT: vehicle announces item count for download.
+    MissionCount {
+        count: u16,
+        mission_type: u8,
+    },
+    /// Inbound MISSION_REQUEST / MISSION_REQUEST_INT: vehicle wants item at seq.
+    MissionRequest {
+        seq: u16,
+        mission_type: u8,
+    },
+    /// Inbound MISSION_ITEM_INT: vehicle sends an item during download.
+    MissionItemInt {
+        seq: u16,
+        command: u16,
+        frame: u8,
+        x: i32,
+        y: i32,
+        z: f32,
+        param1: f32,
+        param2: f32,
+        param3: f32,
+        param4: f32,
+        mission_type: u8,
+    },
+    /// Inbound MISSION_ACK: final result of an upload transaction.
+    MissionAck {
+        mission_result: u8,
+        mission_type: u8,
     },
     /// Structurally valid frame with no decoder in the fleet subset.
     Unknown {
@@ -721,6 +1015,50 @@ pub fn decode_event(frame: &crate::frame::Frame) -> Option<TelemetryEvent> {
             TelemetryEvent::Ping {
                 time_usec: m.time_usec,
                 seq: m.seq,
+            }
+        }
+        ids::MISSION_COUNT => {
+            let m = MissionCount::unpack(p)?;
+            TelemetryEvent::MissionCount {
+                count: m.count,
+                mission_type: m.mission_type,
+            }
+        }
+        ids::MISSION_REQUEST => {
+            let m = MissionRequest::unpack(p)?;
+            TelemetryEvent::MissionRequest {
+                seq: m.seq,
+                mission_type: m.mission_type,
+            }
+        }
+        ids::MISSION_REQUEST_INT => {
+            let m = MissionRequestInt::unpack(p)?;
+            TelemetryEvent::MissionRequest {
+                seq: m.seq,
+                mission_type: m.mission_type,
+            }
+        }
+        ids::MISSION_ITEM_INT => {
+            let m = MissionItemInt::unpack(p)?;
+            TelemetryEvent::MissionItemInt {
+                seq: m.seq,
+                command: m.command,
+                frame: m.frame,
+                x: m.x,
+                y: m.y,
+                z: m.z,
+                param1: m.param1,
+                param2: m.param2,
+                param3: m.param3,
+                param4: m.param4,
+                mission_type: m.mission_type,
+            }
+        }
+        ids::MISSION_ACK => {
+            let m = MissionAck::unpack(p)?;
+            TelemetryEvent::MissionAck {
+                mission_result: m.mission_result,
+                mission_type: m.mission_type,
             }
         }
         other => TelemetryEvent::Unknown {

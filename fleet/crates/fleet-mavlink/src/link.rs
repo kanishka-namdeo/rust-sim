@@ -22,7 +22,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::interval;
 
 pub use crate::messages::TelemetryEvent;
-use crate::messages::{cmds, enums, ids, CommandLong, Heartbeat, Ping, SetPositionTargetLocalNed};
+use crate::messages::{cmds, enums, ids, CommandLong, Heartbeat, MissionAck, MissionCount, MissionItemInt, MissionRequest, MissionRequestInt, MissionRequestList, Ping, SetPositionTargetLocalNed};
 use crate::frame::{crc_extra, Decoder, Frame};
 use fleet_modes::{POSITION_ONLY, VELOCITY_YAWRATE};
 
@@ -149,6 +149,57 @@ pub enum LinkCommand {
     RequestParamList {
         ack: oneshot::Sender<bool>,
     },
+    /// Upload a set of mission items to PX4 via the MAVLink mission
+    /// protocol (MISSION_COUNT → MISSION_REQUEST → MISSION_ITEM_INT →
+    /// MISSION_ACK). Three transactions: mission (0), fence (1), rally (2).
+    MissionUpload {
+        items: Vec<MissionItemInt>,
+        mission_type: u8,
+        ack: oneshot::Sender<MissionUploadResult>,
+    },
+    /// Download mission items from PX4 (MISSION_REQUEST_LIST →
+    /// MISSION_COUNT → MISSION_REQUEST → MISSION_ITEM_INT → MISSION_ACK).
+    MissionDownload {
+        mission_type: u8,
+        reply: oneshot::Sender<MissionDownloadResult>,
+    },
+}
+
+/// Result of a mission upload transaction.
+#[derive(Debug, Clone)]
+pub enum MissionUploadResult {
+    Ok {
+        mission_type: u8,
+        items_sent: u16,
+        items_acked: u16,
+    },
+    Failed {
+        mission_type: u8,
+        reason: String,
+        items_sent: u16,
+        items_acked: u16,
+    },
+    Timeout {
+        mission_type: u8,
+        items_sent: u16,
+        items_acked: u16,
+    },
+}
+
+/// Result of a mission download transaction.
+#[derive(Debug, Clone)]
+pub enum MissionDownloadResult {
+    Ok {
+        mission_type: u8,
+        items: Vec<MissionItemInt>,
+    },
+    Failed {
+        mission_type: u8,
+        reason: String,
+    },
+    Timeout {
+        mission_type: u8,
+    },
 }
 
 /// Result of a COMMAND_LONG exchange (spec §3.2 contract).
@@ -184,6 +235,31 @@ struct PendingParam {
     reply: oneshot::Sender<Option<ParamVal>>,
     attempts: u32,
     deadline: Instant,
+}
+
+/// Mission upload state: the link has sent MISSION_COUNT and is waiting
+/// for MISSION_REQUESTs from PX4, responding with MISSION_ITEM_INT for
+/// each requested seq. The transaction ends with MISSION_ACK.
+struct PendingMissionUpload {
+    items: Vec<MissionItemInt>,
+    mission_type: u8,
+    ack: Option<oneshot::Sender<MissionUploadResult>>,
+    items_sent: u16,
+    items_acked: u16,
+    deadline: Instant,
+    started: Instant,
+}
+
+/// Mission download state: the link has sent MISSION_REQUEST_LIST and is
+/// waiting for MISSION_COUNT, then sends MISSION_REQUESTs and collects
+/// MISSION_ITEM_INTs. Ends with MISSION_ACK from the GCS.
+struct PendingMissionDownload {
+    mission_type: u8,
+    reply: Option<oneshot::Sender<MissionDownloadResult>>,
+    expected_count: u16,
+    items: Vec<MissionItemInt>,
+    deadline: Instant,
+    started: Instant,
 }
 
 /// One parameter as last seen on the wire.
@@ -534,6 +610,68 @@ impl LinkHandle {
         self.shared.params.lock().unwrap().clone()
     }
 
+    /// Upload a set of mission items to PX4 via the MAVLink mission protocol
+    /// (MISSION_COUNT → MISSION_REQUEST → MISSION_ITEM_INT → MISSION_ACK).
+    /// `mission_type`: 0 = mission, 1 = fence, 2 = rally.
+    /// Timeout: 35 s (the link task has a 30 s deadline + 5 s slack).
+    pub async fn mission_upload(
+        &self,
+        items: Vec<MissionItemInt>,
+        mission_type: u8,
+    ) -> MissionUploadResult {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .cmd_tx
+            .send(LinkCommand::MissionUpload {
+                items,
+                mission_type,
+                ack: tx,
+            })
+            .await
+            .is_err()
+        {
+            return MissionUploadResult::Failed {
+                mission_type,
+                reason: "link task dropped".into(),
+                items_sent: 0,
+                items_acked: 0,
+            };
+        }
+        match tokio::time::timeout(Duration::from_secs(35), rx).await {
+            Ok(Ok(r)) => r,
+            _ => MissionUploadResult::Timeout {
+                mission_type,
+                items_sent: 0,
+                items_acked: 0,
+            },
+        }
+    }
+
+    /// Download mission items from PX4 via the MAVLink mission protocol
+    /// (MISSION_REQUEST_LIST → MISSION_COUNT → MISSION_REQUEST →
+    /// MISSION_ITEM_INT → MISSION_ACK). `mission_type`: 0/1/2.
+    pub async fn mission_download(&self, mission_type: u8) -> MissionDownloadResult {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .cmd_tx
+            .send(LinkCommand::MissionDownload {
+                mission_type,
+                reply: tx,
+            })
+            .await
+            .is_err()
+        {
+            return MissionDownloadResult::Failed {
+                mission_type,
+                reason: "link task dropped".into(),
+            };
+        }
+        match tokio::time::timeout(Duration::from_secs(35), rx).await {
+            Ok(Ok(r)) => r,
+            _ => MissionDownloadResult::Timeout { mission_type },
+        }
+    }
+
     /// Convenience wrapper for DO_SET_MODE (spec §3.2).
     ///
     /// PX4's commander decodes VEHICLE_CMD_DO_SET_MODE as SEPARATE params —
@@ -606,6 +744,8 @@ pub async fn run(
     let mut pending: Option<Pending> = None;
     let mut queue: VecDeque<Queued> = VecDeque::new();
     let mut pending_param: Option<PendingParam> = None;
+    let mut pending_mission_upload: Option<PendingMissionUpload> = None;
+    let mut pending_mission_download: Option<PendingMissionDownload> = None;
     // V-10: telemetry subscription (spec 3.1) sent once, right after the
     // first inbound frame proves PX4's mavlink instance is alive.
     let mut subscribed = false;
@@ -654,6 +794,31 @@ pub async fn run(
                 } else {
                     let pp = pending_param.take().unwrap();
                     let _ = pp.reply.send(None);
+                }
+            }
+        }
+        // Mission upload timeout (30 s — missions can be large; PX4 may
+        // take time to process each item).
+        if let Some(mu) = pending_mission_upload.as_mut() {
+            if Instant::now() >= mu.deadline {
+                let mu = pending_mission_upload.take().unwrap();
+                if let Some(tx) = mu.ack {
+                    let _ = tx.send(MissionUploadResult::Timeout {
+                        mission_type: mu.mission_type,
+                        items_sent: mu.items_sent,
+                        items_acked: mu.items_acked,
+                    });
+                }
+            }
+        }
+        // Mission download timeout (30 s).
+        if let Some(md) = pending_mission_download.as_mut() {
+            if Instant::now() >= md.deadline {
+                let md = pending_mission_download.take().unwrap();
+                if let Some(tx) = md.reply {
+                    let _ = tx.send(MissionDownloadResult::Timeout {
+                        mission_type: md.mission_type,
+                    });
                 }
             }
         }
@@ -822,6 +987,167 @@ pub async fn run(
                             shared.stats.lock().unwrap().sent += 1;
                         }
                     }
+                    // ---- Mission protocol inbound handling ----
+                    // MISSION_REQUEST / MISSION_REQUEST_INT: PX4 wants item at seq
+                    if frame.msgid == ids::MISSION_REQUEST || frame.msgid == ids::MISSION_REQUEST_INT {
+                        let req = if frame.msgid == ids::MISSION_REQUEST {
+                            MissionRequest::unpack(&frame.payload)
+                        } else {
+                            MissionRequestInt::unpack(&frame.payload).map(|r| MissionRequest {
+                                seq: r.seq,
+                                target_system: r.target_system,
+                                target_component: r.target_component,
+                                mission_type: r.mission_type,
+                            })
+                        };
+                        if let Some(req) = req {
+                            if let Some(mu) = pending_mission_upload.as_mut() {
+                                if req.mission_type == mu.mission_type {
+                                    if let Some(item) = mu.items.get(req.seq as usize) {
+                                        let mut item = item.clone();
+                                        item.target_system = cfg.instance + 1;
+                                        item.target_component = 1;
+                                        item.seq = req.seq;
+                                        item.mission_type = mu.mission_type;
+                                        let reply = Frame {
+                                            seq: 0,
+                                            sysid: cfg.manager_sysid,
+                                            compid: cfg.manager_compid,
+                                            msgid: ids::MISSION_ITEM_INT,
+                                            payload: item.pack(),
+                                            crc_ok: true,
+                                        };
+                                        send_frame(&sock, &reply, seq)?;
+                                        seq = seq.wrapping_add(1);
+                                        shared.stats.lock().unwrap().sent += 1;
+                                        mu.items_sent = mu.items_sent.max(req.seq + 1);
+                                        mu.deadline = Instant::now() + Duration::from_secs(30);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // MISSION_COUNT: PX4 announces how many items it has (download)
+                    if frame.msgid == ids::MISSION_COUNT {
+                        if let Some(mc) = MissionCount::unpack(&frame.payload) {
+                            if let Some(md) = pending_mission_download.as_mut() {
+                                if mc.mission_type == md.mission_type {
+                                    md.expected_count = mc.count;
+                                    md.items.clear();
+                                    md.items.reserve(mc.count as usize);
+                                    // Request the first item
+                                    let reply = Frame {
+                                        seq: 0,
+                                        sysid: cfg.manager_sysid,
+                                        compid: cfg.manager_compid,
+                                        msgid: ids::MISSION_REQUEST,
+                                        payload: MissionRequest {
+                                            seq: 0,
+                                            target_system: cfg.instance + 1,
+                                            target_component: 1,
+                                            mission_type: md.mission_type,
+                                        }.pack(),
+                                        crc_ok: true,
+                                    };
+                                    send_frame(&sock, &reply, seq)?;
+                                    seq = seq.wrapping_add(1);
+                                    shared.stats.lock().unwrap().sent += 1;
+                                    md.deadline = Instant::now() + Duration::from_secs(30);
+                                }
+                            }
+                        }
+                    }
+                    // MISSION_ITEM_INT: PX4 sends an item during download
+                    if frame.msgid == ids::MISSION_ITEM_INT {
+                        if let Some(item) = MissionItemInt::unpack(&frame.payload) {
+                            let mut download_done = false;
+                            let mut download_items: Vec<MissionItemInt> = Vec::new();
+                            let mut download_type = 0u8;
+                            if let Some(md) = pending_mission_download.as_mut() {
+                                if item.mission_type == md.mission_type {
+                                    md.items.push(item.clone());
+                                    download_type = md.mission_type;
+                                    let next_seq = (item.seq + 1) as u16;
+                                    if next_seq < md.expected_count {
+                                        // Request next item
+                                        let reply = Frame {
+                                            seq: 0,
+                                            sysid: cfg.manager_sysid,
+                                            compid: cfg.manager_compid,
+                                            msgid: ids::MISSION_REQUEST,
+                                            payload: MissionRequest {
+                                                seq: next_seq,
+                                                target_system: cfg.instance + 1,
+                                                target_component: 1,
+                                                mission_type: md.mission_type,
+                                            }.pack(),
+                                            crc_ok: true,
+                                        };
+                                        send_frame(&sock, &reply, seq)?;
+                                        seq = seq.wrapping_add(1);
+                                        shared.stats.lock().unwrap().sent += 1;
+                                    } else {
+                                        // All items received → send MISSION_ACK
+                                        let reply = Frame {
+                                            seq: 0,
+                                            sysid: cfg.manager_sysid,
+                                            compid: cfg.manager_compid,
+                                            msgid: ids::MISSION_ACK,
+                                            payload: MissionAck {
+                                                target_system: cfg.instance + 1,
+                                                target_component: 1,
+                                                mission_result: enums::MAV_MISSION_ACCEPTED,
+                                                mission_type: md.mission_type,
+                                            }.pack(),
+                                            crc_ok: true,
+                                        };
+                                        send_frame(&sock, &reply, seq)?;
+                                        seq = seq.wrapping_add(1);
+                                        shared.stats.lock().unwrap().sent += 1;
+                                        download_done = true;
+                                        download_items = md.items.clone();
+                                    }
+                                    md.deadline = Instant::now() + Duration::from_secs(30);
+                                }
+                            }
+                            if download_done {
+                                let md = pending_mission_download.take().unwrap();
+                                if let Some(tx) = md.reply {
+                                    let _ = tx.send(MissionDownloadResult::Ok {
+                                        mission_type: download_type,
+                                        items: download_items,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    // MISSION_ACK: PX4 acknowledges upload completion
+                    if frame.msgid == ids::MISSION_ACK {
+                        if let Some(ack) = MissionAck::unpack(&frame.payload) {
+                            if let Some(mu) = pending_mission_upload.as_mut() {
+                                if ack.mission_type == mu.mission_type {
+                                    mu.items_acked = mu.items_sent;
+                                    let mu = pending_mission_upload.take().unwrap();
+                                    if let Some(tx) = mu.ack {
+                                        if ack.mission_result == enums::MAV_MISSION_ACCEPTED {
+                                            let _ = tx.send(MissionUploadResult::Ok {
+                                                mission_type: mu.mission_type,
+                                                items_sent: mu.items_sent,
+                                                items_acked: mu.items_acked,
+                                            });
+                                        } else {
+                                            let _ = tx.send(MissionUploadResult::Failed {
+                                                mission_type: mu.mission_type,
+                                                reason: format!("PX4 rejected mission (result={})", ack.mission_result),
+                                                items_sent: mu.items_sent,
+                                                items_acked: mu.items_acked,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     let ev = crate::messages::decode_event(&frame)
                         .unwrap_or(TelemetryEvent::Unknown { msgid: frame.msgid, len: frame.payload.len() });
                     let _ = events.send(ev);
@@ -880,6 +1206,65 @@ pub async fn run(
                             .unwrap()
                             .mark_requested(started.elapsed().as_millis() as u64);
                         let _ = ack.send(true);
+                    }
+                    Some(LinkCommand::MissionUpload { items, mission_type, ack }) => {
+                        // Send MISSION_COUNT to PX4; the link task will
+                        // respond to MISSION_REQUESTs with MISSION_ITEM_INTs
+                        // and resolve `ack` when MISSION_ACK arrives.
+                        let count = items.len() as u16;
+                        let frame = Frame {
+                            seq: 0,
+                            sysid: cfg.manager_sysid,
+                            compid: cfg.manager_compid,
+                            msgid: ids::MISSION_COUNT,
+                            payload: MissionCount {
+                                count,
+                                target_system: cfg.instance + 1,
+                                target_component: 1,
+                                mission_type,
+                            }.pack(),
+                            crc_ok: true,
+                        };
+                        send_frame(&sock, &frame, seq)?;
+                        seq = seq.wrapping_add(1);
+                        shared.stats.lock().unwrap().sent += 1;
+                        pending_mission_upload = Some(PendingMissionUpload {
+                            items,
+                            mission_type,
+                            ack: Some(ack),
+                            items_sent: 0,
+                            items_acked: 0,
+                            deadline: Instant::now() + Duration::from_secs(30),
+                            started: Instant::now(),
+                        });
+                    }
+                    Some(LinkCommand::MissionDownload { mission_type, reply }) => {
+                        // Send MISSION_REQUEST_LIST to PX4; the link task
+                        // will collect MISSION_ITEM_INTs and resolve `reply`
+                        // when all items are received.
+                        let frame = Frame {
+                            seq: 0,
+                            sysid: cfg.manager_sysid,
+                            compid: cfg.manager_compid,
+                            msgid: ids::MISSION_REQUEST_LIST,
+                            payload: MissionRequestList {
+                                target_system: cfg.instance + 1,
+                                target_component: 1,
+                                mission_type,
+                            }.pack(),
+                            crc_ok: true,
+                        };
+                        send_frame(&sock, &frame, seq)?;
+                        seq = seq.wrapping_add(1);
+                        shared.stats.lock().unwrap().sent += 1;
+                        pending_mission_download = Some(PendingMissionDownload {
+                            mission_type,
+                            reply: Some(reply),
+                            expected_count: 0,
+                            items: Vec::new(),
+                            deadline: Instant::now() + Duration::from_secs(30),
+                            started: Instant::now(),
+                        });
                     }
                 }
             }
