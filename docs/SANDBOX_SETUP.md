@@ -186,6 +186,24 @@ bash scripts/browser_setup_test.sh
 # ports and abort the fresh fleet with process-death FAULT).
 ```
 
+Operator map control plane (ADR-0017 — the geo map where the user flies
+SITL themselves, single-invocation like everything else):
+
+```bash
+(cd fleet && bash tests/live_test_operator.sh)
+# O-1: "[O-1] PASS — 15 checks" — geo blocks on the frame, go-to flight,
+# hold+land, fence-validated mission upload, auction-flown op* tasks,
+# estop teardown.
+
+bash scripts/browser_map_test.sh
+# O-2: "OPERATOR MAP BROWSER LIVE TEST PASS (16 checks)" — the Operator Map
+# tab through the gateway: Leaflet LIVE, map clicks place waypoints,
+# upload + start mission, live flight, screenshots.
+# Same caddy/leak preconditions as S-2; also kills stale next-server
+# instances (a leaked console server serves an old bundle — the map-fit
+# bug class documented in console/AGENTS.md).
+```
+
 ## 9. Known flakiness and its fix (applied in-repo)
 
 **F-1 READY poll race.** On a fast machine both vehicles flip
@@ -210,6 +228,8 @@ pattern, apply the f2-style gate, do not widen time budgets.
 | Browser live test (gateway :81, both consoles LIVE, telemetry moving) | PASS |
 | S-1 vehicle-setup REST live test (param download, typed writes, calibration, modes, airframe apply + restart + persistence) | PASS (44/44) |
 | S-2 Vehicle Setup browser test (QGC-style tab end-to-end, Boat apply via dialog) | PASS (13/13) |
+| O-1 operator-map REST live test (geo frame, go-to flight, hold+land, fence-validated upload, auction-flown mission, estop) | PASS (15 checks) |
+| O-2 Operator Map browser test (Leaflet LIVE, map-click waypoints, upload + start mission, live flight) | PASS (16/16) |
 | Console `npm run lint` + `npm run build` | clean |
 
 Artifacts from this run live under each harness's `tests/*_artifacts/`;

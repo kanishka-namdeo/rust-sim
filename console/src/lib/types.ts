@@ -110,6 +110,15 @@ export interface FleetVehicle {
   voltage_v: number | null
   position_ned_m: [number, number, number]
   velocity_ned_ms: [number, number, number]
+  /** ADR-0017: PX4's GLOBAL_POSITION_INT fix (null before the first fix
+   * arrives) — the geo map renders the estimate the vehicle flies. */
+  lat: number | null
+  lon: number | null
+  /** MSL altitude / AGL-relative altitude, metres (null = no fix). */
+  alt_msl_m: number | null
+  alt_agl_m: number | null
+  /** HEARTBEAT's MAV_MODE_FLAG_SAFETY_ARMED (the command bar's gate). */
+  armed: boolean
   yaw_deg: number
   heartbeat_age_s: number
   stale: boolean
@@ -155,12 +164,51 @@ export interface Geofence {
   floor_m: number
 }
 
+/** The geodetic anchor of the NED frame (ADR-0017 `[env] origin`). */
+export interface GeoOriginView {
+  lat_deg: number
+  lon_deg: number
+  alt_m: number
+}
+
 export interface FleetSnapshot {
   phase: string // 'INIT' | 'RUNNING' | 'ABORTED' | ...
   t_s: number
   vehicles: FleetVehicle[]
   tasks: FleetTask[]
   geofence: Geofence
+  geo_origin: GeoOriginView | null
+}
+
+// ---------------------------------------------------------------------------
+// Operator map control (mavfleet ADR-0017 — the QGC Fly/Plan workflow)
+// ---------------------------------------------------------------------------
+
+/** One operator waypoint being planned on the map (QGC Plan View item). */
+export interface MapWaypoint {
+  /** Local sequence id (wp1, wp2, ...) — backend assigns op* task ids. */
+  key: string
+  lat: number
+  lng: number
+  /** Metres AGL (QGC's waypoint altitude convention). */
+  alt_m: number
+  hover_s: number
+}
+
+/** Upload result from POST /api/mission. */
+export interface MissionUploadResult {
+  accepted: string[]
+  rejected: { label: string; reason: string }[]
+  pool: number
+}
+
+/** Generic guided-command result (arm/takeoff/land/rtl/hold/goto). */
+export interface GuidedResult {
+  command: string
+  result: number
+  accepted: boolean
+  index?: number
+  [k: string]: unknown
 }
 
 // ---------------------------------------------------------------------------

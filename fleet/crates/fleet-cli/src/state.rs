@@ -9,9 +9,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use fleet_core::events::{fleet_epoch_ms, Event, EventLog};
+use fleet_core::geo::GeoOrigin;
 use fleet_core::health::HealthFlag;
 use fleet_core::registry::Registry;
-use fleet_core::tick::{FleetFrame, VehicleView};
+use fleet_core::tick::{FleetFrame, GeofenceView, VehicleView};
 use fleet_mavlink::LinkHandle;
 use fleet_mission::report::TaskStatus;
 
@@ -21,6 +22,59 @@ use fleet_mission::report::TaskStatus;
 pub struct VehicleTaskInfo {
     pub current: Option<String>,
     pub queue: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Operator control plane (ADR-0017)
+// ---------------------------------------------------------------------------
+
+/// One operator waypoint as uploaded from the map (`POST /api/mission`).
+/// `alt_m` is metres AGL above the scenario origin (QGC's waypoint altitude
+/// convention); conversion to NED happens at drain time.
+#[derive(Debug, Clone)]
+pub struct OperatorWaypoint {
+    pub label: Option<String>,
+    pub lat_deg: f64,
+    pub lon_deg: f64,
+    pub alt_m: f64,
+    pub hover_s: f32,
+}
+
+/// Upload ack: accepted task ids + rejected labels with reasons (the
+/// compiler's own validation rules, applied at drain time).
+#[derive(Debug, Clone)]
+pub struct UploadAck {
+    pub accepted: Vec<String>,
+    pub rejected: Vec<(String, String)>,
+    pub pool: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct StartAck {
+    pub started: bool,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClearAck {
+    pub cleared: usize,
+}
+
+/// Operator commands queued by the REST plane and drained by the
+/// supervisor's tick loop (the same discipline as ADR-0016 restart
+/// requests: the supervisor is the single writer of the mission state).
+#[derive(Debug)]
+pub enum OperatorCmd {
+    /// Upload waypoints (append, or replace queued operator tasks).
+    Upload {
+        items: Vec<OperatorWaypoint>,
+        replace: bool,
+        ack: tokio::sync::oneshot::Sender<UploadAck>,
+    },
+    /// Start the (deferred) mission — the setup-bench path to RUNNING.
+    Start { ack: tokio::sync::oneshot::Sender<StartAck> },
+    /// Drop queued operator tasks (the active task is never touched).
+    Clear { ack: tokio::sync::oneshot::Sender<ClearAck> },
 }
 
 /// The control-plane-visible fleet state.
@@ -48,6 +102,19 @@ pub struct AppState {
     /// `SYS_AUTOSTART` write is confirmed; the manager's run loop drains
     /// it and restarts the sim+px4 pair (not a process-death FAULT).
     restart_requests: Mutex<std::collections::BTreeSet<u8>>,
+    /// Operator command queue (ADR-0017): drained by the supervisor tick.
+    operator_cmds: Mutex<std::collections::VecDeque<OperatorCmd>>,
+    /// Per-vehicle "flying a mission right now" (runner live) — the gate
+    /// guided commands check so a user command can never fight a runner.
+    mission_active: Mutex<Vec<bool>>,
+    /// Geo origin (ADR-0017): `[env] origin` — published on the frame and
+    /// used for all operator-plane geo conversion.
+    pub geo_origin: GeoOrigin,
+    /// The real fence (for go-to clamping, runner rule §7.2) and the
+    /// frame-published view of it (so the console draws the *real* fence,
+    /// not a client fallback).
+    pub fence: fleet_safety::geofence::Geofence,
+    pub fence_view: GeofenceView,
     pub started_unix: u64,
 }
 
@@ -58,7 +125,14 @@ impl AppState {
         count: u8,
         scenario_path: impl Into<String>,
         started_unix: u64,
+        geo_origin: GeoOrigin,
+        fence: fleet_safety::geofence::Geofence,
     ) -> Arc<AppState> {
+        let fence_view = GeofenceView {
+            points_ned_m: fence.points.clone(),
+            ceiling_m: fence.ceiling_m,
+            floor_m: fence.floor_m,
+        };
         Arc::new(AppState {
             registry,
             log,
@@ -73,6 +147,11 @@ impl AppState {
             flags: Mutex::new(vec![Vec::new(); count as usize]),
             links: Mutex::new(vec![None; count as usize]),
             restart_requests: Mutex::new(std::collections::BTreeSet::new()),
+            operator_cmds: Mutex::new(std::collections::VecDeque::new()),
+            mission_active: Mutex::new(vec![false; count as usize]),
+            geo_origin,
+            fence,
+            fence_view,
             started_unix,
         })
     }
@@ -114,6 +193,34 @@ impl AppState {
     /// The supervisor latches it into the policy engine on its next tick.
     pub fn request_estop(&self) {
         self.estop.store(true, Ordering::SeqCst);
+    }
+
+    /// Queue an operator command (ADR-0017 REST plane). The supervisor
+    /// drains it on its next tick (≤ 200 ms at 10 Hz) and answers on the
+    /// embedded oneshot.
+    pub fn push_operator_cmd(&self, cmd: OperatorCmd) {
+        self.operator_cmds.lock().unwrap().push_back(cmd);
+    }
+
+    /// Drain pending operator commands (supervisor tick, one shot).
+    pub fn take_operator_cmds(&self) -> Vec<OperatorCmd> {
+        let mut q = self.operator_cmds.lock().unwrap();
+        q.drain(..).collect()
+    }
+
+    /// Per-vehicle "mission live" flag (supervisor writes each tick:
+    /// runner present and engaging/flying — the guided-command gate).
+    pub fn set_mission_active(&self, index: u8, active: bool) {
+        if let Some(slot) = self.mission_active.lock().unwrap().get_mut(index as usize) {
+            *slot = active;
+        }
+    }
+
+    /// Is vehicle i currently flying an autonomous mission? Guided
+    /// commands (go-to, arm) are gated on this so they never fight a
+    /// runner's setpoint stream (ADR-0017).
+    pub fn mission_active(&self, index: u8) -> bool {
+        self.mission_active.lock().unwrap().get(index as usize).copied().unwrap_or(false)
     }
 
     pub fn estop_requested(&self) -> bool {
@@ -180,6 +287,8 @@ pub fn fleet_frame(s: &AppState, events_tail: usize) -> FleetFrame {
         tick_count: s.tick_count.load(Ordering::SeqCst),
         vehicles,
         tasks,
+        geo_origin: Some(s.geo_origin),
+        geofence: Some(s.fence_view.clone()),
         events_tail: s.log.tail(events_tail),
     }
 }

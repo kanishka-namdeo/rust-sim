@@ -271,13 +271,26 @@ One axum server on 127.0.0.1:8400 (configurable). Envelope identical to rustsits
 | /api/vehicles/{i}/params/refresh | POST | (Re)start the full parameter download (PARAM_REQUEST_LIST, ADR-0016) |
 | /api/vehicles/{i}/airframe | POST | Apply airframe: SYS_AUTOSTART write + controlled pair restart (ADR-0016) |
 | /api/vehicles/{i}/calibrate | POST | Sensor calibration trigger (MAV_CMD 241, commander's param matrix, ADR-0016) |
+| /api/mission | POST | Upload operator waypoints (lat/lon + AGL): geo->NED, fence-validated, enters the auction pool (ADR-0017) |
+| /api/mission/start | POST | Start the deferred operator mission (setup bench -> RUNNING, ADR-0017) |
+| /api/mission/clear | POST | Drop queued operator tasks (active task untouched, ADR-0017) |
+| /api/vehicles/{i}/arm | POST | COMPONENT_ARM_DISARM(1/0) (ADR-0017) |
+| /api/vehicles/{i}/takeoff | POST | MAV_CMD_NAV_TAKEOFF with param7 altitude (ADR-0017) |
+| /api/vehicles/{i}/land | POST | AUTO.LAND + setpoint-stream stop (ADR-0017) |
+| /api/vehicles/{i}/rtl | POST | AUTO.RTL + setpoint-stream stop (ADR-0017) |
+| /api/vehicles/{i}/hold | POST | AUTO.LOITER pause + setpoint-stream stop (ADR-0017) |
+| /api/vehicles/{i}/goto | POST | Go To Location: geo->NED, fence-clamped, engage sequence (ADR-0017) |
 | /api/tasks | GET / POST | Inspect task set; append tasks at runtime (triggers reallocation) |
 | /api/events | GET | Event log tail (supervisor decisions, fault injections, state changes) |
 | /ws/fleet | WS | 5 Hz fleet state frames + event push |
 
 The WS frame carries the same fleet summary as GET /api/fleet at 5 Hz plus incremental
 events; the dashboard subscribes once and drives all views from it. Frame schema is
-versioned in a shared JSON schema like the rustsitsim frame.
+versioned in a shared JSON schema like the rustsitsim frame. Since ADR-0017 the frame
+also carries the geo blocks: `geo_origin` (the scenario `[env] origin` every sim's
+HIL_GPS anchors to) and the `geofence` (points_ned_m + ceiling + floor), and every
+vehicle carries its `GLOBAL_POSITION_INT` fix (`lat_deg_e7` / `lon_deg_e7` / `alt_mm`
+/ `relative_alt_mm`) — the estimate the operator map renders.
 
 ## 4. Vehicle State Machine
 

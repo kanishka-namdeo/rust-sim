@@ -53,6 +53,10 @@ Not owned here: vehicle dynamics and wire codec (`../sim/`), operator UI
   with real rustsitsim dynamics, physical flight asserted from replay ground
   truth), `tests/demo_live.toml` + `../scripts/browser_live_test.sh` for the
   console experience.
+- Operator plane: `tests/live_test_operator.sh` (O-1, ADR-0017) + `../
+  scripts/browser_map_test.sh` (O-2) — the geo frame, go-to, guided
+  commands, fence-validated mission upload and the auction-flown op* tasks
+  against real PX4.
 - Boot-gate polling in both harnesses accepts READY or any post-READY FSM
   state (ACTIVE/RTL/LANDED): the all-READY snapshot window can be <200 ms
   wide on fast machines because vehicles flip READY->ACTIVE together once

@@ -8,3 +8,4 @@ description = "Per-vehicle process supervision (px4 + simulator) for mavfleet"
 [dependencies]
 tokio = { workspace = true }
 serde = { workspace = true }
+fleet-core = { path = "../fleet-core" }

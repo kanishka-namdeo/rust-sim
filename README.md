@@ -5,9 +5,10 @@
 **PX4-native lockstep simulation, multi-vehicle fleet operations, and a live operator console — pure Rust, real PX4.**
 
 [![sim tests](https://img.shields.io/badge/sim-99%2B%20tests-brightgreen)](sim)
-[![fleet tests](https://img.shields.io/badge/fleet-126%2B%20tests-brightgreen)](fleet)
+[![fleet tests](https://img.shields.io/badge/fleet-155%2B%20tests-brightgreen)](fleet)
 [![I-2](https://img.shields.io/badge/live--verified-I--1%20%2F%20I--2%20flight-success)](docs/VERIFICATION.md)
 [![F-2](https://img.shields.io/badge/live--verified-F--1%20%2F%20F--2%20fleet-success)](docs/VERIFICATION.md)
+[![O-2](https://img.shields.io/badge/live--verified-O--1%20%2F%20O--2%20operator--map-success)](docs/VERIFICATION.md)
 [![console](https://img.shields.io/badge/console-browser--tested-live-blue)](docs/images/rustsim-fleetc2-live.png)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
@@ -23,7 +24,7 @@ components:
 |---|---|
 | **[sim/](sim)** — *RustSim Core* | A lockstep HIL flight simulator that replaces Gazebo/jMAVSim entirely: hand-rolled MAVLink v2 codec (golden-vectored against PX4's own headers), 6-DOF quadrotor dynamics, BMI088-class sensor models, a 10-fault injection engine, deterministic replays, REST+WS control plane. |
 | **[fleet/](fleet)** — *RustSim Fleet* | A multi-vehicle mission manager: spawns sim+PX4 pairs, allocates tasks by sequential auction (Hungarian baseline), flies offboard missions at a 20 Hz setpoint cadence, enforces an 8-policy safety ladder, writes run reports with CI-classifiable exit codes. |
-| **[console/](console)** — *RustSim Console* | A Next.js operator console with two live views — the Sim Console (10 Hz physics telemetry, strip charts, live fault injection) and Fleet C2 (fleet table, NED map, task board, event log, e-stop) — with honest LIVE/SIMULATED dual-mode. |
+| **[console/](console)** — *RustSim Console* | A Next.js operator console with three live views plus the QGC-style setup — the Sim Console (10 Hz physics telemetry, strip charts, live fault injection), Fleet C2 (fleet table, NED map, task board, event log, e-stop), the **Operator Map** (Leaflet geo map: live GPS-marked vehicles, trajectories, geofence; click-to-fly Go To, plan/edit/upload/start waypoint missions, arm/takeoff/land/RTL/hold action bar), and Vehicle Setup (airframe/sensors/power/modes/params) — all with honest LIVE/SIMULATED dual-mode. |
 
 **No Gazebo. No jmavsim. No external MAVLink crate. No database.** The whole
 stack is Rust + TypeScript, speaks PX4's native HIL TCP wire, and every
@@ -51,6 +52,10 @@ Every headline claim has a single-invocation harness and a recorded PASS
   RTL, land, disarm — asserted from replay ground truth.
 - **Browser-live**: the operator console drives the same fleet through the
   preview gateway; LIVE badges, moving telemetry, screenshots captured.
+- **O-1 / O-2 — operator map control (ADR-0017)**: REST- and browser-level
+  passes of the map view where the user flies SITL themselves — go-to
+  flights, fence-validated mission upload + auction-flown op* tasks,
+  guided arm/takeoff/land/RTL/hold, all against real PX4.
 
 ## Architecture
 
@@ -137,7 +142,7 @@ contract hierarchy): the root [AGENTS.md](AGENTS.md) is the rail, and
 
 ```bash
 (cd sim   && cargo test --workspace)   # 99+ tests
-(cd fleet && cargo test --workspace)   # 126+ tests
+(cd fleet && cargo test --workspace)   # 155+ tests
 (cd console && npm run lint && npm run build)
 ```
 
@@ -151,7 +156,8 @@ measured time budgets without re-running the corresponding live case.
   setpoints, camera/gimbal payload channels).
 - Fault events in fleet scenarios wired to the sims' REST fault plane
   (today the F-catalog lives on the sim side).
-- Console: mission editing (waypoint placement on the NED map).
+- Console: survey patterns (grids/corridors) on the Operator Map's plan
+  editor; FC-side MAVLink mission protocol as an alternative flight path.
 - CI matrix across PX4 versions to track dialect drift.
 
 ## License

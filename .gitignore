@@ -26,3 +26,6 @@ fleet/tests/demo_artifacts/run/vehicle_*/
 fleet/fleet-runs/
 fleet/tests/setup_browser_artifacts/
 console/tsconfig.tsbuildinfo
+# operator-map live-test artifacts (regenerated per run; screenshots are committed)
+fleet/tests/o1_artifacts/
+fleet/tests/map_browser_artifacts/

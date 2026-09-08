@@ -302,6 +302,13 @@ export function normalizeFleetSnapshot(
     const yaw = num(r.yaw_deg, r.heading_deg) ?? (q ? yawFromQuat(q) : prev?.yaw_deg ?? 0)
     const hbAge = num(r.heartbeat_age_s, r.hb_age_s, r.heartbeat_age) ?? 0
     const healthRaw = Array.isArray(r.health) ? r.health : []
+    // ADR-0017: GLOBAL_POSITION_INT fix (degE7 on the wire -> degrees).
+    // A fix of exactly (0,0) means "not received yet" (the Rust default).
+    const latE7 = num(r.lat_deg_e7, r.lat_e7)
+    const lonE7 = num(r.lon_deg_e7, r.lon_e7)
+    const hasFix = latE7 != null && lonE7 != null && (latE7 !== 0 || lonE7 !== 0)
+    const relAltMm = num(r.relative_alt_mm, r.rel_alt_mm)
+    const altMm = num(r.alt_mm)
     return {
       id,
       index: num(r.index, r.i) ?? i,
@@ -312,6 +319,11 @@ export function normalizeFleetSnapshot(
       voltage_v: num(r.voltage_v, r.battery_voltage_v, r.voltage),
       position_ned_m: pos,
       velocity_ned_ms: vec3(r.velocity_ned_ms, r.vel_ned_ms, r.velocity) ?? prev?.velocity_ned_ms ?? [0, 0, 0],
+      lat: hasFix ? (latE7 as number) / 1e7 : prev?.lat ?? null,
+      lon: hasFix ? (lonE7 as number) / 1e7 : prev?.lon ?? null,
+      alt_msl_m: hasFix && altMm != null ? altMm / 1000 : prev?.alt_msl_m ?? null,
+      alt_agl_m: hasFix && relAltMm != null ? relAltMm / 1000 : prev?.alt_agl_m ?? null,
+      armed: bool(r.armed, r.is_armed) ?? prev?.armed ?? false,
       yaw_deg: yaw,
       heartbeat_age_s: hbAge,
       stale: bool(r.stale, r.telemetry_stale) ?? hbAge > 1.5,
@@ -350,6 +362,17 @@ export function normalizeFleetSnapshot(
         .filter((p): p is [number, number] => p != null)
     : []
 
+  // ADR-0017: the scenario geo origin rides the frame; when absent (older
+  // backend) the map falls back to the PX4 test field constant.
+  const originRec = asRec(body.geo_origin) ?? asRec(asRec(body.env)?.origin) ?? null
+  const geo_origin = originRec
+    ? {
+        lat_deg: num(originRec.lat_deg, originRec.lat) ?? 47.39777,
+        lon_deg: num(originRec.lon_deg, originRec.lon) ?? 8.54558,
+        alt_m: num(originRec.alt_m, originRec.alt) ?? 500,
+      }
+    : null
+
   const events: FleetEvent[] = (Array.isArray(body.events) ? body.events : []).map(normalizeEvent).filter((e): e is FleetEvent => e != null)
   const auctions = (Array.isArray(body.auctions) ? body.auctions : [])
     .map((ar) => {
@@ -372,6 +395,7 @@ export function normalizeFleetSnapshot(
         ceiling_m: num(gfRec?.ceiling_m, gfRec?.ceiling) ?? FALLBACK_FENCE.ceiling_m,
         floor_m: num(gfRec?.floor_m, gfRec?.floor) ?? FALLBACK_FENCE.floor_m,
       },
+      geo_origin,
     },
     events,
     auctions,

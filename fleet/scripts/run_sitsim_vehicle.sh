@@ -21,6 +21,13 @@ HIL_PORT="${2:?hil_port}"
 DURATION="${3:?duration_s}"
 API_PORT=$((8200 + INSTANCE))
 SEED=$((100 + INSTANCE))
+# Geo origin (ADR-0017): the manager exports the scenario [env] origin;
+# defaults are the PX4 test field — the same constant rustsitsim pins, so
+# the fleet's lat/lon <-> NED conversion and the sim's HIL_GPS anchor can
+# never disagree.
+ORIGIN_LAT="${RSIM_ORIGIN_LAT:-47.397770}"
+ORIGIN_LON="${RSIM_ORIGIN_LON:-8.545580}"
+ORIGIN_ALT="${RSIM_ORIGIN_ALT:-500.0}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SITSIM="${FLEET_SITSIM_BIN:-$SCRIPT_DIR/../../sim/target/debug/sitsim-cli}"
 
@@ -40,7 +47,7 @@ duration_s = $DURATION
 seed = $SEED
 
 [vehicle]
-origin = { lat_deg = 47.397770, lon_deg = 8.545580, alt_m = 500.0 }
+origin = { lat_deg = $ORIGIN_LAT, lon_deg = $ORIGIN_LON, alt_m = $ORIGIN_ALT }
 
 [sensors.imu]
 # Realistic BMI088-class noise (rustsitsim config defaults): a noiseless

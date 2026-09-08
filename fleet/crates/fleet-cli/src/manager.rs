@@ -32,7 +32,10 @@ use fleet_simctl::{ports_free, SimCtl, SimCtlConfig};
 
 use crate::api;
 use crate::report;
-use crate::state::{AppState, VehicleTaskInfo};
+use crate::state::{
+    AppState, ClearAck, OperatorCmd, OperatorWaypoint, StartAck, UploadAck,
+    VehicleTaskInfo,
+};
 
 /// Scenario arg parsing failure / infrastructure error exit code.
 pub const EXIT_ERROR: i32 = 3;
@@ -102,7 +105,10 @@ fn log_ack(log: &Arc<EventLog>, index: u8, label: &str, ack: CmdAck) {
 /// TEMPORARILY_REJECTED arms are retried in-ladder: PX4 rejects early
 /// attempts while sensors/EKF2 settle, and a one-shot arm dead-locks the
 /// mission behind a transient health state (§3.2 retry semantics).
-fn spawn_engage(handle: LinkHandle, log: Arc<EventLog>, index: u8, arm: bool) {
+/// ADR-0017: the operator REST plane reuses these exact engage sequences
+/// (crate-visible), so a go-to arm ladder is byte-identical to the
+/// supervisor's own mission engage.
+pub(crate) fn spawn_engage(handle: LinkHandle, log: Arc<EventLog>, index: u8, arm: bool) {
     tokio::spawn(async move {
         if arm {
             const ARM_ATTEMPTS: u8 = 4;
@@ -130,7 +136,7 @@ fn spawn_engage(handle: LinkHandle, log: Arc<EventLog>, index: u8, arm: bool) {
     });
 }
 
-fn spawn_rtl(handle: LinkHandle, log: Arc<EventLog>, index: u8) {
+pub(crate) fn spawn_rtl(handle: LinkHandle, log: Arc<EventLog>, index: u8) {
     let h = handle;
     let l = log;
     let i = index;
@@ -140,7 +146,7 @@ fn spawn_rtl(handle: LinkHandle, log: Arc<EventLog>, index: u8) {
     });
 }
 
-fn spawn_land_and_disarm(handle: LinkHandle, log: Arc<EventLog>, index: u8) {
+pub(crate) fn spawn_land_and_disarm(handle: LinkHandle, log: Arc<EventLog>, index: u8) {
     tokio::spawn(async move {
         let ack = handle.set_mode(fleet_modes::MODE_WORD_AUTO_LAND).await;
         log_ack(&log, index, "DO_SET_MODE(AUTO.LAND, 0x06040000)", ack);
@@ -288,6 +294,8 @@ struct Supervisor {
     battery_gate_decided: bool,
     unassignable_reported: bool,
     run_dir: PathBuf,
+    /// ADR-0017: monotonic id for operator-uploaded tasks (`op1`, `op2`, …).
+    operator_seq: u32,
 }
 
 fn set_task(api: &AppState, ti: usize, f: impl FnOnce(&mut TaskStatus)) {
@@ -377,12 +385,15 @@ pub async fn run_scenario(args: RunArgs) -> i32 {
     );
 
     let registry = Registry::new(count);
+    let geo_origin = scenario.geo_origin();
     let api = AppState::new(
         Arc::clone(&registry),
         Arc::clone(&log),
         count,
         scenario_path.clone(),
         unix_now(),
+        geo_origin,
+        plan.fence.clone(),
     );
 
     // Task table: accepted tasks in plan order, rejected appended.
@@ -433,6 +444,7 @@ pub async fn run_scenario(args: RunArgs) -> i32 {
     let sim_template = resolve_sim_command(&scenario, &log);
     let mut sim_cfg = SimCtlConfig::from_env(sim_template, scenario.sim_duration_s());
     sim_cfg.process_logs = true;
+    sim_cfg.geo_origin = geo_origin; // ADR-0017: RSIM_ORIGIN_* for the sim wrapper
     let mut simctl = SimCtl::new(sim_cfg);
 
     // Links (bind 14540+i BEFORE px4 boots, §3.1) + aggregators.
@@ -563,6 +575,7 @@ pub async fn run_scenario(args: RunArgs) -> i32 {
         battery_gate_decided: !battery_sim,
         unassignable_reported: false,
         run_dir,
+        operator_seq: 0,
     };
     sup.run().await
 }
@@ -606,6 +619,11 @@ impl Supervisor {
                     }
                 }
             }
+
+            // Operator control plane (ADR-0017): mission upload / start /
+            // clear queue here; the supervisor is the single writer of the
+            // mission state, so REST handlers only queue + await the ack.
+            self.drain_operator_cmds(now);
 
             if let Outcome::Stop = self.tick(now) {
                 break;
@@ -786,6 +804,21 @@ impl Supervisor {
         }
 
         // Mission runner step (§7): apply RunnerCmds to the link.
+        // ADR-0017: publish whether this vehicle has a live mission —
+        // the REST guided-command gate reads it (a user command never
+        // fights a runner's setpoint stream).
+        let mission_live = !ctx.standing_down
+            && ctx
+                .runner
+                .as_ref()
+                .map(|r| {
+                    matches!(
+                        r.phase(),
+                        RunnerPhase::Idle | RunnerPhase::Engaging { .. } | RunnerPhase::Flying
+                    )
+                })
+                .unwrap_or(false);
+        api.set_mission_active(index, mission_live);
         if !ctx.standing_down && matches!(fsm, FsmState::Ready | FsmState::Active) {
             if let Some(runner) = ctx.runner.as_mut() {
                 let input = RunnerInput {
@@ -1135,6 +1168,206 @@ impl Supervisor {
     }
 
     // -- allocation -----------------------------------------------------------
+
+    // -- operator control plane (ADR-0017) -----------------------------------
+
+    /// Drop queued operator tasks: out of the pool, out of runner queues
+    /// (pooled back, then filtered), task table state -> "cleared". The
+    /// active task of a flying runner is never touched (§6.5 semantics).
+    /// Returns how many tasks were dropped.
+    fn clear_queued_operator_tasks(&mut self) -> usize {
+        // 1. take every runner's queued indices back to the pool (the
+        //    runner keeps its current task).
+        for ctx in self.ctxs.iter_mut() {
+            if let Some(runner) = ctx.runner.as_mut() {
+                let pooled = runner.pool_remaining();
+                self.pool.extend(pooled);
+            }
+        }
+        // 2. filter operator tasks out of the pool (index-aligned flags —
+        //    task indices are stable, the plan only ever appends).
+        let is_op: Vec<bool> = self
+            .plan
+            .tasks
+            .iter()
+            .map(|t| t.id.starts_with("op"))
+            .collect();
+        let is_op_at = |ti: usize| is_op.get(ti).copied().unwrap_or(false);
+        let pool_now = std::mem::take(&mut self.pool);
+        let dropped: Vec<usize> = pool_now.iter().copied().filter(|&ti| is_op_at(ti)).collect();
+        self.pool = pool_now.into_iter().filter(|&ti| !is_op_at(ti)).collect();
+        // 3. mark them cleared in the shared task table.
+        for &ti in &dropped {
+            set_task(&self.api, ti, |t| t.state = "cleared".into());
+        }
+        if !dropped.is_empty() {
+            let ids: Vec<&str> = dropped.iter().map(|&ti| self.plan.tasks[ti].id.as_str()).collect();
+            self.log.log(
+                EventKind::SupervisorAction,
+                None,
+                format!("operator: cleared queued mission tasks {ids:?} (active task untouched)"),
+            );
+        }
+        dropped.len()
+    }
+
+    /// Drain the REST-queued operator commands (ADR-0017). Runs on the tick
+    /// loop — the supervisor stays the single writer of plan/pool/runners —
+    /// and answers each on its oneshot with the honest result.
+    fn drain_operator_cmds(&mut self, now: u64) {
+        for cmd in self.api.take_operator_cmds() {
+            match cmd {
+                OperatorCmd::Upload { items, replace, ack } => {
+                    let result = self.operator_upload(items, replace);
+                    let _ = ack.send(result);
+                }
+                OperatorCmd::Start { ack } => {
+                    let result = self.operator_start(now);
+                    let _ = ack.send(result);
+                }
+                OperatorCmd::Clear { ack } => {
+                    let cleared = self.clear_queued_operator_tasks();
+                    let _ = ack.send(ClearAck { cleared });
+                }
+            }
+        }
+    }
+
+    /// Validate + inject operator waypoints: geo -> NED against the scenario
+    /// origin, the compiler's own rules (fence polygon, altitude box,
+    /// reachability), then into the task board + pool. Invalid items are
+    /// rejected with reasons — never discovered mid-flight.
+    fn operator_upload(&mut self, items: Vec<OperatorWaypoint>, replace: bool) -> UploadAck {
+        if replace {
+            self.clear_queued_operator_tasks();
+        }
+        let origin = self.api.geo_origin;
+        let reach = fleet_mission::compile::max_reach_m(&self.plan.fence);
+        let mut accepted: Vec<String> = Vec::new();
+        let mut rejected: Vec<(String, String)> = Vec::new();
+        for (k, item) in items.into_iter().enumerate() {
+            let label = item
+                .label
+                .clone()
+                .unwrap_or_else(|| format!("item[{}]", k));
+            if item.hover_s < 0.0 {
+                rejected.push((label, "hover_s must be >= 0".into()));
+                continue;
+            }
+            // QGC convention: waypoint altitude is AGL -> geodetic
+            // alt = origin + AGL -> NED z = -AGL.
+            let z = -(item.alt_m as f32);
+            let ned = origin.geodetic_to_ned(item.lat_deg, item.lon_deg, origin.alt_m + item.alt_m);
+            let xy = [ned[0] as f32, ned[1] as f32];
+            if !self.plan.fence.contains_xy(xy) {
+                let breach = self.plan.fence.horizontal_breach(xy);
+                rejected.push((
+                    label,
+                    format!(
+                        "outside geofence polygon (lat {:.6}, lon {:.6}, breach {:.0} m)",
+                        item.lat_deg, item.lon_deg, breach
+                    ),
+                ));
+                continue;
+            }
+            if !self.plan.fence.altitude_ok(z) {
+                rejected.push((
+                    label,
+                    format!(
+                        "outside altitude box (AGL {:.1} m; box {}..{} m)",
+                        item.alt_m, self.plan.fence.floor_m, self.plan.fence.ceiling_m
+                    ),
+                ));
+                continue;
+            }
+            let d = xy[0].hypot(xy[1]);
+            if d > reach {
+                rejected.push((
+                    label,
+                    format!("unreachable: {d:.0} m from home, budget {reach:.0} m"),
+                ));
+                continue;
+            }
+            // accepted: same three structures the scenario path builds
+            // (alloc Task + runner RunnerTask + shared TaskStatus), and the
+            // pool — the sequential auction awards it from the next tick.
+            let ti = self.plan.tasks.len();
+            self.operator_seq += 1;
+            let id = format!("op{}", self.operator_seq);
+            let task = fleet_alloc::Task {
+                id: id.clone(),
+                pos_ned_m: [xy[0], xy[1]],
+                hover_s: item.hover_s,
+                reward: 1.0,
+                deadline_s: f32::INFINITY,
+            };
+            self.plan.tasks.push(task);
+            self.runner_tasks.push(RunnerTask {
+                id: id.clone(),
+                pos_ned_m: [xy[0], xy[1], z],
+                hover_s: item.hover_s,
+            });
+            self.api.tasks.lock().unwrap().push(TaskStatus {
+                id: id.clone(),
+                pos_ned_m: [xy[0], xy[1], z],
+                assigned: None,
+                state: "pending".into(),
+                hover_observed: None,
+            });
+            self.pool.push(ti);
+            accepted.push(id);
+        }
+        let pool = self.pool.len();
+        if !accepted.is_empty() {
+            self.log.log(
+                EventKind::SupervisorAction,
+                None,
+                format!(
+                    "operator mission upload: {} waypoint(s) accepted ({:?}), {} rejected, pool {pool}",
+                    accepted.len(),
+                    accepted,
+                    rejected.len()
+                ),
+            );
+        }
+        UploadAck { accepted, rejected, pool }
+    }
+
+    /// Start the deferred operator mission (the setup-bench path to
+    /// RUNNING). The auction + runners fly it exactly like a scenario
+    /// mission; an already-running mission is a no-op with a reason.
+    fn operator_start(&mut self, now: u64) -> StartAck {
+        if self.mission_started {
+            return StartAck {
+                started: false,
+                reason: Some("mission already started".into()),
+            };
+        }
+        if self.mission_complete {
+            return StartAck {
+                started: false,
+                reason: Some("run already complete".into()),
+            };
+        }
+        if self.pool.is_empty() {
+            return StartAck {
+                started: false,
+                reason: Some("no tasks to start — upload a mission first".into()),
+            };
+        }
+        self.mission_started = true;
+        self.mission_started_at = now;
+        self.api.set_phase("RUNNING");
+        let n = self.pool.len();
+        self.log.log(
+            EventKind::RunBoundary,
+            None,
+            format!(
+                "operator mission start: {n} task(s) — the sequential auction takes it from the next tick"
+            ),
+        );
+        StartAck { started: true, reason: None }
+    }
 
     fn mission_start_gate(&mut self, now: u64) {
         if self.mission_started {

@@ -8,7 +8,18 @@
  */
 
 import { clamp, gaussian, mulberry32 } from './format'
-import type { AuctionEntry, FleetEvent, FleetSnapshot, FleetTask, FleetVehicle, FsmState, Geofence } from './types'
+import { DEFAULT_ORIGIN, geodeticToNed, nedToGeodetic, type GeoOrigin } from './geo'
+import type {
+  AuctionEntry,
+  FleetEvent,
+  FleetSnapshot,
+  FleetTask,
+  FleetVehicle,
+  FsmState,
+  Geofence,
+  MapWaypoint,
+  MissionUploadResult,
+} from './types'
 
 const CRUISE_MS = 4.0
 const FENCE: Geofence = {
@@ -32,6 +43,7 @@ interface Mv {
   yaw: number
   fsm: FsmState
   mode: string
+  armed: boolean
   battery: number
   hbAge: number
   hbLoss: number // virtual seconds remaining of induced heartbeat loss
@@ -43,6 +55,8 @@ interface Mv {
   crumbTimer: number
   warnedFence: boolean
   batteryLowActed: boolean
+  /** ADR-0017: operator go-to target (mock flies it in OFFBOARD). */
+  gotoTarget: [number, number, number] | null
 }
 
 export interface FleetTick {
@@ -61,15 +75,18 @@ const HOMES: [number, number][] = [
 export class FleetMockEngine {
   private rng = mulberry32(0xfe17)
   private tS = 0
-  private phase: 'INIT' | 'RUNNING' | 'ABORTED' = 'INIT'
+  private phase: 'INIT' | 'RUNNING' | 'ABORTED' | 'SETUP_HOLD' = 'INIT'
   private vehicles: Mv[]
   private tasks = new Map<string, FleetTask>()
   private events: FleetEvent[] = []
   private auctions: AuctionEntry[] = []
   private round = 0
   private taskSeq = 1
+  private opSeq = 0
   private hbNext = 34
   private appendNext = 22
+  /** ADR-0017: the geo origin the mock NED frame anchors to. */
+  readonly geoOrigin: GeoOrigin = DEFAULT_ORIGIN
 
   constructor() {
     this.vehicles = NAMES.map((id, i) => {
@@ -83,6 +100,7 @@ export class FleetMockEngine {
         yaw: 0,
         fsm: 'INIT',
         mode: '—',
+        armed: false,
         battery: [96, 88, 71][i],
         hbAge: 0.2,
         hbLoss: 0,
@@ -94,6 +112,7 @@ export class FleetMockEngine {
         crumbTimer: 0,
         warnedFence: false,
         batteryLowActed: false,
+        gotoTarget: null,
       }
       return v
     })
@@ -144,6 +163,19 @@ export class FleetMockEngine {
       v.health.delete('HEARTBEAT_LOST')
     }
 
+    // ADR-0017: operator go-to flight (OFFBOARD to the clicked point)
+    if (v.gotoTarget) {
+      v.mode = 'Offboard'
+      v.armed = true
+      const prog = this.navigate(v, v.gotoTarget, dt)
+      if (prog > 0.999 && v.pos[2] > v.gotoTarget[2] - 0.5) {
+        // arrived: hold at the target
+        v.gotoTarget = null
+        this.emit('supervisor', v.id, 'go-to target reached — holding (OFFBOARD stream live)', 'info')
+      }
+      return
+    }
+
     switch (v.fsm) {
       case 'INIT':
         v.stateTimer -= dt
@@ -167,6 +199,7 @@ export class FleetMockEngine {
         break
       case 'ACTIVE': {
         v.mode = 'Offboard'
+        v.armed = v.pos[2] < -0.5 || v.queue.length > 0
         const taskId = v.queue[0]
         const task = taskId ? this.tasks.get(taskId) : undefined
         if (!task) {
@@ -205,11 +238,16 @@ export class FleetMockEngine {
       case 'RTL': {
         v.mode = 'Auto RTL'
         const done = this.navigate(v, [v.home[0], v.home[1], 0], dt)
-        if (done > 0.999) this.fsm(v, 'LANDED', 'disarm observed')
+        if (done > 0.999) {
+          v.armed = false
+          this.fsm(v, 'LANDED', 'disarm observed')
+        }
         break
       }
       case 'LANDED':
         v.mode = 'Disarmed'
+        v.armed = false
+        v.gotoTarget = null
         v.pos = [v.pos[0], v.pos[1], 0]
         v.vel = [0, 0, 0]
         v.stateTimer -= dt
@@ -413,29 +451,45 @@ export class FleetMockEngine {
   }
 
   private snapshot(): FleetSnapshot {
-    const vehicles: FleetVehicle[] = this.vehicles.map((v) => ({
-      id: v.id,
-      index: v.index,
-      sysid: v.sysid,
-      mode: v.mode,
-      fsm: v.fsm,
-      battery_pct: Math.round(v.battery * 10) / 10,
-      voltage_v: 21.5 + (v.battery / 100) * 2.7,
-      position_ned_m: [rnd2(v.pos[0]), rnd2(v.pos[1]), rnd2(v.pos[2])],
-      velocity_ned_ms: [rnd2(v.vel[0]), rnd2(v.vel[1]), rnd2(v.vel[2])],
-      yaw_deg: Math.round(((v.yaw * 180) / Math.PI + 360) % 360),
-      heartbeat_age_s: Math.round(v.hbAge * 100) / 100,
-      stale: v.hbAge > 1.5,
-      health: [...v.health],
-      task_id: v.queue[0] ?? null,
-      breadcrumb: v.breadcrumb,
-    }))
+    const vehicles: FleetVehicle[] = this.vehicles.map((v) => {
+      // ADR-0017: derive the geo fix from the mock NED state via the
+      // geodesy port — exactly what the backend's HIL_GPS ->
+      // GLOBAL_POSITION_INT chain produces.
+      const g = nedToGeodetic(this.geoOrigin, v.pos)
+      return {
+        id: v.id,
+        index: v.index,
+        sysid: v.sysid,
+        mode: v.mode,
+        fsm: v.fsm,
+        armed: v.armed,
+        battery_pct: Math.round(v.battery * 10) / 10,
+        voltage_v: 21.5 + (v.battery / 100) * 2.7,
+        position_ned_m: [rnd2(v.pos[0]), rnd2(v.pos[1]), rnd2(v.pos[2])],
+        velocity_ned_ms: [rnd2(v.vel[0]), rnd2(v.vel[1]), rnd2(v.vel[2])],
+        lat: rnd6(g.lat),
+        lon: rnd6(g.lng),
+        alt_msl_m: rnd2(this.geoOrigin.alt_m - v.pos[2]),
+        alt_agl_m: rnd2(-v.pos[2]),
+        yaw_deg: Math.round(((v.yaw * 180) / Math.PI + 360) % 360),
+        heartbeat_age_s: Math.round(v.hbAge * 100) / 100,
+        stale: v.hbAge > 1.5,
+        health: [...v.health],
+        task_id: v.queue[0] ?? null,
+        breadcrumb: v.breadcrumb,
+      }
+    })
     return {
       phase: this.phase,
       t_s: Math.round(this.tS * 10) / 10,
       vehicles,
       tasks: [...this.tasks.values()].map((t) => ({ ...t })),
       geofence: FENCE,
+      geo_origin: {
+        lat_deg: this.geoOrigin.lat_deg,
+        lon_deg: this.geoOrigin.lon_deg,
+        alt_m: this.geoOrigin.alt_m,
+      },
     }
   }
 
@@ -461,10 +515,171 @@ export class FleetMockEngine {
         this.fsm(v, 'LANDED', 'on ground', 'supervisor policy 1')
       }
       v.hbLoss = 0
+      v.gotoTarget = null
     }
+  }
+
+  // ------------------------------------------------------- operator plane
+  // (ADR-0017 mock: the same semantics the fleet manager implements —
+  // fence-validated upload, auction pickup, go-to, guided commands)
+
+  /** POST /api/mission — validate + inject operator waypoints. */
+  uploadMission(items: MapWaypoint[], replace: boolean): MissionUploadResult {
+    const accepted: string[] = []
+    const rejected: { label: string; reason: string }[] = []
+    if (replace) this.clearMission()
+    for (const wp of items) {
+      const ned = geodeticToNed(this.geoOrigin, wp.lat, wp.lng, this.geoOrigin.alt_m + wp.alt_m)
+      const inside =
+        Math.abs(ned[0]) <= FENCE.points[1][0] && Math.abs(ned[1]) <= FENCE.points[2][1]
+      const altOk = wp.alt_m >= FENCE.floor_m && wp.alt_m <= FENCE.ceiling_m
+      if (!inside) {
+        rejected.push({
+          label: wp.key,
+          reason: `outside geofence polygon (lat ${wp.lat.toFixed(6)}, lon ${wp.lng.toFixed(6)})`,
+        })
+        continue
+      }
+      if (!altOk) {
+        rejected.push({
+          label: wp.key,
+          reason: `outside altitude box (AGL ${wp.alt_m.toFixed(1)} m; box ${FENCE.floor_m}..${FENCE.ceiling_m} m)`,
+        })
+        continue
+      }
+      const id = `op${++this.opSeq}`
+      this.tasks.set(id, {
+        id,
+        pos_ned_m: [ned[0], ned[1], -wp.alt_m],
+        hover_s: wp.hover_s,
+        reward: 10,
+        status: 'pending',
+        assigned_to: null,
+        progress: 0,
+      })
+      accepted.push(id)
+    }
+    if (accepted.length > 0) {
+      this.emit(
+        'supervisor',
+        null,
+        `operator mission upload: ${accepted.length} waypoint(s) accepted (${accepted.join(', ')}), ${rejected.length} rejected`,
+        'info',
+      )
+    }
+    const pending = [...this.tasks.values()].filter(
+      (t) => t.status === 'pending' || t.status === 'assigned',
+    ).length
+    return { accepted, rejected, pool: pending }
+  }
+
+  /** POST /api/mission/start. */
+  startMission(): { started: boolean; reason: string | null } {
+    const pending = [...this.tasks.values()].filter((t) => t.status === 'pending')
+    if (this.phase === 'ABORTED') return { started: false, reason: 'run aborted' }
+    if (pending.length === 0) return { started: false, reason: 'no tasks to start — upload a mission first' }
+    if (this.phase !== 'RUNNING') {
+      this.phase = 'RUNNING'
+      this.emit('boundary', null, 'operator mission start — the auction takes it from the next tick', 'info')
+      return { started: true, reason: null }
+    }
+    return { started: false, reason: 'mission already started' }
+  }
+
+  /** POST /api/mission/clear. */
+  clearMission(): number {
+    let cleared = 0
+    for (const t of this.tasks.values()) {
+      if (t.id.startsWith('op') && (t.status === 'pending' || t.status === 'assigned')) {
+        t.status = 'rejected'
+        cleared++
+      }
+    }
+    if (cleared > 0) this.emit('supervisor', null, `operator: cleared ${cleared} queued mission task(s)`, 'info')
+    return cleared
+  }
+
+  private veh(index: number): Mv | null {
+    return this.vehicles.find((v) => v.index === index) ?? null
+  }
+
+  /** POST /api/vehicles/{i}/arm. */
+  arm(index: number, arm: boolean): { accepted: boolean; command: string } {
+    const v = this.veh(index)
+    if (!v) return { accepted: false, command: 'arm' }
+    if (v.fsm === 'ACTIVE') {
+      return { accepted: false, command: 'arm' }
+    }
+    v.armed = arm
+    if (!arm) v.gotoTarget = null
+    this.emit('supervisor', v.id, `operator: ${arm ? 'ARM' : 'DISARM'} via API — ACCEPTED`, 'info')
+    return { accepted: true, command: arm ? 'arm' : 'disarm' }
+  }
+
+  /** POST /api/vehicles/{i}/takeoff. */
+  takeoff(index: number, altM: number): { accepted: boolean; command: string } {
+    const v = this.veh(index)
+    if (!v) return { accepted: false, command: 'takeoff' }
+    v.armed = true
+    v.mode = 'Auto Takeoff'
+    v.gotoTarget = [v.pos[0], v.pos[1], -altM]
+    this.emit('supervisor', v.id, `operator: TAKEOFF to ${altM.toFixed(1)} m AGL via API — ACCEPTED`, 'info')
+    return { accepted: true, command: 'takeoff' }
+  }
+
+  /** POST /api/vehicles/{i}/goto. */
+  goto(index: number, lat: number, lng: number, altM: number): { accepted: boolean; command: string } {
+    const v = this.veh(index)
+    if (!v) return { accepted: false, command: 'goto' }
+    const ned = geodeticToNed(this.geoOrigin, lat, lng, this.geoOrigin.alt_m + altM)
+    // clamp into the fence (the backend's §7.2 rule)
+    const x = clamp(ned[0], -FENCE.points[1][0], FENCE.points[1][0])
+    const y = clamp(ned[1], -FENCE.points[2][1], FENCE.points[2][1])
+    v.gotoTarget = [x, y, -altM]
+    if (v.fsm === 'READY') this.fsm(v, 'ACTIVE', 'operator go-to accepted')
+    this.emit(
+      'supervisor',
+      v.id,
+      `operator: GO TO (${lat.toFixed(6)}, ${lng.toFixed(6)}) ${altM.toFixed(1)} m AGL — engage sequence started`,
+      'info',
+    )
+    return { accepted: true, command: 'goto' }
+  }
+
+  /** POST /api/vehicles/{i}/{land,rtl,hold}. */
+  land(index: number): { accepted: boolean; command: string } {
+    const v = this.veh(index)
+    if (!v) return { accepted: false, command: 'land' }
+    v.gotoTarget = null
+    v.mode = 'Auto Land'
+    v.gotoTarget = [v.pos[0], v.pos[1], 0]
+    this.emit('supervisor', v.id, 'operator: LAND via API — stream stopped, AUTO.LAND', 'info')
+    return { accepted: true, command: 'land' }
+  }
+
+  rtl(index: number): { accepted: boolean; command: string } {
+    const v = this.veh(index)
+    if (!v) return { accepted: false, command: 'rtl' }
+    v.gotoTarget = null
+    if (v.fsm === 'ACTIVE') this.fsm(v, 'RTL', 'operator RTL')
+    this.emit('supervisor', v.id, 'operator: RTL via API — stream stopped, AUTO.RTL', 'info')
+    return { accepted: true, command: 'rtl' }
+  }
+
+  hold(index: number): { accepted: boolean; command: string } {
+    const v = this.veh(index)
+    if (!v) return { accepted: false, command: 'hold' }
+    v.gotoTarget = [v.pos[0], v.pos[1], v.pos[2]]
+    v.mode = 'Auto Loiter'
+    this.emit('supervisor', v.id, 'operator: HOLD via API — stream stopped, AUTO.LOITER', 'info')
+    return { accepted: true, command: 'hold' }
   }
 }
 
 function rnd2(x: number): number {
   return Math.round(x * 100) / 100
+}
+
+function rnd6(x: number): number {
+  return Math.round(x * 1e6) / 1e6
 }

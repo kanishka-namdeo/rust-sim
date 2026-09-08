@@ -16,6 +16,10 @@ use crate::state::VehicleState;
 /// The 5 Hz WS frame / GET /api/fleet payload core (spec §3.4). `tasks` is
 /// filled by the mission engine (fleet-mission types stay out of
 /// fleet-core; the wire contract is the JSON schema in `schemas/`).
+///
+/// ADR-0017 adds the geo block: `geo_origin` (the scenario `[env] origin`
+/// the sims' HIL_GPS anchors to) and the fence, so the console's geo map
+/// and NED map draw the *real* fence (previously only the client fallback).
 #[derive(Debug, Clone, Serialize)]
 pub struct FleetFrame {
     pub t_ms: u64,
@@ -24,7 +28,19 @@ pub struct FleetFrame {
     pub vehicles: Vec<VehicleView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tasks: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub geo_origin: Option<crate::geo::GeoOrigin>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub geofence: Option<GeofenceView>,
     pub events_tail: Vec<Event>,
+}
+
+/// Geofence as published on the wire (NED metres, home-relative).
+#[derive(Debug, Clone, Serialize)]
+pub struct GeofenceView {
+    pub points_ned_m: Vec<[f32; 2]>,
+    pub ceiling_m: f32,
+    pub floor_m: f32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -38,6 +54,13 @@ pub struct VehicleView {
     pub armed: bool,
     pub position_ned_m: [f32; 3],
     pub velocity_ned_ms: [f32; 3],
+    /// GLOBAL_POSITION_INT fix (ADR-0017): PX4's own geo estimate — what
+    /// the operator map renders. 0 = not yet received (degE7 / mm units
+    /// kept exactly as the wire carries them).
+    pub lat_deg_e7: i32,
+    pub lon_deg_e7: i32,
+    pub alt_mm: i32,
+    pub relative_alt_mm: i32,
     pub attitude_q_wxyz: [f32; 4],
     pub battery_pct: i8,
     pub voltage_v: f32,
@@ -78,6 +101,10 @@ impl VehicleView {
             armed: state.armed,
             position_ned_m: state.position_ned_m,
             velocity_ned_ms: state.velocity_ned_ms,
+            lat_deg_e7: state.lat_deg_e7,
+            lon_deg_e7: state.lon_deg_e7,
+            alt_mm: state.alt_mm,
+            relative_alt_mm: state.relative_alt_mm,
             attitude_q_wxyz: state.attitude_q_wxyz,
             battery_pct: state.battery_pct,
             voltage_v: if state.voltage_v.is_nan() {
@@ -153,6 +180,10 @@ mod tests {
         s.compid = 1;
         s.mode_word = fleet_modes::MODE_WORD_AUTO_RTL;
         s.position_ned_m = [1.0, 2.0, -3.0];
+        s.lat_deg_e7 = 473_977_700;
+        s.lon_deg_e7 = 85_455_800;
+        s.alt_mm = 500_000;
+        s.relative_alt_mm = 10_000;
         s.home_set = true;
         s.msg_counts.insert(0, 10);
         s.msg_counts.insert(30, 200);
@@ -165,20 +196,50 @@ mod tests {
         assert_eq!(json["msg_counts"]["HEARTBEAT"], 10);
         assert_eq!(json["msg_counts"]["ATTITUDE"], 200);
         assert_eq!(json["battery_pct"], -1);
+        // ADR-0017: the geo fix rides the frame verbatim.
+        assert_eq!(json["lat_deg_e7"], 473_977_700);
+        assert_eq!(json["lon_deg_e7"], 85_455_800);
+        assert_eq!(json["alt_mm"], 500_000);
+        assert_eq!(json["relative_alt_mm"], 10_000);
     }
 
     #[test]
-    fn fleet_frame_roundtrip() {
+    fn fleet_frame_carries_geo_blocks() {
         let f = FleetFrame {
             t_ms: 5,
             phase: "RUNNING".into(),
             tick_count: 50,
             vehicles: vec![],
             tasks: Some(serde_json::json!([{"id": "wp_n"}])),
+            geo_origin: Some(crate::geo::GeoOrigin::DEFAULT),
+            geofence: Some(GeofenceView {
+                points_ned_m: vec![[-45.0, -45.0], [45.0, -45.0], [45.0, 45.0], [-45.0, 45.0]],
+                ceiling_m: 60.0,
+                floor_m: 0.0,
+            }),
+            events_tail: vec![],
+        };
+        let j = serde_json::to_value(&f).unwrap();
+        assert_eq!(j["geo_origin"]["lat_deg"], 47.39777);
+        assert_eq!(j["geo_origin"]["lon_deg"], 8.54558);
+        assert_eq!(j["geofence"]["points_ned_m"][0], serde_json::json!([-45.0, -45.0]));
+        assert_eq!(j["geofence"]["ceiling_m"], 60.0);
+    }
+
+    #[test]
+    fn fleet_frame_geo_blocks_optional() {
+        let f = FleetFrame {
+            t_ms: 5,
+            phase: "RUNNING".into(),
+            tick_count: 50,
+            vehicles: vec![],
+            tasks: None,
+            geo_origin: None,
+            geofence: None,
             events_tail: vec![],
         };
         let j = serde_json::to_string(&f).unwrap();
-        assert!(j.contains("\"phase\":\"RUNNING\""));
-        assert!(j.contains("wp_n"));
+        assert!(!j.contains("geo_origin"));
+        assert!(!j.contains("geofence"));
     }
 }

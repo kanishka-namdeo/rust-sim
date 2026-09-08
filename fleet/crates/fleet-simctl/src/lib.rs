@@ -84,6 +84,11 @@ pub struct SimCtlConfig {
     /// `<workdir>/px4.log` / `<workdir>/sim.log` instead of /dev/null —
     /// the run's diagnostics (F-1 failure dumps need the px4 console tail).
     pub process_logs: bool,
+    /// Geo origin (ADR-0017): exported to the sim wrapper as
+    /// `RSIM_ORIGIN_LAT/LON/ALT` so the sim's HIL_GPS anchor matches the
+    /// fleet's lat/lon <-> NED conversion exactly (default: the PX4 test
+    /// field — same constant rustsitsim pins).
+    pub geo_origin: fleet_core::geo::GeoOrigin,
 }
 
 impl SimCtlConfig {
@@ -98,6 +103,7 @@ impl SimCtlConfig {
             sim_duration_s,
             sim_settle: Duration::from_millis(SIM_SETTLE_MS),
             process_logs: false,
+            geo_origin: fleet_core::geo::GeoOrigin::DEFAULT,
         }
     }
 
@@ -293,6 +299,9 @@ impl SimCtl {
         let sim_err = self.cfg.process_stdio(&workdir, "sim.log")?;
         let sim = Command::new(program)
             .args(&argv[1..])
+            .env("RSIM_ORIGIN_LAT", format!("{:.9}", self.cfg.geo_origin.lat_deg))
+            .env("RSIM_ORIGIN_LON", format!("{:.9}", self.cfg.geo_origin.lon_deg))
+            .env("RSIM_ORIGIN_ALT", format!("{:.3}", self.cfg.geo_origin.alt_m))
             .stdout(sim_out)
             .stderr(sim_err)
             .kill_on_drop(true)

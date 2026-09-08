@@ -1,0 +1,29 @@
+# OPERATOR BENCH scenario (ADR-0017): the map-view control workflow.
+#
+# hold_for_setup keeps the fleet at READY and disarmed until the operator
+# acts — then the Operator Map drives everything: go-to / takeoff / land /
+# RTL / hold from the action bar, and waypoint missions uploaded from the
+# map (POST /api/mission) started on demand (POST /api/mission/start).
+# Zero scenario tasks: the mission belongs to the operator.
+#
+# Real rustsitsim dynamics per vehicle (the [sim] template), 2 vehicles so
+# an uploaded mission is actually auctioned across a fleet. battery_sim off
+# so a long operator session cannot age the battery into a low-battery
+# abort mid-work.
+
+[fleet]
+count = 2
+battery_sim = false
+hold_for_setup = true
+
+[env]
+geofence = { points_ned_m = [[-60, -60], [60, -60], [60, 60], [-60, 60]], ceiling_m = 50, floor_m = 0 }
+wind_steady_ms = [0.0, 0.0, 0.0]
+turbulence = "off"
+
+[sim]
+command = "scripts/run_sitsim_vehicle.sh {instance} {hil_port} {duration_s}"
+duration_s = 600
+
+[success]
+max_time_s = 540

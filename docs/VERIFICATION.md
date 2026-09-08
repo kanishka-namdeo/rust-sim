@@ -14,6 +14,8 @@ shell call, with CI-classifiable exit codes.
 | **Browser-live** | `scripts/browser_live_test.sh` | The operator console, end-to-end through the preview gateway: Sim Console LIVE (WS :8200, 10 Hz telemetry), telemetry demonstrably moving (two snapshots differ), Fleet C2 LIVE (vehicles in OFFBOARD mid-mission), screenshots captured | **PASS** |
 | **S-1** | `fleet/scripts/live_test_setup.sh` | The ADR-0016 vehicle-setup plane against real PX4, REST-level: full parameter download (887 params, PARAM_REQUEST_LIST), typed param write with echo confirm, gyro calibration (MAV_CMD 241 ACCEPTED), flight-mode switch (ALTCTL + heartbeat echo), airframe apply Iris -> Boat (USV 1070) -> Iris with controlled pair restarts, parameter persistence across both reboots, 422/404 error paths, graceful estop teardown with no leaked processes | **PASS** (44/44 checks) |
 | **S-2** | `scripts/browser_setup_test.sh` | The QGC-style Vehicle Setup tab driven end-to-end in a real browser through the gateway: tab LIVE + disarm badge, param download via the UI button, typed rows in the params table, airframe catalog (UAV/USV/UUV groups), calibration rows, mode switch via button, Boat apply via filter + confirm dialog, post-restart resolution to Boat, screenshots | **PASS** (13/13 checks) |
+| **O-1** | `fleet/tests/live_test_operator.sh` | The ADR-0017 operator map control plane against real PX4, REST-level: fleet frame carries geo_origin + geofence + per-vehicle GLOBAL_POSITION_INT fixes (degE7), go-to flight (engage ladder -> OFFBOARD -> 18 m transit, armed + lat/lon moving), hold (AUTO.LOITER) + land (disarm observed), mission upload with fence-validated accept/reject (3 + 1 at 12 km breach), mission start -> auction-flown op* tasks, e-stop teardown with clean exit | **PASS** (15 checks) |
+| **O-2** | `scripts/browser_map_test.sh` | The Operator Map tab driven end-to-end in a real browser through the gateway: Leaflet map LIVE with the real fence fitted + vehicle markers from GPS fixes, 3 waypoints placed by real map clicks (coordinate mouse events), waypoint table + geo-sanity guard, Upload -> op* tasks on the live board, Start mission -> phase RUNNING + vehicle armed/ACTIVE in flight on the map, screenshots | **PASS** (16/16 checks) |
 
 ## Unit tests
 
@@ -22,13 +24,16 @@ shell call, with CI-classifiable exit codes.
   sizing), sensor models (latency FIFO, denial ramp, glitch), engine mapping
   regressions incl. the PX4 v1.16.2 actuator wire layout + armed-frame
   decode.
-- `fleet/`: 144 tests — FSM transitions, policy ladder ordering property,
+- `fleet/`: 155 tests — FSM transitions, policy ladder ordering property,
   allocator optimality, runner profile math, router integration tests
   (incl. WS upgrades on the gateway's `/?XTransformPort=` shape), wire-goal
   repro pinning NED setpoints on the wire, the vehicle-setup plane (param
   store ingest/staleness, typed INT32 bit-cast round-trips, airframe
   resolution against the ROMFS catalog, setup-endpoint envelopes, error
-  gates) and the hold-for-setup scenario key.
+  gates), the hold-for-setup scenario key, and the operator control plane
+  (geodesy round-trips incl. the AGL waypoint convention, geo blocks on
+  the fleet frame, mission upload queue/ack/validation gates, guided
+  command gates incl. the mission-active 409).
 
 ## Hard-won protocol facts (all live-captured, all ADR'd)
 

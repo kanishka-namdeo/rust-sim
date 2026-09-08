@@ -32,6 +32,7 @@ use serde_json::json;
 
 use crate::setup;
 use crate::state::{self, AppState};
+use crate::state::{OperatorCmd, OperatorWaypoint};
 
 /// Build the control-plane router (also the unit-test surface).
 pub fn router(state: Arc<AppState>) -> Router {
@@ -51,6 +52,16 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/vehicles/{index}/airframe", post(vehicle_airframe_post))
         .route("/api/vehicles/{index}/calibrate", post(vehicle_calibrate_post))
         .route("/api/vehicles/{index}/mode", post(vehicle_mode_post))
+        // -- operator control plane (ADR-0017, QGC Fly/Plan-style) --------
+        .route("/api/mission", post(mission_upload_post))
+        .route("/api/mission/start", post(mission_start_post))
+        .route("/api/mission/clear", post(mission_clear_post))
+        .route("/api/vehicles/{index}/arm", post(vehicle_arm_post))
+        .route("/api/vehicles/{index}/takeoff", post(vehicle_takeoff_post))
+        .route("/api/vehicles/{index}/land", post(vehicle_land_post))
+        .route("/api/vehicles/{index}/rtl", post(vehicle_rtl_post))
+        .route("/api/vehicles/{index}/hold", post(vehicle_hold_post))
+        .route("/api/vehicles/{index}/goto", post(vehicle_goto_post))
         // WS plane: the spec path plus the gateway-forwarded root path.
         .route("/ws/fleet", get(ws_entry))
         .route("/ws", get(ws_entry))
@@ -507,6 +518,462 @@ async fn vehicle_mode_post(
 }
 
 // ---------------------------------------------------------------------------
+// Operator control plane (ADR-0017) — the QGroundControl Fly/Plan-style
+// view: mission upload from the map, mission start, and the guided action
+// bar (arm, takeoff, land, RTL, hold, go-to). Mission mutations queue onto
+// the supervisor's tick loop (it stays the single writer of plan/pool);
+// guided commands write the same MAVLink the supervisor itself sends,
+// gated so they can never fight a live mission runner.
+// ---------------------------------------------------------------------------
+
+/// One waypoint as uploaded from the map (`POST /api/mission`).
+#[derive(serde::Deserialize)]
+struct MissionItemBody {
+    #[serde(default)]
+    label: Option<String>,
+    lat_deg: f64,
+    lon_deg: f64,
+    /// Metres AGL above the scenario origin (QGC's waypoint convention).
+    alt_m: f64,
+    #[serde(default)]
+    hover_s: f32,
+}
+
+#[derive(serde::Deserialize)]
+struct MissionBody {
+    items: Vec<MissionItemBody>,
+    /// "append" (default) or "replace" (drop queued operator tasks first).
+    #[serde(default)]
+    mode: Option<String>,
+}
+
+/// `POST /api/mission` — upload operator waypoints (QGC Plan View's
+/// Upload): geo -> NED at the supervisor, validated with the compiler's
+/// own rules. Rejections carry reasons; the accepted ids enter the task
+/// board and the sequential auction's pool.
+async fn mission_upload_post(
+    State(s): State<Arc<AppState>>,
+    body: axum::extract::Json<MissionBody>,
+) -> Response {
+    let MissionBody { items, mode } = body.0;
+    if items.is_empty() {
+        return err(StatusCode::UNPROCESSABLE_ENTITY, "items must not be empty");
+    }
+    if items.len() > 64 {
+        return err(StatusCode::UNPROCESSABLE_ENTITY, "too many items (max 64)");
+    }
+    let replace = matches!(mode.as_deref(), Some("replace"));
+    let items: Vec<OperatorWaypoint> = items
+        .into_iter()
+        .map(|it| OperatorWaypoint {
+            label: it.label,
+            lat_deg: it.lat_deg,
+            lon_deg: it.lon_deg,
+            alt_m: it.alt_m,
+            hover_s: it.hover_s,
+        })
+        .collect();
+    for it in &items {
+        if !it.lat_deg.is_finite() || !it.lon_deg.is_finite() || !it.alt_m.is_finite() {
+            return err(StatusCode::UNPROCESSABLE_ENTITY, "lat/lon/alt must be finite");
+        }
+        if !(-90.0..=90.0).contains(&it.lat_deg) || !(-180.0..=180.0).contains(&it.lon_deg) {
+            return err(StatusCode::UNPROCESSABLE_ENTITY, "lat/lon out of range");
+        }
+        if it.alt_m < 0.0 {
+            return err(StatusCode::UNPROCESSABLE_ENTITY, "alt_m (AGL) must be >= 0");
+        }
+    }
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    s.push_operator_cmd(OperatorCmd::Upload { items, replace, ack: tx });
+    match tokio::time::timeout(Duration::from_secs(2), rx).await {
+        Ok(Ok(ack)) => {
+            s.log.log(
+                fleet_core::events::EventKind::SupervisorAction,
+                None,
+                format!(
+                    "operator: mission upload via API — {} accepted, {} rejected",
+                    ack.accepted.len(),
+                    ack.rejected.len()
+                ),
+            );
+            ok(json!({
+                "accepted": ack.accepted,
+                "rejected": ack.rejected.iter()
+                    .map(|(l, r)| json!({"label": l, "reason": r}))
+                    .collect::<Vec<_>>(),
+                "pool": ack.pool,
+            }))
+            .into_response()
+        }
+        _ => err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "supervisor did not drain the command (is the tick loop running?)",
+        ),
+    }
+}
+
+/// `POST /api/mission/start` — start the deferred mission (QGC's Start
+/// Mission): the setup bench flips to RUNNING and the auction flies the
+/// uploaded tasks exactly like a scenario mission.
+async fn mission_start_post(State(s): State<Arc<AppState>>) -> Response {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    s.push_operator_cmd(OperatorCmd::Start { ack: tx });
+    match tokio::time::timeout(Duration::from_secs(2), rx).await {
+        Ok(Ok(ack)) => {
+            s.log.log(
+                fleet_core::events::EventKind::SupervisorAction,
+                None,
+                format!(
+                    "operator: mission start via API — {}",
+                    if ack.started { "started" } else { "not started" }
+                ),
+            );
+            ok(json!({
+                "started": ack.started,
+                "reason": ack.reason,
+                "phase": s.phase(),
+            }))
+            .into_response()
+        }
+        _ => err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "supervisor did not drain the command (is the tick loop running?)",
+        ),
+    }
+}
+
+/// `POST /api/mission/clear` — drop queued operator tasks (the active task
+/// of a flying runner is never touched).
+async fn mission_clear_post(State(s): State<Arc<AppState>>) -> Response {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    s.push_operator_cmd(OperatorCmd::Clear { ack: tx });
+    match tokio::time::timeout(Duration::from_secs(2), rx).await {
+        Ok(Ok(ack)) => {
+            s.log.log(
+                fleet_core::events::EventKind::SupervisorAction,
+                None,
+                format!("operator: mission clear via API — {} task(s) dropped", ack.cleared),
+            );
+            ok(json!({ "cleared": ack.cleared })).into_response()
+        }
+        _ => err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "supervisor did not drain the command (is the tick loop running?)",
+        ),
+    }
+}
+
+/// The guided-command gates shared by every action-bar endpoint: index in
+/// range, link registered, and no live mission runner (a user command
+/// never fights a runner's setpoint stream — ADR-0017).
+fn guided_gates(s: &AppState, index: u8) -> Result<(), Response> {
+    if index >= s.count {
+        return Err(err(
+            StatusCode::NOT_FOUND,
+            &format!("vehicle index {index} out of range (fleet count {})", s.count),
+        ));
+    }
+    if s.mission_active(index) {
+        return Err(err(
+            StatusCode::CONFLICT,
+            "vehicle is flying an autonomous mission — guided commands are gated (ADR-0017); use e-stop to abort the fleet",
+        ));
+    }
+    if s.link(index).is_none() {
+        return Err(err(StatusCode::CONFLICT, "vehicle link not registered (spawn failed?)"));
+    }
+    Ok(())
+}
+
+fn ack_json(kind: &str, ack: &fleet_mavlink::CmdAck) -> serde_json::Value {
+    let (result, accepted) = match ack {
+        fleet_mavlink::CmdAck::Accepted => (0u8, true),
+        fleet_mavlink::CmdAck::Rejected { result } => (*result, false),
+        fleet_mavlink::CmdAck::Timeout { .. } => (255u8, false),
+    };
+    json!({
+        "command": kind,
+        "result": result,
+        "accepted": accepted,
+    })
+}
+
+#[derive(serde::Deserialize)]
+struct ArmBody {
+    #[serde(default = "default_true")]
+    arm: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// `POST /api/vehicles/{i}/arm` — COMPONENT_ARM_DISARM(1/0), the same
+/// command the supervisor's engage ladder sends. PX4's TEMPORARILY_REJECTED
+/// (EKF2 still settling) comes back honestly; retry like QGC would.
+async fn vehicle_arm_post(
+    State(s): State<Arc<AppState>>,
+    Path(index): Path<u8>,
+    body: axum::extract::Json<ArmBody>,
+) -> Response {
+    if let Err(e) = guided_gates(&s, index) {
+        return e;
+    }
+    let link = s.link(index).unwrap();
+    let params: [f32; 7] = if body.arm {
+        [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    } else {
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    };
+    let ack = link
+        .send_command(fleet_mavlink::cmds::COMPONENT_ARM_DISARM, params)
+        .await;
+    s.log.log(
+        fleet_core::events::EventKind::SupervisorAction,
+        Some(index),
+        format!(
+            "operator: {} via API — {}",
+            if body.arm { "ARM" } else { "DISARM" },
+            match &ack {
+                fleet_mavlink::CmdAck::Accepted => "ACCEPTED".into(),
+                other => format!("{other:?}"),
+            }
+        ),
+    );
+    let mut data = ack_json(if body.arm { "arm" } else { "disarm" }, &ack);
+    data["index"] = json!(index);
+    data["armed"] = json!(body.arm);
+    ok(data).into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct TakeoffBody {
+    /// Climb-to altitude, metres AGL (QGC's takeoff altitude slider).
+    #[serde(default = "default_takeoff_alt")]
+    alt_m: f32,
+}
+
+fn default_takeoff_alt() -> f32 {
+    10.0
+}
+
+/// `POST /api/vehicles/{i}/takeoff` — MAV_CMD_NAV_TAKEOFF (22) with the
+/// climb altitude in param7: QGC's takeoff semantics (PX4 commander arms
+/// and the navigator flies the climb).
+async fn vehicle_takeoff_post(
+    State(s): State<Arc<AppState>>,
+    Path(index): Path<u8>,
+    body: axum::extract::Json<TakeoffBody>,
+) -> Response {
+    // input validation first (400-class errors beat state gates)
+    if !body.alt_m.is_finite() || body.alt_m <= 0.0 || body.alt_m > 120.0 {
+        return err(StatusCode::UNPROCESSABLE_ENTITY, "alt_m must be in (0, 120] m AGL");
+    }
+    // respect the fence altitude box honest to the runner rules
+    let (floor, ceiling) = (s.fence_view.floor_m, s.fence_view.ceiling_m);
+    if body.alt_m < floor || body.alt_m > ceiling {
+        return err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            &format!("alt_m outside the geofence altitude box ({floor}..{ceiling} m AGL)"),
+        );
+    }
+    if let Err(e) = guided_gates(&s, index) {
+        return e;
+    }
+    let link = s.link(index).unwrap();
+    let ack = link
+        .send_command(fleet_mavlink::cmds::NAV_TAKEOFF, [
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, body.alt_m,
+        ])
+        .await;
+    s.log.log(
+        fleet_core::events::EventKind::SupervisorAction,
+        Some(index),
+        format!(
+            "operator: TAKEOFF to {:.1} m AGL via API — {}",
+            body.alt_m,
+            match &ack {
+                fleet_mavlink::CmdAck::Accepted => "ACCEPTED".into(),
+                other => format!("{other:?}"),
+            }
+        ),
+    );
+    let mut data = ack_json("takeoff", &ack);
+    data["index"] = json!(index);
+    data["alt_m"] = json!(body.alt_m);
+    ok(data).into_response()
+}
+
+/// `POST /api/vehicles/{i}/land` — AUTO.LAND plus setpoint-stream stop (a
+/// go-to-flown vehicle is streaming OFFBOARD setpoints; the mode change
+/// alone doesn't stop the pump). FSM honesty: ACTIVE -> LANDED.
+async fn vehicle_land_post(
+    State(s): State<Arc<AppState>>,
+    Path(index): Path<u8>,
+) -> Response {
+    if let Err(e) = guided_gates(&s, index) {
+        return e;
+    }
+    let link = s.link(index).unwrap();
+    link.shared.stop_stream();
+    let ack = link.set_mode(fleet_modes::MODE_WORD_AUTO_LAND).await;
+    if s.registry.fsm(index) == Some(fleet_core::fsm::FsmState::Active) {
+        s.registry
+            .apply_transition(index, fleet_core::fsm::FsmCause::LandCommand, &s.log);
+    }
+    s.log.log(
+        fleet_core::events::EventKind::SupervisorAction,
+        Some(index),
+        "operator: LAND via API — stream stopped, DO_SET_MODE(AUTO.LAND)",
+    );
+    let mut data = ack_json("land", &ack);
+    data["index"] = json!(index);
+    ok(data).into_response()
+}
+
+/// `POST /api/vehicles/{i}/rtl` — AUTO.RTL plus stream stop, the supervisor
+/// RTL's exact mode word. FSM honesty: ACTIVE -> RTL.
+async fn vehicle_rtl_post(
+    State(s): State<Arc<AppState>>,
+    Path(index): Path<u8>,
+) -> Response {
+    if let Err(e) = guided_gates(&s, index) {
+        return e;
+    }
+    let link = s.link(index).unwrap();
+    link.shared.stop_stream();
+    let ack = link.set_mode(fleet_modes::MODE_WORD_AUTO_RTL).await;
+    if s.registry.fsm(index) == Some(fleet_core::fsm::FsmState::Active) {
+        s.registry
+            .apply_transition(index, fleet_core::fsm::FsmCause::SupervisorRtl, &s.log);
+    }
+    s.log.log(
+        fleet_core::events::EventKind::SupervisorAction,
+        Some(index),
+        "operator: RTL via API — stream stopped, DO_SET_MODE(AUTO.RTL)",
+    );
+    let mut data = ack_json("rtl", &ack);
+    data["index"] = json!(index);
+    ok(data).into_response()
+}
+
+/// `POST /api/vehicles/{i}/hold` — QGC's Pause: AUTO.LOITER (a multicopter
+/// position-holds) plus setpoint-stream stop.
+async fn vehicle_hold_post(
+    State(s): State<Arc<AppState>>,
+    Path(index): Path<u8>,
+) -> Response {
+    if let Err(e) = guided_gates(&s, index) {
+        return e;
+    }
+    let link = s.link(index).unwrap();
+    link.shared.stop_stream();
+    let ack = link.set_mode(fleet_modes::MODE_WORD_AUTO_LOITER).await;
+    s.log.log(
+        fleet_core::events::EventKind::SupervisorAction,
+        Some(index),
+        "operator: HOLD via API — stream stopped, DO_SET_MODE(AUTO.LOITER)",
+    );
+    let mut data = ack_json("hold", &ack);
+    data["index"] = json!(index);
+    ok(data).into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct GotoBody {
+    lat_deg: f64,
+    lon_deg: f64,
+    /// Metres AGL; defaults to the vehicle's current relative altitude.
+    #[serde(default)]
+    alt_m: Option<f64>,
+}
+
+/// `POST /api/vehicles/{i}/goto` — QGC's Go To Location: geo -> NED,
+/// clamped into the fence minus 2 m (the runner's own rule, §7.2), then
+/// the engage sequence — hold-at the current estimate (starts the >=2 Hz
+/// stream PX4 requires), set the goal, arm ladder + DO_SET_MODE(OFFBOARD).
+/// The vehicle flies to the point and holds there.
+async fn vehicle_goto_post(
+    State(s): State<Arc<AppState>>,
+    Path(index): Path<u8>,
+    body: axum::extract::Json<GotoBody>,
+) -> Response {
+    // input validation first (400-class errors beat state gates)
+    if !body.lat_deg.is_finite() || !body.lon_deg.is_finite() {
+        return err(StatusCode::UNPROCESSABLE_ENTITY, "lat/lon must be finite");
+    }
+    if !(-90.0..=90.0).contains(&body.lat_deg) || !(-180.0..=180.0).contains(&body.lon_deg) {
+        return err(StatusCode::UNPROCESSABLE_ENTITY, "lat/lon out of range");
+    }
+    if let Err(e) = guided_gates(&s, index) {
+        return e;
+    }
+    let Some(link) = s.link(index) else {
+        return err(StatusCode::CONFLICT, "vehicle link not registered (spawn failed?)");
+    };
+    // current estimate (NED) — the hold-at anchor and the default altitude.
+    let Some(snap) = s.registry.snapshot(index) else {
+        return err(StatusCode::CONFLICT, "no telemetry snapshot yet");
+    };
+    let origin = s.geo_origin;
+    // target NED: geo -> NED; altitude AGL (default: hold current altitude)
+    // — geodetic alt = origin + AGL.
+    let alt_agl = body.alt_m.unwrap_or((-snap.position_ned_m[2]).max(0.0) as f64);
+    if !alt_agl.is_finite() || alt_agl < 0.0 || alt_agl > 120.0 {
+        return err(StatusCode::UNPROCESSABLE_ENTITY, "alt_m must be in [0, 120] m AGL");
+    }
+    let ned = origin.geodetic_to_ned(body.lat_deg, body.lon_deg, origin.alt_m + alt_agl);
+    // clamp into the fence minus the runner's margin (§7.2): a go-to can
+    // never command a setpoint the mission rules themselves reject.
+    const MARGIN: f32 = fleet_mission::runner::CLAMP_MARGIN_M;
+    let xy = s.fence.clamp_setpoint([ned[0] as f32, ned[1] as f32], MARGIN);
+    let z = s.fence.clamp_altitude(-alt_agl as f32, MARGIN);
+    let clamped =
+        (xy[0] - ned[0] as f32).hypot(xy[1] - ned[1] as f32) > 0.5 || (z + alt_agl as f32).abs() > 0.5;
+    let target: [f32; 3] = [xy[0], xy[1], z];
+    // engage: hold-at the current estimate starts the stream, then the goal,
+    // then the arm ladder + OFFBOARD — the supervisor's own sequence.
+    let anchor = if snap.local_position_seen {
+        snap.position_ned_m
+    } else {
+        [0.0, 0.0, 0.0]
+    };
+    let yaw = snap.attitude_q_wxyz;
+    let yaw = (2.0 * (yaw[0] * yaw[3] + yaw[1] * yaw[2]))
+        .atan2(1.0 - 2.0 * (yaw[2] * yaw[2] + yaw[3] * yaw[3]));
+    link.shared.hold_at(anchor, yaw);
+    link.shared.set_goal(fleet_mavlink::SetpointGoal { position: target, yaw });
+    crate::manager::spawn_engage(link.clone(), Arc::clone(&s.log), index, !snap.armed);
+    if s.registry.fsm(index) == Some(fleet_core::fsm::FsmState::Ready) {
+        s.registry
+            .apply_transition(index, fleet_core::fsm::FsmCause::TaskAccepted, &s.log);
+    }
+    s.log.log(
+        fleet_core::events::EventKind::SupervisorAction,
+        Some(index),
+        format!(
+            "operator: GO TO ({:.6}, {:.6}) {:.1} m AGL via API -> NED {:?}{} — engage sequence started",
+            body.lat_deg,
+            body.lon_deg,
+            alt_agl,
+            target,
+            if clamped { " (clamped into the fence)" } else { "" }
+        ),
+    );
+    ok(json!({
+        "index": index,
+        "lat_deg": body.lat_deg,
+        "lon_deg": body.lon_deg,
+        "alt_agl_m": alt_agl,
+        "target_ned_m": target,
+        "clamped": clamped,
+        "engaging": true,
+    }))
+    .into_response()
+}
+
+// ---------------------------------------------------------------------------
 // WS plane
 // ---------------------------------------------------------------------------
 
@@ -530,6 +997,10 @@ async fn ws_entry(State(s): State<Arc<AppState>>, mut parts: Parts) -> Response 
                 "POST /api/vehicles/{i}/params/refresh",
                 "POST /api/vehicles/{i}/airframe", "POST /api/vehicles/{i}/calibrate",
                 "POST /api/vehicles/{i}/mode",
+                "POST /api/mission", "POST /api/mission/start", "POST /api/mission/clear",
+                "POST /api/vehicles/{i}/arm", "POST /api/vehicles/{i}/takeoff",
+                "POST /api/vehicles/{i}/land", "POST /api/vehicles/{i}/rtl",
+                "POST /api/vehicles/{i}/hold", "POST /api/vehicles/{i}/goto",
                 "WS /ws/fleet | /ws | /"
             ],
             "phase": s.phase(),
@@ -625,7 +1096,15 @@ mod tests {
             Some(0),
             "INIT->SPAWNING cause=spawn",
         );
-        let s = AppState::new(registry, log, 2, "test-scenario.toml", 0);
+        let s = AppState::new(
+            registry,
+            log,
+            2,
+            "test-scenario.toml",
+            0,
+            fleet_core::geo::GeoOrigin::DEFAULT,
+            fleet_safety::geofence::Geofence::default_square(),
+        );
         *s.tasks.lock().unwrap() = vec![TaskStatus {
             id: "wp_n".into(),
             pos_ned_m: [0.0, 0.0, -10.0],
@@ -758,6 +1237,180 @@ mod tests {
         assert_eq!(j["ok"], true);
         assert_eq!(j["data"]["service"], "mavfleet");
         assert_eq!(j["data"]["vehicles"], 2);
+        // ADR-0017: the index advertises the operator plane.
+        let eps = j["data"]["endpoints"].as_array().unwrap();
+        assert!(eps.iter().any(|e| e.as_str().unwrap().contains("/api/mission")));
+        assert!(eps.iter().any(|e| e.as_str().unwrap().contains("goto")));
+    }
+
+    #[tokio::test]
+    async fn fleet_get_carries_geo_blocks() {
+        let state = test_state();
+        let app = router(state);
+        let resp = app
+            .clone()
+            .oneshot(Request::get("/api/fleet").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let j = body_json(resp).await;
+        let d = &j["data"];
+        // ADR-0017: geo origin + the real fence ride the frame.
+        assert!((d["geo_origin"]["lat_deg"].as_f64().unwrap() - 47.39777).abs() < 1e-6);
+        assert!((d["geo_origin"]["lon_deg"].as_f64().unwrap() - 8.54558).abs() < 1e-6);
+        assert_eq!(d["geofence"]["ceiling_m"], 60.0);
+        let pts = d["geofence"]["points_ned_m"].as_array().unwrap();
+        assert!(pts.len() >= 3, "fence polygon on the wire");
+        // vehicles carry the GLOBAL_POSITION_INT fix verbatim (0 until one
+        // arrives — the field's presence is the contract).
+        assert!(d["vehicles"][0].get("lat_deg_e7").is_some());
+        assert!(d["vehicles"][0].get("lon_deg_e7").is_some());
+    }
+
+    // -- operator control plane (ADR-0017) ----------------------------------
+
+    fn post_json(app: Router, uri: &str, body: &str) -> impl std::future::Future<Output = (StatusCode, serde_json::Value)> {
+        let req = Request::post(uri)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        async move {
+            let resp = app.oneshot(req).await.unwrap();
+            let status = resp.status();
+            (status, body_json(resp).await)
+        }
+    }
+
+    #[tokio::test]
+    async fn mission_upload_validation_errors() {
+        let state = test_state();
+        let app = router(state);
+        // empty items
+        let (st, j) = post_json(app.clone(), "/api/mission", r#"{"items": []}"#).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(j["error"].as_str().unwrap().contains("empty"));
+        // lat out of range
+        let (st, j) = post_json(
+            app.clone(),
+            "/api/mission",
+            r#"{"items": [{"lat_deg": 91.0, "lon_deg": 0.0, "alt_m": 10.0}]}"#,
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(j["error"].as_str().unwrap().contains("range"));
+        // negative AGL
+        let (st, j) = post_json(
+            app,
+            "/api/mission",
+            r#"{"items": [{"lat_deg": 47.4, "lon_deg": 8.5, "alt_m": -1.0}]}"#,
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(j["error"].as_str().unwrap().contains("AGL"));
+    }
+
+    /// The full queue+drain+ack loop: the handler queues the command, the
+    /// "supervisor" (this test) drains and acks it, the response carries the
+    /// honest result. This is the exact shape the manager's tick implements.
+    #[tokio::test]
+    async fn mission_upload_queues_and_acks() {
+        let state = test_state();
+        let app = router(Arc::clone(&state));
+        let task = tokio::spawn(async move {
+            let req = Request::post("/api/mission")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"items": [{"lat_deg": 47.3978, "lon_deg": 8.5457, "alt_m": 12.0, "hover_s": 2.0}]}"#,
+                ))
+                .unwrap();
+            app.oneshot(req).await.unwrap()
+        });
+        // let the handler queue, then play supervisor: drain + ack
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let cmds = state.take_operator_cmds();
+        assert_eq!(cmds.len(), 1, "exactly one queued command");
+        match cmds.into_iter().next().unwrap() {
+            OperatorCmd::Upload { items, replace, ack } => {
+                assert_eq!(items.len(), 1);
+                assert!((items[0].alt_m - 12.0).abs() < 1e-9);
+                assert!((items[0].hover_s - 2.0).abs() < 1e-6);
+                assert!(!replace, "default mode is append");
+                ack.send(crate::state::UploadAck {
+                    accepted: vec!["op1".into()],
+                    rejected: vec![("far".into(), "outside geofence polygon".into())],
+                    pool: 1,
+                })
+                .unwrap();
+            }
+            other => panic!("expected Upload, got {other:?}"),
+        }
+        let resp = task.await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let j = body_json(resp).await;
+        assert_eq!(j["data"]["accepted"], serde_json::json!(["op1"]));
+        assert_eq!(j["data"]["pool"], 1);
+        assert!(j["data"]["rejected"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("geofence"));
+        // the operator action is logged
+        assert!(state.log.total() >= 3);
+    }
+
+    /// No supervisor ticking -> the honest 503, not a hang.
+    #[tokio::test]
+    async fn mission_start_times_out_without_supervisor() {
+        let state = test_state();
+        let app = router(state);
+        let (st, j) = post_json(app, "/api/mission/start", "{}").await;
+        assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(j["error"].as_str().unwrap().contains("drain"));
+    }
+
+    #[tokio::test]
+    async fn guided_command_gates() {
+        let state = test_state();
+        let app = router(Arc::clone(&state));
+        // index out of range -> 404
+        let (st, j) = post_json(app.clone(), "/api/vehicles/5/arm", r#"{"arm": true}"#).await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
+        assert!(j["error"].as_str().unwrap().contains("out of range"));
+        // no link registered -> 409
+        let (st, j) = post_json(
+            app.clone(),
+            "/api/vehicles/0/takeoff",
+            r#"{"alt_m": 10.0}"#,
+        )
+        .await;
+        assert_eq!(st, StatusCode::CONFLICT);
+        assert!(j["error"].as_str().unwrap().contains("link"));
+        // fence box check: 80 m AGL exceeds the 60 m ceiling (but is within
+        // the generic (0,120] band) — the fence's own box rejects it.
+        let (st, j) = post_json(
+            app.clone(),
+            "/api/vehicles/0/takeoff",
+            r#"{"alt_m": 80.0}"#,
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(j["error"].as_str().unwrap().contains("geofence altitude box"));
+        // goto validation: lat/lon out of range -> 422
+        let (st, j) = post_json(
+            app.clone(),
+            "/api/vehicles/0/goto",
+            r#"{"lat_deg": -200.0, "lon_deg": 0.0}"#,
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        // mission-active gate: a live mission runner blocks guided commands
+        state.set_mission_active(0, true);
+        let (st, j) = post_json(
+            app,
+            "/api/vehicles/0/rtl",
+            "{}",
+        )
+        .await;
+        assert_eq!(st, StatusCode::CONFLICT);
+        assert!(j["error"].as_str().unwrap().contains("autonomous mission"));
     }
 
     #[tokio::test]

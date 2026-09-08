@@ -2,21 +2,23 @@
 
 /**
  * Single-page operator console for rustsitsim (:8200) + mavfleet (:8400).
- * Mode switcher: Sim Console / Fleet C2 / Vehicle Setup. All consoles stay
- * mounted (hidden by CSS) so their telemetry engines keep running across
- * mode switches.
+ * Mode switcher: Sim Console / Fleet C2 / Operator Map / Vehicle Setup. All
+ * consoles stay mounted (hidden by CSS) so their telemetry engines keep
+ * running across mode switches.
  */
 
 import { useState } from 'react'
-import { Drone, Network, Wrench } from 'lucide-react'
+import { Drone, MapPin, Network, Wrench } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { SimConsole } from '@/components/dashboard/SimConsole'
 import { FleetC2 } from '@/components/dashboard/FleetC2'
+import { OperatorMap } from '@/components/dashboard/OperatorMap'
 import { VehicleSetup } from '@/components/dashboard/VehicleSetup'
 import { ThemeToggle } from '@/components/dashboard/ThemeToggle'
 import { useVehicleSetup } from '@/hooks/useVehicleSetup'
+import { useOperatorMap } from '@/hooks/useOperatorMap'
 
-type Mode = 'sim' | 'fleet' | 'setup'
+type Mode = 'sim' | 'fleet' | 'map' | 'setup'
 
 export default function Home() {
   const [mode, setMode] = useState<Mode>('sim')
@@ -24,6 +26,8 @@ export default function Home() {
   // (vehicle count follows the fleet snapshot when live; 2 = the demo
   // scenario / mock fleet)
   const setup = useVehicleSetup(2)
+  // the operator-map engine likewise (ADR-0017: its own fleet-plane client)
+  const op = useOperatorMap()
 
   return (
     <div className="flex min-h-screen flex-col bg-background text-foreground">
@@ -44,7 +48,7 @@ export default function Home() {
 
           <nav aria-label="Console mode" className="order-3 w-full sm:order-none sm:w-auto">
             <Tabs value={mode} onValueChange={(v) => setMode(v as Mode)}>
-              <TabsList className="grid h-10 w-full grid-cols-3 sm:w-auto">
+              <TabsList className="grid h-10 w-full grid-cols-4 sm:w-auto">
                 <TabsTrigger value="sim" className="gap-1.5 px-3">
                   <Drone className="size-3.5" aria-hidden="true" />
                   Sim Console
@@ -54,6 +58,11 @@ export default function Home() {
                   <Network className="size-3.5" aria-hidden="true" />
                   Fleet C2
                   <span className="sr-only">mavfleet fleet manager</span>
+                </TabsTrigger>
+                <TabsTrigger value="map" className="gap-1.5 px-3">
+                  <MapPin className="size-3.5" aria-hidden="true" />
+                  Operator Map
+                  <span className="sr-only">geo map with direct SITL control</span>
                 </TabsTrigger>
                 <TabsTrigger value="setup" className="gap-1.5 px-3">
                   <Wrench className="size-3.5" aria-hidden="true" />
@@ -81,6 +90,9 @@ export default function Home() {
           <TabsContent value="fleet" forceMount className="mt-0 data-[state=inactive]:hidden">
             <FleetC2 />
           </TabsContent>
+          <TabsContent value="map" forceMount className="mt-0 data-[state=inactive]:hidden">
+            <OperatorMap op={op} />
+          </TabsContent>
           <TabsContent value="setup" forceMount className="mt-0 data-[state=inactive]:hidden">
             <VehicleSetup setup={setup} />
           </TabsContent>
@@ -92,7 +104,7 @@ export default function Home() {
           <p className="font-mono text-[10px] text-muted-foreground">
             rustsitsim :8200 · mavfleet :8400 — relative-path fetch + <span className="font-semibold">XTransformPort</span> gateway routing
           </p>
-          <p className="font-mono text-[10px] text-muted-foreground">10 Hz sim frames · 5 Hz fleet frames · vehicle setup per ADR-0016 · canvas 2D</p>
+          <p className="font-mono text-[10px] text-muted-foreground">10 Hz sim frames · 10 Hz fleet frames · vehicle setup per ADR-0016 · operator map per ADR-0017</p>
         </div>
       </footer>
     </div>

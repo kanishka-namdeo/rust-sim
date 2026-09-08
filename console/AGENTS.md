@@ -2,13 +2,16 @@
 
 ## Purpose
 
-Single-page Next.js operator console with two permanently-mounted telemetry
-engines: the **Sim Console** (rustsitsim plane on `:8200` — 10 Hz physics
-telemetry, strip charts, fault injection) and **Fleet C2** (mavfleet plane on
-`:8400` — fleet table, NED map, task board, event log, e-stop). Both run a
-LIVE/SIMULATED dual mode: if the Rust backend answers through the gateway,
-everything is live; otherwise a client-side mock engine keeps the UI operable
-and the live endpoint is re-probed every 12 s.
+Single-page Next.js operator console with four permanently-mounted views:
+the **Sim Console** (rustsitsim plane on `:8200` — 10 Hz physics
+telemetry, strip charts, fault injection), **Fleet C2** (mavfleet plane on
+`:8400` — fleet table, NED map, task board, event log, e-stop), the
+**Operator Map** (mavfleet plane — Leaflet geo map with direct SITL control,
+ADR-0017) and **Vehicle Setup** (the ADR-0016 configuration workflow). The
+telemetry engines run a LIVE/SIMULATED dual mode: if the Rust backend
+answers through the gateway, everything is live; otherwise a client-side
+mock engine keeps the UI operable and the live endpoint is re-probed every
+12 s.
 
 ## Ownership
 
@@ -30,11 +33,22 @@ itself (see `Caddyfile.example`).
   - `direct` (`NEXT_PUBLIC_RSIM_API_STYLE=direct`): absolute
     `http://127.0.0.1:<port>` REST + `ws://127.0.0.1:<port>/` for local runs
     without the gateway.
-- Both consoles stay mounted (hidden by CSS) so telemetry engines survive tab
-  switches.
+- All views stay mounted (hidden by CSS) so telemetry engines survive tab
+  switches. Leaflet (Operator Map) therefore initializes inside a 0-size
+  container — `GeoMap` must `invalidateSize()` BEFORE any `fitBounds`
+  (fitting against the stale 0×0 cached map size produces a degenerate
+  world view where map clicks resolve to garbage lat/lon; the O-2 harness
+  carries a fence-size guard against exactly this regression).
+- Geo conversion is the TS port of the Rust `GeoOrigin` (`src/lib/geo.ts`,
+  ECEF + Bowring, same numbers as the manager) — never ad-hoc linear math.
+- Operator commands are thin REST POSTs to the ADR-0017 plane
+  (`/api/mission{,/start,/clear}`, `/api/vehicles/{i}/{arm,takeoff,land,
+  rtl,hold,goto}`); the mock engine implements the same semantics (fence
+  validation, op* ids, go-to flight) so SIMULATED mode stays honest.
 - Dependencies are trimmed to what `src/` actually imports (radix
   tabs/select/label/progress/scroll-area/alert-dialog/toast/slot, lucide,
-  next-themes, cn util, Tailwind v4). No prisma, no template cruft.
+  next-themes, **leaflet** + `@types/leaflet`, cn util, Tailwind v4). No
+  prisma, no template cruft, no react-leaflet wrapper.
 
 ## Work Guidance
 
@@ -53,6 +67,10 @@ itself (see `Caddyfile.example`).
 - End-to-end: `../scripts/browser_live_test.sh` — opens the console through
   the gateway, asserts the LIVE badge on both consoles, asserts telemetry is
   moving (two snapshots differ), and captures screenshots.
+- Operator Map end-to-end: `../scripts/browser_map_test.sh` (O-2) — real
+  map clicks place waypoints, upload + start mission drive the live fleet,
+  screenshots captured. Vehicle Setup end-to-end:
+  `../scripts/browser_setup_test.sh` (S-2).
 
 ## Child DOX Index
 

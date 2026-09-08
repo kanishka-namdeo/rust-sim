@@ -76,6 +76,13 @@ pub struct EnvSection {
     pub wind_steady_ms: [f32; 3],
     #[serde(default = "default_turbulence")]
     pub turbulence: String,
+    /// Geo origin every vehicle's sim HIL_GPS anchors to (ADR-0017): the
+    /// `[env] origin` the fleet converts lat/lon <-> NED against AND the
+    /// value SimCtl exports to the sim wrapper (`RSIM_ORIGIN_*`). Defaults
+    /// to the PX4 test field — same constant as rustsitsim's
+    /// `GeoOrigin::DEFAULT`, so the two sides cannot disagree silently.
+    #[serde(default)]
+    pub origin: Option<OriginSpec>,
 }
 
 impl Default for EnvSection {
@@ -84,6 +91,7 @@ impl Default for EnvSection {
             geofence: None,
             wind_steady_ms: [0.0, 0.0, 0.0],
             turbulence: "moderate".into(),
+            origin: None,
         }
     }
 }
@@ -93,6 +101,33 @@ fn default_wind() -> [f32; 3] {
 }
 fn default_turbulence() -> String {
     "moderate".into()
+}
+
+/// `[env] origin` spec (ADR-0017): the geodetic anchor of the local NED
+/// frame. Same defaults as rustsitsim's `GeoOrigin::DEFAULT`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OriginSpec {
+    pub lat_deg: f64,
+    pub lon_deg: f64,
+    #[serde(default = "default_origin_alt")]
+    pub alt_m: f64,
+}
+
+fn default_origin_alt() -> f64 {
+    500.0
+}
+
+impl Default for OriginSpec {
+    fn default() -> Self {
+        OriginSpec { lat_deg: 47.397770, lon_deg: 8.545580, alt_m: 500.0 }
+    }
+}
+
+impl From<OriginSpec> for fleet_core::geo::GeoOrigin {
+    fn from(o: OriginSpec) -> Self {
+        fleet_core::geo::GeoOrigin { lat_deg: o.lat_deg, lon_deg: o.lon_deg, alt_m: o.alt_m }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -293,6 +328,17 @@ impl Scenario {
         // geofence parses
         self.fence()
             .map_err(|e| ScenarioError { message: format!("[env] geofence: {e}") })?;
+        // geo origin range check (ADR-0017)
+        if let Some(o) = &self.env.origin {
+            if !(-90.0..=90.0).contains(&o.lat_deg) || !(-180.0..=180.0).contains(&o.lon_deg) {
+                return Err(ScenarioError {
+                    message: format!(
+                        "[env] origin out of range (lat {}, lon {})",
+                        o.lat_deg, o.lon_deg
+                    ),
+                });
+            }
+        }
         // events: kinds + vehicles in range
         for ev in &self.events {
             match ev.kind.as_str() {
@@ -375,6 +421,13 @@ impl Scenario {
         }
     }
 
+    /// Effective geo origin (ADR-0017): `[env] origin` or the PX4 test
+    /// field default — the single anchor for fleet geo conversion and the
+    /// sims' HIL_GPS (exported via `RSIM_ORIGIN_*`).
+    pub fn geo_origin(&self) -> fleet_core::geo::GeoOrigin {
+        self.env.origin.map(Into::into).unwrap_or(fleet_core::geo::GeoOrigin::DEFAULT)
+    }
+
     pub fn max_time_s(&self) -> Option<f64> {
         self.success.max_time_s
     }
@@ -418,6 +471,29 @@ mod tests {
         assert_eq!(s.vehicle_overrides[0].index, 1);
         assert!(!s.fleet.restart_on_fault);
         assert!(s.fleet.battery_sim);
+    }
+
+    #[test]
+    fn geo_origin_parses_and_defaults() {
+        // default: the PX4 test field
+        let s = Scenario::parse_toml("[fleet]\ncount = 1\n").unwrap();
+        assert_eq!(s.geo_origin(), fleet_core::geo::GeoOrigin::DEFAULT);
+
+        // explicit origin (ADR-0017)
+        let s = Scenario::parse_toml(
+            "[fleet]\ncount = 1\n[env]\norigin = { lat_deg = 47.123, lon_deg = 8.456 }\n",
+        )
+        .unwrap();
+        let o = s.geo_origin();
+        assert!((o.lat_deg - 47.123).abs() < 1e-9);
+        assert!((o.lon_deg - 8.456).abs() < 1e-9);
+        assert!((o.alt_m - 500.0).abs() < 1e-9); // alt defaults
+
+        // out of range is rejected, not silently clamped
+        let e = Scenario::parse_toml(
+            "[fleet]\ncount = 1\n[env]\norigin = { lat_deg = 91.0, lon_deg = 0.0 }\n",
+        );
+        assert!(e.is_err());
     }
 
     #[test]

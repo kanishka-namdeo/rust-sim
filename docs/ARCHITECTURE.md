@@ -110,6 +110,21 @@ console/ Next.js 16 operator console (see console/README.md)
    work. UAV / USV / UUV / VTOL / Rover frames are all selectable from the
    ROMFS-derived catalog; only multirotor-class frames are
    physics-compatible with the current quad HIL dynamics (flagged honestly).
+5. **Operator map control (ADR-0017)**: the QGC Fly/Plan-style map view
+   where the user controls SITL themselves. The fleet frame now carries
+   geo blocks (the scenario `[env] origin` every sim's HIL_GPS anchors to,
+   plus the fence) and per-vehicle `GLOBAL_POSITION_INT` fixes, so the
+   console's Leaflet map renders PX4's own geo estimate. Operator missions
+   (`POST /api/mission`, waypoints in lat/lon + AGL) are geo->NED converted
+   at the supervisor and validated with the compiler's own fence rules,
+   then enter the same task board / sequential auction / offboard runners
+   as scenario tasks; `POST /api/mission/start` flips the setup bench to
+   RUNNING. Guided commands (`/api/vehicles/{i}/arm|takeoff|land|rtl|hold|goto`)
+   write the same MAVLink the supervisor itself sends, gated on
+   mission-active so they never fight a runner; `goto` is QGC's Go To
+   Location (hold-at + goal + arm ladder + OFFBOARD). SimCtl exports the
+   origin to the sim wrapper via `RSIM_ORIGIN_*`, so the fleet's conversion
+   and the sim's HIL_GPS can never disagree.
 
 ## Why native HIL instead of Gazebo?
 
