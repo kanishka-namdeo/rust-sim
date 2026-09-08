@@ -339,6 +339,16 @@ impl AppState {
     fn flags_snapshot(&self) -> Vec<Vec<HealthFlag>> {
         self.flags.lock().unwrap().clone()
     }
+
+    /// Health flags for one vehicle, exposed for the pre-arm checklist
+    /// (M3 Fly View, `GET /api/vehicles/{i}/prearm-checks`). Empty when
+    /// the index is out of range or no flags have been computed yet.
+    pub fn vehicle_flags(&self, index: u8) -> Vec<HealthFlag> {
+        self.flags_snapshot()
+            .get(index as usize)
+            .cloned()
+            .unwrap_or_default()
+    }
 }
 
 /// The fleet frame (spec §3.4): the same payload behind `GET /api/fleet`,

@@ -70,6 +70,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         // endpoints pass raw MISSION_ITEM_INT items through to PX4.
         .route("/api/vehicles/{index}/mission", get(vehicle_mission_get))
         .route("/api/vehicles/{index}/mission/upload", post(vehicle_mission_upload_post))
+        // -- M3 (Fly View): QGC-style pre-arm checklist (GCS_SPEC.md §5.2).
+        // The Fly View's ARM button gates on `all_passed` here; each check
+        // reflects the live VehicleState + health flags so the operator sees
+        // the real reason an arming attempt would be TEMPORARILY_REJECTED.
+        .route("/api/vehicles/{index}/prearm-checks", get(vehicle_prearm_checks_get))
         // WS plane: the spec path plus the gateway-forwarded root path.
         .route("/ws/fleet", get(ws_entry))
         .route("/ws", get(ws_entry))
@@ -1357,6 +1362,119 @@ async fn vehicle_mission_get(
 }
 
 // ---------------------------------------------------------------------------
+// M3 (Fly View): QGC-style pre-arm checklist (GCS_SPEC.md §5.2)
+// ---------------------------------------------------------------------------
+
+/// One row of the pre-arm checklist. The Fly View's ARM button gates on
+/// `all_passed` from the wrapping `PrearmChecks` envelope.
+#[derive(Debug, serde::Serialize)]
+struct PrearmCheck {
+    name: &'static str,
+    passed: bool,
+    message: String,
+}
+
+/// `GET /api/vehicles/{i}/prearm-checks` — five QGC-style pre-arm checks
+/// derived from the live VehicleState + current health flags (GCS_SPEC.md
+/// §5.2). The Fly View's ARM button gates on `all_passed`; the per-check
+/// `message` is the operator-visible reason (QGC's checklist UI shows the
+/// same strings).
+///
+/// Index validation is inline (404 when out of range) — the same pattern
+/// `vehicle_params_get` / `vehicle_setup_get` use — because the pre-arm
+/// checklist must be visible *even when the link is down*: the EKF2 check
+/// naturally reports "waiting for convergence" via the `HEARTBEAT_LOST` /
+/// `LINK_STALE` flags, which is exactly what the operator needs to see
+/// before retrying an arming attempt. `guided_gates` would 409 on the
+/// missing link, hiding the actual reason from the Fly View.
+async fn vehicle_prearm_checks_get(
+    State(s): State<Arc<AppState>>,
+    Path(index): Path<u8>,
+) -> Response {
+    if index >= s.count {
+        return err(
+            StatusCode::NOT_FOUND,
+            &format!("vehicle index {index} out of range (fleet count {})", s.count),
+        );
+    }
+    let Some(snap) = s.registry.snapshot(index) else {
+        return err(
+            StatusCode::NOT_FOUND,
+            &format!("vehicle index {index} has no state slot"),
+        );
+    };
+    let flags = s.vehicle_flags(index);
+    let has_flag = |name: &str| flags.iter().any(|f| f.name() == name);
+
+    // 1. EKF2 — converged when the link is healthy AND a local position has
+    //    arrived (PX4's EKF2 InnovCheck signature). LINK_STALE / HEARTBEAT_LOST
+    //    fail it regardless — that's the real pre-arm blocker.
+    let ekf_pass = !has_flag("LINK_STALE")
+        && !has_flag("HEARTBEAT_LOST")
+        && snap.local_position_seen;
+    let ekf = PrearmCheck {
+        name: "EKF2",
+        passed: ekf_pass,
+        message: if ekf_pass {
+            "converged".into()
+        } else {
+            "waiting for convergence".into()
+        },
+    };
+
+    // 2. GPS Fix — GLOBAL_POSITION_INT lat or lon non-zero means a 3D fix
+    //    has been received (0/0 is the pre-fix default).
+    let gps_pass = snap.lat_deg_e7 != 0 || snap.lon_deg_e7 != 0;
+    let gps = PrearmCheck {
+        name: "GPS Fix",
+        passed: gps_pass,
+        message: if gps_pass { "3D fix".into() } else { "no fix".into() },
+    };
+
+    // 3. Mode — STANDBY is PX4's mode_word == 0 (the disarmed pre-flight
+    //    custom mode), or the equivalent "disarmed and not flying an
+    //    autonomous mission" state. An already-armed vehicle can't be
+    //    re-armed, so the check fails — the operator should disarm first.
+    let mode_pass = snap.mode_word == 0 || (!snap.armed && !s.mission_active(index));
+    let mode = PrearmCheck {
+        name: "Mode",
+        passed: mode_pass,
+        message: if mode_pass { "STANDBY".into() } else { "not in standby".into() },
+    };
+
+    // 4. Fence — the safety engine raises GEOFENCE_WARN when within 10 m of
+    //    a boundary (spec §5.2). Inside the inclusion zone otherwise.
+    let fence_pass = !has_flag("GEOFENCE_WARN");
+    let fence = PrearmCheck {
+        name: "Fence",
+        passed: fence_pass,
+        message: if fence_pass {
+            "inside inclusion".into()
+        } else {
+            "near fence boundary".into()
+        },
+    };
+
+    // 5. Battery — BATTERY_CRIT (the <20% threshold) is the pre-arm cutoff.
+    //    Battery is i8 with -1 meaning "unknown" (interim sim has no battery
+    //    model); unknown fails the check (can't arm without a reading).
+    let batt_pass = snap.battery_pct >= fleet_core::health::BATTERY_CRIT_PCT as i8;
+    let battery = PrearmCheck {
+        name: "Battery",
+        passed: batt_pass,
+        message: if batt_pass {
+            format!("{}%", snap.battery_pct)
+        } else {
+            "critical (<20%)".into()
+        },
+    };
+
+    let checks = vec![ekf, gps, mode, fence, battery];
+    let all_passed = checks.iter().all(|c| c.passed);
+    ok(json!({ "checks": checks, "all_passed": all_passed })).into_response()
+}
+
+// ---------------------------------------------------------------------------
 // WS plane
 // ---------------------------------------------------------------------------
 
@@ -1387,6 +1505,7 @@ async fn ws_entry(State(s): State<Arc<AppState>>, mut parts: Parts) -> Response 
                 "POST /api/vehicles/{i}/hold", "POST /api/vehicles/{i}/goto",
                 "GET /api/vehicles/{i}/mission?type=mission|fence|rally",
                 "POST /api/vehicles/{i}/mission/upload",
+                "GET /api/vehicles/{i}/prearm-checks",
                 "WS /ws/fleet | /ws | /"
             ],
             "phase": s.phase(),
@@ -2573,5 +2692,157 @@ mod tests {
             eps.iter().any(|e| e.as_str().unwrap().contains("/mission?type=")),
             "download endpoint advertised"
         );
+    }
+
+    // -- M3 (Fly View): pre-arm checklist (GCS_SPEC.md §5.2) ----------------
+
+    /// Construct a state whose vehicle 0 satisfies every pre-arm check:
+    /// link healthy (no flags), local_position_seen, GPS fix, STANDBY
+    /// mode_word == 0, battery 85%. The handler's `all_passed: true` path
+    /// asserts against this fixture.
+    fn healthy_prearm_state() -> Arc<AppState> {
+        let registry = Registry::new(2);
+        registry.entry(0).unwrap().state.write(|s| {
+            s.sysid = 1;
+            s.compid = 1;
+            s.heartbeat_seen = true;
+            s.local_position_seen = true;
+            s.home_set = true;
+            // mode_word == 0 → PX4 STANDBY (disarmed pre-flight custom mode).
+            s.mode_word = 0;
+            s.lat_deg_e7 = 473_977_700;
+            s.lon_deg_e7 = 85_455_800;
+            s.battery_pct = 85;
+            s.last_msg_ms = 100;
+            s.last_heartbeat_ms = 100;
+        });
+        let log = EventLog::in_memory();
+        AppState::new(
+            registry,
+            log,
+            2,
+            "test-scenario.toml",
+            0,
+            fleet_core::geo::GeoOrigin::DEFAULT,
+            fleet_safety::geofence::Geofence::default_square(),
+            std::env::temp_dir(),
+        )
+    }
+
+    /// Pull the check list as a `Vec<Value>` so each test can index by name
+    /// (the handler always emits 5 checks in fixed order, but keying by name
+    /// is robust to re-ordering).
+    fn check_by_name<'a>(checks: &'a [serde_json::Value], name: &str) -> &'a serde_json::Value {
+        checks
+            .iter()
+            .find(|c| c["name"].as_str() == Some(name))
+            .unwrap_or_else(|| panic!("check '{name}' missing from {checks:?}"))
+    }
+
+    #[tokio::test]
+    async fn prearm_checks_returns_404_for_invalid_index() {
+        let state = test_state();
+        let app = router(state);
+        let resp = app
+            .oneshot(Request::get("/api/vehicles/99/prearm-checks").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let j = body_json(resp).await;
+        assert_eq!(j["ok"], false);
+        assert!(j["error"].as_str().unwrap().contains("out of range"));
+    }
+
+    #[tokio::test]
+    async fn prearm_checks_returns_all_passed_for_healthy_vehicle() {
+        let state = healthy_prearm_state();
+        let app = router(state);
+        let resp = app
+            .oneshot(Request::get("/api/vehicles/0/prearm-checks").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let j = body_json(resp).await;
+        assert_eq!(j["ok"], true);
+        let checks = j["data"]["checks"].as_array().unwrap();
+        assert_eq!(checks.len(), 5, "exactly five QGC pre-arm checks");
+        // every check passed + the expected QGC message strings
+        assert_eq!(check_by_name(checks, "EKF2")["passed"], true);
+        assert_eq!(check_by_name(checks, "EKF2")["message"], "converged");
+        assert_eq!(check_by_name(checks, "GPS Fix")["passed"], true);
+        assert_eq!(check_by_name(checks, "GPS Fix")["message"], "3D fix");
+        assert_eq!(check_by_name(checks, "Mode")["passed"], true);
+        assert_eq!(check_by_name(checks, "Mode")["message"], "STANDBY");
+        assert_eq!(check_by_name(checks, "Fence")["passed"], true);
+        assert_eq!(check_by_name(checks, "Fence")["message"], "inside inclusion");
+        assert_eq!(check_by_name(checks, "Battery")["passed"], true);
+        assert_eq!(check_by_name(checks, "Battery")["message"], "85%");
+        assert_eq!(j["data"]["all_passed"], true);
+    }
+
+    #[tokio::test]
+    async fn prearm_checks_fails_ekf_when_link_stale() {
+        let state = healthy_prearm_state();
+        // raise LINK_STALE on vehicle 0 — EKF2 must fail, all_passed false
+        state.set_flags(0, vec![fleet_core::health::HealthFlag::LinkStale]);
+        let app = router(state);
+        let resp = app
+            .oneshot(Request::get("/api/vehicles/0/prearm-checks").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let j = body_json(resp).await;
+        let checks = j["data"]["checks"].as_array().unwrap();
+        assert_eq!(check_by_name(checks, "EKF2")["passed"], false);
+        assert_eq!(check_by_name(checks, "EKF2")["message"], "waiting for convergence");
+        assert_eq!(j["data"]["all_passed"], false);
+    }
+
+    #[tokio::test]
+    async fn prearm_checks_fails_battery_when_critical() {
+        let state = healthy_prearm_state();
+        // battery below the BATTERY_CRIT threshold (20%) — Battery fails
+        state.registry.entry(0).unwrap().state.write(|s| {
+            s.battery_pct = 15;
+        });
+        let app = router(state);
+        let resp = app
+            .oneshot(Request::get("/api/vehicles/0/prearm-checks").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let j = body_json(resp).await;
+        let checks = j["data"]["checks"].as_array().unwrap();
+        assert_eq!(check_by_name(checks, "Battery")["passed"], false);
+        assert_eq!(check_by_name(checks, "Battery")["message"], "critical (<20%)");
+        assert_eq!(j["data"]["all_passed"], false);
+        // EKF2/GPS/Mode/Fence remain healthy (the failure is isolated)
+        assert_eq!(check_by_name(checks, "EKF2")["passed"], true);
+        assert_eq!(check_by_name(checks, "GPS Fix")["passed"], true);
+        assert_eq!(check_by_name(checks, "Mode")["passed"], true);
+        assert_eq!(check_by_name(checks, "Fence")["passed"], true);
+    }
+
+    #[tokio::test]
+    async fn prearm_checks_fails_mode_when_armed() {
+        let state = healthy_prearm_state();
+        // an already-armed vehicle can't be re-armed → Mode check fails
+        state.registry.entry(0).unwrap().state.write(|s| {
+            s.armed = true;
+            // a non-STANDBY mode_word (POSCTL) — the mode_word == 0 short-
+            // circuit must NOT mask the armed state
+            s.mode_word = fleet_modes::MODE_WORD_POSCTL;
+        });
+        let app = router(state);
+        let resp = app
+            .oneshot(Request::get("/api/vehicles/0/prearm-checks").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let j = body_json(resp).await;
+        let checks = j["data"]["checks"].as_array().unwrap();
+        assert_eq!(check_by_name(checks, "Mode")["passed"], false);
+        assert_eq!(check_by_name(checks, "Mode")["message"], "not in standby");
+        assert_eq!(j["data"]["all_passed"], false);
     }
 }
