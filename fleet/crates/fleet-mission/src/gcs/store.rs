@@ -89,7 +89,14 @@ impl Store {
         fs::create_dir_all(root.join("missions"))?;
         fs::create_dir_all(root.join("presets"))?;
         fs::create_dir_all(root.join("replays"))?;
+        fs::create_dir_all(root.join("ulogs"))?;
         Ok(Store { root })
+    }
+
+    /// Path to the directory holding `.ulg` files (GCS_SPEC.md §5.5 —
+    /// Analyze View ULog browse). The directory is created by [`new`].
+    pub fn ulogs_dir(&self) -> PathBuf {
+        self.root.join("ulogs")
     }
 
     fn missions_dir(&self) -> PathBuf {
@@ -384,6 +391,15 @@ impl Store {
     /// Path to the directory holding vehicle `i`'s presets.
     pub fn presets_dir(&self, vehicle_id: u8) -> PathBuf {
         self.root.join("presets").join(format!("vehicle_{vehicle_id}"))
+    }
+
+    /// Path to the directory holding `.replay` files (GCS_SPEC.md §5.5
+    /// / ADR-0027). Created by [`Store::new`] alongside `missions/`
+    /// and `presets/`. The catalog server never writes replays — it
+    /// serves files that the sim or fleet runs dropped here (often as
+    /// symlinks to the run's own output directory).
+    pub fn replays_dir(&self) -> PathBuf {
+        self.root.join("replays")
     }
 
     /// Path to a specific preset file. Caller is responsible for having

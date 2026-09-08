@@ -6,7 +6,9 @@
 
 pub mod mission_file;
 pub mod preset;
+pub mod replay;
 pub mod server;
 pub mod store;
+pub mod ulog;
 pub mod validation;
 pub mod version_check;

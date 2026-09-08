@@ -3,13 +3,15 @@
 /**
  * Single-page operator console for rustsitsim (:8200) + mavfleet (:8400)
  * + fleet-catalog (:8300). Mode switcher: Plan / Fly / Sim Console / Fleet
- * C2 / Operator Map / Vehicle Setup. All consoles stay mounted (hidden by
- * CSS) so their telemetry engines keep running across mode switches.
+ * C2 / Operator Map / Vehicle Setup / Analyze. All consoles stay mounted
+ * (hidden by CSS) so their telemetry engines keep running across mode
+ * switches.
  */
 
 import { useState } from 'react'
-import { Drone, MapPin, Network, PlaneTakeoff, Route, Wrench } from 'lucide-react'
+import { BarChart3, Drone, MapPin, Network, PlaneTakeoff, Route, Wrench } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { AnalyzeView } from '@/components/dashboard/AnalyzeView'
 import { SimConsole } from '@/components/dashboard/SimConsole'
 import { FleetC2 } from '@/components/dashboard/FleetC2'
 import { OperatorMap } from '@/components/dashboard/OperatorMap'
@@ -20,7 +22,7 @@ import { ThemeToggle } from '@/components/dashboard/ThemeToggle'
 import { useVehicleSetup } from '@/hooks/useVehicleSetup'
 import { useOperatorMap } from '@/hooks/useOperatorMap'
 
-type Mode = 'plan' | 'fly' | 'sim' | 'fleet' | 'map' | 'setup'
+type Mode = 'plan' | 'fly' | 'sim' | 'fleet' | 'map' | 'setup' | 'analyze'
 
 export default function Home() {
   const [mode, setMode] = useState<Mode>('plan')
@@ -50,7 +52,7 @@ export default function Home() {
 
           <nav aria-label="Console mode" className="order-3 w-full sm:order-none sm:w-auto">
             <Tabs value={mode} onValueChange={(v) => setMode(v as Mode)}>
-              <TabsList className="grid h-10 w-full grid-cols-6 sm:w-auto">
+              <TabsList className="grid h-10 w-full grid-cols-7 sm:w-auto">
                 <TabsTrigger value="plan" className="gap-1.5 px-3">
                   <Route className="size-3.5" aria-hidden="true" />
                   Plan
@@ -80,6 +82,11 @@ export default function Home() {
                   <Wrench className="size-3.5" aria-hidden="true" />
                   Vehicle Setup
                   <span className="sr-only">QGC-style vehicle configuration</span>
+                </TabsTrigger>
+                <TabsTrigger value="analyze" className="gap-1.5 px-3">
+                  <BarChart3 className="size-3.5" aria-hidden="true" />
+                  Analyze
+                  <span className="sr-only">replay / ULog browser, scrub timeline, plot topics, overlay live vehicle</span>
                 </TabsTrigger>
               </TabsList>
             </Tabs>
@@ -114,6 +121,9 @@ export default function Home() {
           <TabsContent value="setup" forceMount className="mt-0 data-[state=inactive]:hidden">
             <VehicleSetup setup={setup} />
           </TabsContent>
+          <TabsContent value="analyze" forceMount className="mt-0 data-[state=inactive]:hidden">
+            <AnalyzeView op={op} />
+          </TabsContent>
         </Tabs>
       </main>
 
@@ -123,7 +133,7 @@ export default function Home() {
             rustsitsim :8200 · catalog :8300 · mavfleet :8400 — relative-path fetch + <span className="font-semibold">XTransformPort</span> gateway routing
           </p>
           <p className="font-mono text-[10px] text-muted-foreground">
-            Plan View (GCS_SPEC §5.1/§8.1) · Fly View (GCS_SPEC §5.2/§8.2) · 10 Hz sim/fleet · setup per ADR-0016 · op-map per ADR-0017 · catalog per ADR-0019/0020/0026
+            Plan View (GCS_SPEC §5.1/§8.1) · Fly View (GCS_SPEC §5.2/§8.2) · 10 Hz sim/fleet · setup per ADR-0016 · op-map per ADR-0017 · catalog per ADR-0019/0020/0026 · analyze per GCS_SPEC §5.5/§8.5
           </p>
         </div>
       </footer>

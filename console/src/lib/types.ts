@@ -415,6 +415,71 @@ export interface PatternGenerationResult {
 }
 
 // ---------------------------------------------------------------------------
+// Analyze View — replay/ULog browse + scrub + plot (GCS_SPEC §5.5 / §8.5)
+// ---------------------------------------------------------------------------
+
+/** One row of GET /api/replays (GCS_SPEC §5.5 — RustSim's .replay files). */
+export interface ReplayFile {
+  filename: string
+  duration_s: number
+  vehicle_count: number
+  scenario_sha256: string
+  mtime: number
+}
+
+/** GET /api/replays/{file}/meta — header info (tick rate, seed, scenario hash). */
+export interface ReplayMeta {
+  tick_rate_hz: number
+  seed: number | string
+  scenario_sha256: string
+  records: number
+  virtual_duration_s: number
+  final_pos_ned_m?: [number, number, number]
+  final_q_wxyz?: [number, number, number, number]
+  /** Optional geo anchor (some replays carry the scenario origin). */
+  geo_origin?: { lat_deg: number; lon_deg: number; alt_m: number } | null
+}
+
+/** GET /api/replays/{file}/data?from_tick&to_tick&topic — tick-aligned samples.
+ * Values may be scalars (battery_pct) or [n,e,d] / [w,x,y,z] vectors. */
+export interface ReplayTopicData {
+  ticks: number[]
+  values: number[] | number[][]
+}
+
+/** One row of GET /api/ulogs (PX4 .ulg files). */
+export interface UlogFile {
+  filename: string
+  size_bytes: number
+  mtime: number
+}
+
+/** GET /api/ulogs/{file}/topics/{topic}/data?from_s&to_s — topic field data. */
+export interface UlogTopicData {
+  t: number[]
+  fields: Record<string, number[]>
+}
+
+/** Whether the loaded artifact is a RustSim replay or a PX4 ULog. */
+export type AnalyzeSourceKind = 'replay' | 'ulog'
+
+/** Discriminated union for the loaded source. */
+export interface AnalyzeSelection {
+  kind: AnalyzeSourceKind
+  filename: string
+}
+
+/** One configured plot in the strip-chart panel. */
+export interface AnalyzePlotConfig {
+  /** Local UUID so the operator can stack multiple plots of the same topic. */
+  id: string
+  topic: string
+  /** ULog only — which field to plot. Replays use the topic itself. */
+  field?: string
+  color: string
+}
+
+// ---------------------------------------------------------------------------
 // Fault injection catalog (rustsitsim SPEC §7.1)
 // ---------------------------------------------------------------------------
 

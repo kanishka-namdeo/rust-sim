@@ -3987,10 +3987,7 @@ mod tests {
         // capture the actual id and use that for the POST body.
         let leader_id = created.mission.id.clone();
         assert!(state::looks_like_ulid(&leader_id), "store-assigned id is a ULID");
-        let catalog_state = Arc::new(catalog_server::AppState {
-            store,
-            fleet_base_url: "http://127.0.0.1:8400".into(),
-        });
+        let catalog_state = Arc::new(catalog_server::AppState::for_test(store, "http://127.0.0.1:8400"));
         let catalog_app = catalog_server::router(catalog_state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let catalog_port = listener.local_addr().unwrap().port();

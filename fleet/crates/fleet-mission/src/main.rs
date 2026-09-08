@@ -40,18 +40,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let fleet_url = args.fleet_url.clone();
     let store = Store::new(&catalog_dir)?;
+    // ULog directory: env-configurable per ADR-0021 (RSIM_ULOG_DIR), defaults
+    // to the catalog's own `ulogs/` subdir so a single --catalog-dir is
+    // sufficient for the common case.
+    let ulogs_dir = std::env::var("RSIM_ULOG_DIR")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| store.ulogs_dir());
     let state = Arc::new(AppState {
         store,
         fleet_base_url: fleet_url.clone(),
+        ulogs_dir,
     });
 
     println!(
         "[fleet-catalog] catalog dir: {}",
         catalog_dir.display()
     );
+    println!("[fleet-catalog] ulog dir:   {}", std::env::var("RSIM_ULOG_DIR").unwrap_or_else(|_| store_ulogs_dir_display(&catalog_dir)));
     println!("[fleet-catalog] fleet manager: {}", fleet_url);
 
     serve(state, args.port).await?;
 
     Ok(())
+}
+
+/// Helper for the startup log line — formats the default ULog dir path.
+fn store_ulogs_dir_display(catalog_dir: &std::path::Path) -> String {
+    catalog_dir.join("ulogs").display().to_string()
 }
