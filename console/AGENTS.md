@@ -20,7 +20,10 @@ normalizers (`src/lib/conn.ts`), the dual-mode lifecycle, styling.
 
 Not owned here: the backend schemas (sim SPEC §4, fleet spec §3.4 — the
 console normalizes tolerantly but does not redefine them), the gateway
-itself (see `Caddyfile.example`).
+itself (see `Caddyfile.example`), and the GCS v1 spec
+(`../docs/GCS_SPEC.md` — that document owns the scope, feature areas,
+G-ladder, and milestone roadmap; this file owns the implementation
+contracts that already exist for the four mounted views).
 
 ## Local Contracts
 

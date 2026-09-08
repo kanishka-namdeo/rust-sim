@@ -12,8 +12,9 @@ components in `sim/docs/` and `fleet/docs/`.
 ## Ownership
 
 Owned here: `ARCHITECTURE.md`, `VERIFICATION.md`, `OPERATIONS.md`,
-`DEPLOYMENT.md`, `SANDBOX_SETUP.md`, `images/`. Not owned here:
-component specs/ADRs (see `../sim/AGENTS.md`, `../fleet/AGENTS.md`).
+`DEPLOYMENT.md`, `SANDBOX_SETUP.md`, `GCS_SPEC.md`, `images/`. Not owned
+here: component specs/ADRs (see `../sim/AGENTS.md`, `../fleet/AGENTS.md`,
+`../console/AGENTS.md`).
 
 ## Local Contracts
 
@@ -30,6 +31,16 @@ component specs/ADRs (see `../sim/AGENTS.md`, `../fleet/AGENTS.md`).
   patterns, the port map, always-on wrapping). It must stay consistent
   with `Caddyfile.example`'s binding (:81 all interfaces, backends
   localhost) and the console's two routing modes.
+- `GCS_SPEC.md` is the binding engineering spec for turning `console/`
+  into a QGC/MP-class GCS for PX4 SITL only (v1). It defines the 5
+  feature areas (Plan, Fly, Setup, Fleet C2, Analyze), the new `:8300`
+  mission-catalog + replay server, the G-1..G-12 verification gates
+  that extend the existing I/F/S/O/R ladder, and the M1..M6 milestone
+  roadmap. ADRs that block M1 (0019, 0020, 0026) must be accepted
+  before implementation begins; the remaining ADRs (0021..0025, 0027)
+  can be resolved in parallel with their owning milestone. Update this
+  spec only when scope, architecture, or the G-ladder changes — not for
+  ADR-level decisions (those go in `console/docs/adr/`).
 
 ## Work Guidance
 
