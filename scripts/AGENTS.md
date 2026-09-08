@@ -33,6 +33,9 @@ Owned here: `browser_live_test.sh` (browser-live), `browser_setup_test.sh`
   `../console/AGENTS.md` and the port map in `../docs/ARCHITECTURE.md`.
 - The scripts intentionally test through the gateway origin (:81), not the
   direct :3000 origin, because the gateway path is the production routing.
+- `browser_map_test.sh` engages on ANY vehicle winning the auction (a
+  boot-time EKF drift can fence-edge vehicle 0 out of the bid set) —
+  never hard-code the winner in fleet assertions.
 
 ## Verification
 

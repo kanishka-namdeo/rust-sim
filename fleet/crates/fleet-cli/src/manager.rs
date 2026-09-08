@@ -8,7 +8,7 @@
 #![forbid(unsafe_code)]
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -33,8 +33,8 @@ use fleet_simctl::{ports_free, SimCtl, SimCtlConfig};
 use crate::api;
 use crate::report;
 use crate::state::{
-    AppState, ClearAck, OperatorCmd, OperatorWaypoint, StartAck, UploadAck,
-    VehicleTaskInfo,
+    AppState, ClearAck, HotLoadAck, OperatorCmd, OperatorTask, OperatorWaypoint, StartAck,
+    UploadAck, VehicleTaskInfo,
 };
 
 /// Scenario arg parsing failure / infrastructure error exit code.
@@ -42,6 +42,11 @@ pub const EXIT_ERROR: i32 = 3;
 /// READY gate: home may be missing this long before we open the gate anyway
 /// (the interim sim streams HOME_POSITION only on the manager's request).
 const HOME_FALLBACK_MS: u64 = 45_000;
+/// Timeline fault events retry within this window (ADR-0018): right after
+/// a hot restart the sim's control plane can still be booting when the
+/// supervisor's first ticks run — a transient "unreachable" must not
+/// permanently swallow the injection.
+const FAULT_RETRY_WINDOW_MS: u64 = 10_000;
 /// RTL → LANDED disarm-observation budget. With real rustsitsim dynamics the
 /// full RTL cycle is climb-to-return-alt (RTL_RETURN_ALT, default 30 m AGL,
 /// ~30 s) + return leg + descend at MPC_LAND_SPEED (~0.7 m/s, ~45 s from
@@ -285,6 +290,12 @@ struct Supervisor {
     policy: PolicyEngine,
     pool: Vec<usize>,
     fired: HashSet<usize>,
+    /// First-attempt time per timeline fault event (ADR-0018 retry window:
+    /// measured from the attempt, never from the fleet epoch — a hot-loaded
+    /// scenario's events can already be "past" relative to the process
+    /// clock, so an epoch-relative window would expire before the first
+    /// try).
+    fault_attempts: std::collections::HashMap<usize, u64>,
     mission_started: bool,
     mission_started_at: u64,
     mission_complete: bool,
@@ -349,22 +360,71 @@ fn resolve_sim_command(scenario: &Scenario, log: &EventLog) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 pub async fn run_scenario(args: RunArgs) -> i32 {
-    let (scenario, scenario_path) = match Scenario::parse_file(&args.fleet) {
+    set_fleet_epoch();
+    // ADR-0018 hot scenario load loop: each iteration is one complete run
+    // (spawn -> supervise -> teardown + report). `PUT /api/fleet` stages a
+    // validated scenario file; the current run aborts gracefully and this
+    // loop restarts with it — same process, same API port (the control
+    // plane task is aborted and rebound between runs; clients reconnect).
+    let mut scenario_path = args.fleet.clone();
+    let mut last_code;
+    let base_run_dir: PathBuf = args.run_dir.clone().unwrap_or_else(|| {
+        PathBuf::from(format!("fleet-runs/fleet-run-{}", unix_now()))
+    });
+    let mut iteration = 0u32;
+    loop {
+        // Each run gets its own directory: the first honors --run-dir (or
+        // the default); hot-restarts get sibling dirs with a -hot-N suffix
+        // so reports/events never overwrite each other.
+        let run_dir = if iteration == 0 {
+            base_run_dir.clone()
+        } else {
+            PathBuf::from(format!("{}-hot-{}", base_run_dir.display(), iteration))
+        };
+        let (code, api, server) = run_once(&scenario_path, args.api_port, &run_dir).await;
+        last_code = code;
+        let next = api.take_next_scenario();
+        // Drop the old control plane BEFORE the next bind: abort() closes
+        // the listener (open WS sockets drop with it — clients reconnect;
+        // the console's 12 s live probe tolerates the window).
+        server.abort();
+        let _ = server.await.is_ok();
+        match next {
+            Some(path) => {
+                println!(
+                    "[fleet] hot scenario load: restarting with {}",
+                    path.display()
+                );
+                scenario_path = path;
+                iteration += 1;
+                continue;
+            }
+            None => break,
+        }
+    }
+    last_code
+}
+
+/// One complete run: parse -> spawn -> supervise -> teardown + report.
+/// Returns the exit code, the run's AppState (to read a staged hot-swap
+/// scenario after the fact) and the control-plane server task handle.
+async fn run_once(
+    scenario_file: &Path,
+    api_port: u16,
+    run_dir: &Path,
+) -> (i32, Arc<AppState>, tokio::task::JoinHandle<()>) {
+    let (scenario, scenario_path) = match Scenario::parse_file(scenario_file) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("[fleet] scenario error: {e}");
-            return EXIT_ERROR;
+            return (EXIT_ERROR, AppState::new_for_error(), dummy_server());
         }
     };
-    set_fleet_epoch();
-    let run_dir = args.run_dir.clone().unwrap_or_else(|| {
-        PathBuf::from(format!("fleet-runs/fleet-run-{}", unix_now()))
-    });
-    if std::fs::create_dir_all(&run_dir).is_err() {
+    if std::fs::create_dir_all(run_dir).is_err() {
         eprintln!("[fleet] cannot create run dir {}", run_dir.display());
-        return EXIT_ERROR;
+        return (EXIT_ERROR, AppState::new_for_error(), dummy_server());
     }
-    println!("[fleet] mavfleet run: scenario {}", args.fleet.display());
+    println!("[fleet] mavfleet run: scenario {}", scenario_file.display());
     println!("[fleet] run dir: {}", run_dir.display());
 
     let log = EventLog::spawn_writer(run_dir.join("events.ndjson"));
@@ -394,6 +454,7 @@ pub async fn run_scenario(args: RunArgs) -> i32 {
         unix_now(),
         geo_origin,
         plan.fence.clone(),
+        run_dir.clone(),
     );
 
     // Task table: accepted tasks in plan order, rejected appended.
@@ -460,7 +521,7 @@ pub async fn run_scenario(args: RunArgs) -> i32 {
             }
             Err(e) => {
                 eprintln!("[fleet] FATAL: telemetry link bind failed for vehicle {i}: {e}");
-                return EXIT_ERROR;
+                return (EXIT_ERROR, Arc::clone(&api), dummy_server());
             }
         }
     }
@@ -504,16 +565,17 @@ pub async fn run_scenario(args: RunArgs) -> i32 {
         }
     }
 
-    // Control plane (§3.4).
-    {
+    // Control plane (§3.4). The task handle is returned to the hot-restart
+    // loop so it can be aborted (listener freed) before a rebind.
+    let server_task = {
         let api_task = Arc::clone(&api);
-        let port = args.api_port;
+        let port = api_port;
         tokio::spawn(async move {
             if let Err(e) = api::serve(api_task, port).await {
                 eprintln!("[fleet] control plane error: {e}");
             }
-        });
-    }
+        })
+    };
     api.set_phase("BRING_UP");
 
     let now0 = fleet_epoch_ms();
@@ -559,13 +621,14 @@ pub async fn run_scenario(args: RunArgs) -> i32 {
         plan,
         runner_tasks,
         registry,
-        api,
+        api: Arc::clone(&api),
         log,
         simctl,
         ctxs,
         policy,
         pool: Vec::new(),
         fired: HashSet::new(),
+        fault_attempts: std::collections::HashMap::new(),
         mission_started: false,
         mission_started_at: 0,
         mission_complete: false,
@@ -574,10 +637,18 @@ pub async fn run_scenario(args: RunArgs) -> i32 {
         hard_deadline_ms,
         battery_gate_decided: !battery_sim,
         unassignable_reported: false,
-        run_dir,
+        run_dir: run_dir.to_path_buf(),
         operator_seq: 0,
     };
-    sup.run().await
+    let code = sup.run().await;
+    (code, api, server_task)
+}
+
+/// A never-scheduled no-op server handle for the early-error paths (the
+/// process exits immediately after; the handle is only there to keep the
+/// return shape uniform).
+fn dummy_server() -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async {})
 }
 
 impl Supervisor {
@@ -625,7 +696,7 @@ impl Supervisor {
             // mission state, so REST handlers only queue + await the ack.
             self.drain_operator_cmds(now);
 
-            if let Outcome::Stop = self.tick(now) {
+            if let Outcome::Stop = self.tick(now).await {
                 break;
             }
         }
@@ -634,7 +705,10 @@ impl Supervisor {
 
     // -- one tick ------------------------------------------------------------
 
-    fn tick(&mut self, now: u64) -> Outcome {
+    /// Async since ADR-0018: the timeline's `fault` events proxy to the
+    /// per-vehicle sim control planes over localhost HTTP (the fault-plane
+    /// wire), which is an await away.
+    async fn tick(&mut self, now: u64) -> Outcome {
         self.api.tick_count.fetch_add(1, Ordering::Relaxed);
 
         // Process supervision (§2.4): dead px4/sim → FAULT + event.
@@ -662,7 +736,7 @@ impl Supervisor {
             );
         }
 
-        self.fire_timeline(now);
+        self.fire_timeline(now).await;
         self.battery_gate(now);
         self.mission_start_gate(now);
 
@@ -1229,6 +1303,14 @@ impl Supervisor {
                     let cleared = self.clear_queued_operator_tasks();
                     let _ = ack.send(ClearAck { cleared });
                 }
+                OperatorCmd::Append { tasks, ack } => {
+                    let result = self.operator_append(tasks);
+                    let _ = ack.send(result);
+                }
+                OperatorCmd::HotLoad { ack } => {
+                    let result = self.operator_hotload(now);
+                    let _ = ack.send(result);
+                }
             }
         }
     }
@@ -1331,6 +1413,165 @@ impl Supervisor {
             );
         }
         UploadAck { accepted, rejected, pool }
+    }
+
+    /// Append NED tasks at runtime (`POST /api/tasks`, ADR-0018): the same
+    /// validation rules and the same three structures the upload path
+    /// builds — but the positions arrive already in the scenario DSL's own
+    /// frame (NED metres, home-relative), so no geo conversion happens.
+    /// Appending grows the pool; the next auction round reallocates over
+    /// it (spec §6.5), including mid-mission (vehicles that can take more
+    /// work pick the new tasks up at their queue boundary).
+    fn operator_append(&mut self, tasks: Vec<OperatorTask>) -> UploadAck {
+        let reach = fleet_mission::compile::max_reach_m(&self.plan.fence);
+        let mut accepted: Vec<String> = Vec::new();
+        let mut rejected: Vec<(String, String)> = Vec::new();
+        for (k, task) in tasks.into_iter().enumerate() {
+            let label = task
+                .id
+                .clone()
+                .unwrap_or_else(|| format!("task[{}]", k));
+            if task.hover_s < 0.0 {
+                rejected.push((label, "hover_s must be >= 0".into()));
+                continue;
+            }
+            let [x, y, z] = task.pos_ned_m;
+            if !self.plan.fence.contains_xy([x, y]) {
+                let breach = self.plan.fence.horizontal_breach([x, y]);
+                rejected.push((
+                    label,
+                    format!(
+                        "outside geofence polygon (NED [{x:.0}, {y:.0}], breach {:.0} m)",
+                        breach
+                    ),
+                ));
+                continue;
+            }
+            if !self.plan.fence.altitude_ok(z) {
+                rejected.push((
+                    label,
+                    format!(
+                        "outside altitude box (NED z {z:.1} m = {:.1} m AGL; box {}..{} m)",
+                        -z, self.plan.fence.floor_m, self.plan.fence.ceiling_m
+                    ),
+                ));
+                continue;
+            }
+            let d = x.hypot(y);
+            if d > reach {
+                rejected.push((
+                    label,
+                    format!("unreachable: {d:.0} m from home, budget {reach:.0} m"),
+                ));
+                continue;
+            }
+            // id collision guard: the board is the live namespace.
+            let id = match task.id {
+                Some(explicit) => {
+                    if self.plan.tasks.iter().any(|t| t.id == explicit) {
+                        rejected.push((label, format!("id '{explicit}' already on the task board")));
+                        continue;
+                    }
+                    if explicit.is_empty() {
+                        rejected.push((label, "id must not be empty".into()));
+                        continue;
+                    }
+                    explicit
+                }
+                None => {
+                    self.operator_seq += 1;
+                    format!("op{}", self.operator_seq)
+                }
+            };
+            let ti = self.plan.tasks.len();
+            let task_row = fleet_alloc::Task {
+                id: id.clone(),
+                pos_ned_m: [x, y],
+                hover_s: task.hover_s,
+                reward: task.reward,
+                deadline_s: task.deadline_s.unwrap_or(f32::INFINITY),
+            };
+            self.plan.tasks.push(task_row);
+            self.runner_tasks.push(RunnerTask {
+                id: id.clone(),
+                pos_ned_m: [x, y, z],
+                hover_s: task.hover_s,
+            });
+            self.api.tasks.lock().unwrap().push(TaskStatus {
+                id: id.clone(),
+                pos_ned_m: [x, y, z],
+                assigned: None,
+                state: "pending".into(),
+                hover_observed: None,
+            });
+            self.pool.push(ti);
+            accepted.push(id);
+        }
+        let pool = self.pool.len();
+        if !accepted.is_empty() {
+            self.log.log(
+                EventKind::SupervisorAction,
+                None,
+                format!(
+                    "operator task append: {} accepted ({:?}), {} rejected, pool {pool} — reallocation next round",
+                    accepted.len(),
+                    accepted,
+                    rejected.len()
+                ),
+            );
+        }
+        UploadAck { accepted, rejected, pool }
+    }
+
+    /// Hot scenario load (`PUT /api/fleet`, ADR-0018): the staged file is
+    /// already validated by the REST handler; this side re-checks that the
+    /// fleet is quiescent (the handler's view can be a hair stale), then
+    /// gracefully aborts this run — the `run_scenario` loop restarts with
+    /// the staged scenario on the same port. An e-stop pending wins (the
+    /// operator asked to STOP, not to swap).
+    fn operator_hotload(&mut self, now: u64) -> HotLoadAck {
+        if self.api.estop_requested() {
+            return HotLoadAck {
+                accepted: false,
+                reason: Some("e-stop pending — the fleet is shutting down".into()),
+            };
+        }
+        let flying: Vec<u8> = (0..self.api.count)
+            .filter(|&i| self.api.mission_active(i))
+            .collect();
+        if !flying.is_empty() {
+            return HotLoadAck {
+                accepted: false,
+                reason: Some(format!(
+                    "vehicles {flying:?} are flying an autonomous mission — land/hold before a scenario swap"
+                )),
+            };
+        }
+        if self.mission_started && !self.mission_complete {
+            return HotLoadAck {
+                accepted: false,
+                reason: Some(
+                    "mission started but not complete — clear or let it finish before a swap".into(),
+                ),
+            };
+        }
+        let staged = self
+            .api
+            .next_scenario_path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "<staged>".into());
+        self.log.log(
+            EventKind::RunBoundary,
+            None,
+            format!(
+                "hot scenario load accepted: graceful stop — the fleet restarts with {staged} (PUT /api/fleet)"
+            ),
+        );
+        // Graceful stop through the abort path: any airborne vehicle lands
+        // + disarms, the report is written, teardown frees the ports, and
+        // `run_scenario`'s loop boots the staged scenario.
+        self.abort_run(now, "hot scenario load (PUT /api/fleet): fleet restarts with the staged scenario");
+        HotLoadAck { accepted: true, reason: None }
     }
 
     /// Start the deferred operator mission (the setup-bench path to
@@ -1608,7 +1849,7 @@ impl Supervisor {
 
     // -- timeline / battery gates ---------------------------------------------
 
-    fn fire_timeline(&mut self, now: u64) {
+    async fn fire_timeline(&mut self, now: u64) {
         for (k, ev) in self.scenario.events.iter().enumerate() {
             if self.fired.contains(&k) {
                 continue;
@@ -1637,14 +1878,82 @@ impl Supervisor {
                 }
                 "fault" => {
                     let v = ev.vehicle.unwrap_or(0);
-                    let kind = ev.fault.as_ref().map(|f| f.kind.clone()).unwrap_or_default();
-                    self.log.log(
-                        EventKind::SimEvent,
-                        Some(v),
-                        format!(
-                            "fault '{kind}' NOT injected: the interim simulator has no fault plane (ADR-0001); deferred to the rustsitsim phase"
-                        ),
-                    );
+                    let Some(f) = ev.fault.as_ref() else {
+                        self.log.log(
+                            EventKind::SimEvent,
+                            Some(v),
+                            "fault event without a [fault] table — skipped",
+                        );
+                        continue;
+                    };
+                    // ADR-0018: real injection — proxy to vehicle v's sim
+                    // fault plane (:8200+v, the sim's §7.3 REST endpoint).
+                    // The sim owns the catalog (serde-validated) and mints
+                    // the runtime-N fault id; both land in the event log.
+                    let body = serde_json::json!({
+                        "type": f.kind,
+                        "duration_ms": f.duration_ms,
+                    });
+                    let attempt = crate::simproxy::post_json(
+                        fleet_simctl::ports::sim_api(v),
+                        "/api/faults",
+                        &body,
+                    )
+                    .await;
+                    // Boot window retry: an unreachable/early plane right
+                    // after a hot restart (or a WAIT-phase sim) is retried
+                    // on subsequent ticks for up to 10 s from the FIRST
+                    // attempt — silently, to keep the 10 Hz log clean. Only
+                    // the final outcome logs.
+                    let success = matches!(&attempt, Ok((200, _)));
+                    if !success {
+                        let first = *self.fault_attempts.entry(k).or_insert(now);
+                        if now < first + FAULT_RETRY_WINDOW_MS {
+                            self.fired.remove(&k);
+                            continue;
+                        }
+                    }
+                    self.fault_attempts.remove(&k);
+                    match attempt {
+                        Ok((code, sim_body)) if code == 200 => {
+                            let id = sim_body["data"]["id"]
+                                .as_str()
+                                .unwrap_or("?")
+                                .to_string();
+                            self.log.log(
+                                EventKind::FaultInjection,
+                                Some(v),
+                                format!(
+                                    "fault '{}' injected into vehicle {v}'s sim fault plane (id {id}, starts next sim tick)",
+                                    f.kind
+                                ),
+                            );
+                        }
+                        Ok((code, sim_body)) => {
+                            let reason = sim_body["error"]
+                                .as_str()
+                                .unwrap_or("(no reason)")
+                                .to_string();
+                            self.log.log(
+                                EventKind::FaultInjection,
+                                Some(v),
+                                format!(
+                                    "fault '{}' REJECTED by vehicle {v}'s sim plane: HTTP {} — {}",
+                                    f.kind, code, reason
+                                ),
+                            );
+                        }
+                        Err(e) => {
+                            self.log.log(
+                                EventKind::FaultInjection,
+                                Some(v),
+                                format!(
+                                    "fault '{}' proxy to vehicle {v} FAILED: {e}",
+                                    f.kind
+                                ),
+                            );
+                        }
+                    }
                 }
                 "estop" => {
                     self.api.request_estop();
@@ -1872,6 +2181,18 @@ impl Supervisor {
         for ctx in &self.ctxs {
             ctx.handle.shared.stop_stream();
         }
+
+        // Release THIS run's own sockets before the port probe (ADR-0018 hot
+        // restart): the link tasks exit when every LinkHandle drops (their
+        // command channel closes) — otherwise the probe below sees our own
+        // telemetry/onboard ports as still bound and warns spuriously. The
+        // supervisor is the single writer, so this is safe here.
+        self.ctxs.clear();
+        {
+            let mut links = self.api.links.lock().unwrap();
+            links.clear();
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
 
         // Teardown (§12.3): reap every child, verify §17 ports free (F-1).
         self.simctl.kill_all().await;

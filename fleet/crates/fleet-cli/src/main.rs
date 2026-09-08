@@ -14,6 +14,7 @@ mod manager;
 mod pump;
 mod report;
 mod setup;
+mod simproxy;
 mod state;
 
 use std::path::{Path, PathBuf};

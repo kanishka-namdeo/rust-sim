@@ -57,6 +57,14 @@ Not owned here: vehicle dynamics and wire codec (`../sim/`), operator UI
   scripts/browser_map_test.sh` (O-2) — the geo frame, go-to, guided
   commands, fence-validated mission upload and the auction-flown op* tasks
   against real PX4.
+- Runtime plane: `tests/live_test_runtime.sh` (R-1, ADR-0018) — the fault
+  proxy to the sims' REST planes, runtime NED task append, and the hot
+  scenario load (staged PUT, graceful abort, same-port rebind, isolated
+  run dirs), all against real PX4.
+- The scenario `fault` events inject for real through the sim fault plane
+  (ADR-0018; the old "NOT injected" interim placeholder is gone). Keep
+  fault windows clear of the arming phase — a live gps_denial blocks
+  PX4's GPS-dependent arming gate for 10+ s (ADR-0018, live-captured).
 - Boot-gate polling in both harnesses accepts READY or any post-READY FSM
   state (ACTIVE/RTL/LANDED): the all-READY snapshot window can be <200 ms
   wide on fast machines because vehicles flip READY->ACTIVE together once

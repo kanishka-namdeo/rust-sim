@@ -60,6 +60,29 @@ pub struct ClearAck {
     pub cleared: usize,
 }
 
+/// One operator task as appended at runtime (`POST /api/tasks`, ADR-0018):
+/// NED metres, home-relative — the direct counterpart of the geo waypoints
+/// `POST /api/mission` accepts. `id` is optional (auto `op*` id when
+/// omitted); ids must not collide with the live task board.
+#[derive(Debug, Clone)]
+pub struct OperatorTask {
+    pub id: Option<String>,
+    pub pos_ned_m: [f32; 3],
+    pub hover_s: f32,
+    pub reward: f32,
+    pub deadline_s: Option<f32>,
+}
+
+/// Hot scenario load ack (`PUT /api/fleet`, ADR-0018): accepted means the
+/// supervisor has gracefully stopped the current run and the process will
+/// re-enter `run_scenario`'s loop with the staged scenario file; the
+/// control plane rebinds on the same port within seconds.
+#[derive(Debug, Clone)]
+pub struct HotLoadAck {
+    pub accepted: bool,
+    pub reason: Option<String>,
+}
+
 /// Operator commands queued by the REST plane and drained by the
 /// supervisor's tick loop (the same discipline as ADR-0016 restart
 /// requests: the supervisor is the single writer of the mission state).
@@ -75,6 +98,17 @@ pub enum OperatorCmd {
     Start { ack: tokio::sync::oneshot::Sender<StartAck> },
     /// Drop queued operator tasks (the active task is never touched).
     Clear { ack: tokio::sync::oneshot::Sender<ClearAck> },
+    /// Append NED tasks at runtime (ADR-0018, `POST /api/tasks`) — same
+    /// validation + injection path as the mission upload, and the same
+    /// reallocation trigger (the next auction round over the pool).
+    Append {
+        tasks: Vec<OperatorTask>,
+        ack: tokio::sync::oneshot::Sender<UploadAck>,
+    },
+    /// Hot scenario load (ADR-0018, `PUT /api/fleet`): the staged file is
+    /// in `next_scenario`; on accept the supervisor aborts this run
+    /// gracefully and `run_scenario` restarts with the new scenario.
+    HotLoad { ack: tokio::sync::oneshot::Sender<HotLoadAck> },
 }
 
 /// The control-plane-visible fleet state.
@@ -116,6 +150,12 @@ pub struct AppState {
     pub fence: fleet_safety::geofence::Geofence,
     pub fence_view: GeofenceView,
     pub started_unix: u64,
+    /// This run's directory (report + events + staged hot-swap scenarios).
+    pub run_dir: std::path::PathBuf,
+    /// Staged next scenario (ADR-0018, `PUT /api/fleet`): set by the REST
+    /// handler after validation, consumed by `run_scenario`'s loop after
+    /// the supervisor's graceful stop. Cleared on a supervisor nack.
+    next_scenario: Mutex<Option<std::path::PathBuf>>,
 }
 
 impl AppState {
@@ -127,6 +167,7 @@ impl AppState {
         started_unix: u64,
         geo_origin: GeoOrigin,
         fence: fleet_safety::geofence::Geofence,
+        run_dir: impl Into<std::path::PathBuf>,
     ) -> Arc<AppState> {
         let fence_view = GeofenceView {
             points_ned_m: fence.points.clone(),
@@ -153,7 +194,28 @@ impl AppState {
             fence,
             fence_view,
             started_unix,
+            run_dir: run_dir.into(),
+            next_scenario: Mutex::new(None),
         })
+    }
+
+    /// Minimal state for the early-error paths of `run_once` (scenario
+    /// unreadable / run dir unwritable): keeps the return shape uniform so
+    /// the hot-restart loop can still read (empty) staging state before the
+    /// process exits. Never serves a request.
+    pub fn new_for_error() -> Arc<AppState> {
+        let registry = Registry::new(0);
+        let log = EventLog::in_memory();
+        AppState::new(
+            registry,
+            log,
+            0,
+            "<none>",
+            fleet_mission::report::unix_now(),
+            GeoOrigin::DEFAULT,
+            fleet_safety::geofence::Geofence::default_square(),
+            std::env::temp_dir(),
+        )
     }
 
     /// Register vehicle i's link handle (manager, after spawn_link).
@@ -206,6 +268,25 @@ impl AppState {
     pub fn take_operator_cmds(&self) -> Vec<OperatorCmd> {
         let mut q = self.operator_cmds.lock().unwrap();
         q.drain(..).collect()
+    }
+
+    /// Stage the next scenario (ADR-0018 `PUT /api/fleet`, after
+    /// validation). The supervisor acks or nacks; on nack the REST handler
+    /// clears this again.
+    pub fn set_next_scenario(&self, path: std::path::PathBuf) {
+        *self.next_scenario.lock().unwrap() = Some(path);
+    }
+
+    /// Take (and clear) the staged next scenario — `run_scenario`'s loop
+    /// reads this after a run ends to decide whether to hot-restart.
+    pub fn take_next_scenario(&self) -> Option<std::path::PathBuf> {
+        self.next_scenario.lock().unwrap().take()
+    }
+
+    /// Peek at the staged next scenario without consuming it (the
+    /// supervisor's hot-load handler logs where the fleet is heading).
+    pub fn next_scenario_path(&self) -> Option<std::path::PathBuf> {
+        self.next_scenario.lock().unwrap().clone()
     }
 
     /// Per-vehicle "mission live" flag (supervisor writes each tick:
@@ -284,6 +365,7 @@ pub fn fleet_frame(s: &AppState, events_tail: usize) -> FleetFrame {
     FleetFrame {
         t_ms: now_ms,
         phase: s.phase(),
+        scenario: s.scenario_path.clone(),
         tick_count: s.tick_count.load(Ordering::SeqCst),
         vehicles,
         tasks,

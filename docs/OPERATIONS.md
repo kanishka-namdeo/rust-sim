@@ -69,6 +69,20 @@ moving telemetry on both consoles, and saves screenshots to
   fault form in the browser.
 - **Fleet control plane**: `curl :8400/api/fleet`, `curl :8400/api/events`,
   `curl -X POST :8400/api/estop`.
+- **Runtime plane (ADR-0018)**: append NED tasks at runtime (the auction
+  reallocates over the grown pool), inject a fault into a vehicle's sim,
+  and hot-swap the whole scenario without restarting the process:
+
+  ```bash
+  # runtime task append (NED metres, z negative up)
+  curl -X POST :8400/api/tasks \
+    -d '{"pos_ned_m": [20, 20, -12], "hover_s": 5}'
+  # fault injection — proxied to vehicle 0's sim (:8200), sim-validated
+  curl -X POST :8400/api/vehicles/0/faults \
+    -d '{"type": "motor_cut", "params": {"motor": 1}}'
+  # hot scenario load — validated, graceful stop, same-port restart
+  curl -X PUT :8400/api/fleet -d '{"scenario_toml": "<TOML text>"}'
+  ```
 - **Operator map control (ADR-0017, from the fly/plan map or curl)**:
   upload waypoints (fence-validated, `lat_deg`/`lon_deg`/`alt_m` AGL), start
   the mission, fly it under guided commands, then land:

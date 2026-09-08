@@ -31,18 +31,20 @@ use axum::Router;
 use serde_json::json;
 
 use crate::setup;
+use crate::simproxy;
 use crate::state::{self, AppState};
-use crate::state::{OperatorCmd, OperatorWaypoint};
+use crate::state::{OperatorCmd, OperatorTask, OperatorWaypoint};
 
 /// Build the control-plane router (also the unit-test surface).
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
-        .route("/api/fleet", get(fleet_get))
+        .route("/api/fleet", get(fleet_get).put(fleet_put))
         .route("/api/fleet/estop", post(estop_post))
         .route("/api/estop", post(estop_post))
         .route("/api/vehicles/{index}", get(vehicle_get))
         .route("/api/events", get(events_get))
-        .route("/api/tasks", get(tasks_get))
+        .route("/api/vehicles/{index}/faults", post(vehicle_faults_post))
+        .route("/api/tasks", get(tasks_get).post(tasks_post))
         // -- vehicle-setup plane (ADR-0016, QGC/MP-style) ----------------
         .route("/api/airframes", get(airframes_get))
         .route("/api/modes", get(modes_get))
@@ -139,6 +141,237 @@ async fn events_get(
 /// `GET /api/tasks` — task table (assignment, state, hover observation).
 async fn tasks_get(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     ok(json!({ "tasks": s.tasks_snapshot() }))
+}
+
+// ---------------------------------------------------------------------------
+// Runtime task append (ADR-0018, `POST /api/tasks`)
+// ---------------------------------------------------------------------------
+
+/// `POST /api/tasks` body: a single task object or an array of them. Tasks
+/// are NED metres home-relative (the scenario DSL's own convention) — the
+/// direct counterpart of `POST /api/mission`'s geo waypoints.
+#[derive(Debug, serde::Deserialize)]
+struct TaskBody {
+    #[serde(default)]
+    id: Option<String>,
+    pos_ned_m: [f32; 3],
+    #[serde(default)]
+    hover_s: f32,
+    #[serde(default = "default_task_reward")]
+    reward: f32,
+    #[serde(default)]
+    deadline_s: Option<f32>,
+}
+
+fn default_task_reward() -> f32 {
+    1.0
+}
+
+/// `POST /api/tasks` (spec 6.5): append tasks at runtime — the supervisor
+/// validates them with the compiler's own rules (fence polygon, altitude
+/// box, reachability) and injects them into the task board + auction pool,
+/// so the next auction round reallocates over the grown pool.
+async fn tasks_post(
+    State(s): State<Arc<AppState>>,
+    body: Option<axum::extract::Json<serde_json::Value>>,
+) -> Response {
+    let Some(axum::extract::Json(v)) = body else {
+        return err(StatusCode::BAD_REQUEST, "body must be a task JSON object or array");
+    };
+    let items: Vec<serde_json::Value> = match v {
+        serde_json::Value::Array(a) => a,
+        serde_json::Value::Object(_) => vec![v],
+        _ => return err(StatusCode::BAD_REQUEST, "body must be a task JSON object or array"),
+    };
+    if items.is_empty() {
+        return err(StatusCode::UNPROCESSABLE_ENTITY, "no tasks in body");
+    }
+    if items.len() > 64 {
+        return err(StatusCode::UNPROCESSABLE_ENTITY, "too many tasks (max 64)");
+    }
+    let mut tasks = Vec::with_capacity(items.len());
+    for (k, item) in items.into_iter().enumerate() {
+        let parsed: TaskBody = match serde_json::from_value(item) {
+            Ok(p) => p,
+            Err(e) => {
+                return err(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    &format!("task[{k}] invalid: {e} (pos_ned_m = [x, y, z] NED, z negative up)"),
+                )
+            }
+        };
+        if !parsed.pos_ned_m.iter().all(|c| c.is_finite()) {
+            return err(StatusCode::UNPROCESSABLE_ENTITY, &format!("task[{k}] pos_ned_m must be finite"));
+        }
+        tasks.push(OperatorTask {
+            id: parsed.id,
+            pos_ned_m: parsed.pos_ned_m,
+            hover_s: parsed.hover_s,
+            reward: parsed.reward,
+            deadline_s: parsed.deadline_s,
+        });
+    }
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    s.push_operator_cmd(OperatorCmd::Append { tasks, ack: tx });
+    match tokio::time::timeout(Duration::from_secs(2), rx).await {
+        Ok(Ok(ack)) => ok(json!({
+            "accepted": ack.accepted,
+            "rejected": ack.rejected.iter()
+                .map(|(l, r)| json!({"label": l, "reason": r}))
+                .collect::<Vec<_>>(),
+            "pool": ack.pool,
+        }))
+        .into_response(),
+        _ => err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "supervisor did not drain the append — is the fleet running?",
+        )
+        .into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Hot scenario load (ADR-0018, `PUT /api/fleet`)
+// ---------------------------------------------------------------------------
+
+/// `PUT /api/fleet` body: the full scenario TOML as text.
+#[derive(Debug, serde::Deserialize)]
+struct FleetPutBody {
+    scenario_toml: String,
+}
+
+/// `PUT /api/fleet` (spec 3.4): validate a scenario TOML, stage it, and —
+/// when the fleet is quiescent (no mission flying) — gracefully stop this
+/// run and hot-restart with the staged scenario on the same port. The
+/// parse/compile gate is the same one `mavfleet check` applies; the
+/// supervisor re-checks quiescence at drain time (the REST handler's view
+/// can be a hair stale).
+async fn fleet_put(
+    State(s): State<Arc<AppState>>,
+    body: Result<
+        axum::extract::Json<FleetPutBody>,
+        axum::extract::rejection::JsonRejection,
+    >,
+) -> Response {
+    let axum::extract::Json(FleetPutBody { scenario_toml }) = match body {
+        Ok(b) => b,
+        Err(e) => {
+            return err(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                &format!("invalid body: {e}"),
+            )
+        }
+    };
+    if scenario_toml.trim().is_empty() {
+        return err(StatusCode::BAD_REQUEST, "scenario_toml must not be empty");
+    }
+    // Full validation up front: schema, ranges, compile-time task checks —
+    // a scenario that cannot run is rejected before anything is staged.
+    if let Err(e) = fleet_mission::Scenario::parse_toml(&scenario_toml) {
+        return err(StatusCode::UNPROCESSABLE_ENTITY, &format!("invalid scenario: {e}"));
+    }
+    let plan = {
+        let scenario = fleet_mission::Scenario::parse_toml(&scenario_toml).expect("re-parsed");
+        fleet_mission::MissionPlan::compile(&scenario)
+    };
+    if !plan.rejections.is_empty() {
+        let detail = plan
+            .rejections
+            .iter()
+            .map(|(id, r)| format!("{id}: {r}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            &format!("scenario rejected at compile: {detail}"),
+        );
+    }
+    // Fast quiescence gate (the supervisor re-checks at drain time).
+    let flying: Vec<u8> = (0..s.count).filter(|&i| s.mission_active(i)).collect();
+    if !flying.is_empty() {
+        return err(
+            StatusCode::CONFLICT,
+            &format!(
+                "vehicles {flying:?} are flying an autonomous mission — land/clear before a scenario swap"
+            ),
+        );
+    }
+    // Stage the file in this run's directory, then ask the supervisor.
+    let staged = s
+        .run_dir
+        .join(format!("hot-scenario-{}.toml", fleet_core::events::fleet_epoch_ms()));
+    if let Err(e) = std::fs::write(&staged, &scenario_toml) {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("cannot stage scenario: {e}"));
+    }
+    s.set_next_scenario(staged.clone());
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    s.push_operator_cmd(OperatorCmd::HotLoad { ack: tx });
+    match tokio::time::timeout(Duration::from_secs(2), rx).await {
+        Ok(Ok(ack)) if ack.accepted => ok(json!({
+            "staged": staged,
+            "note": "graceful stop in progress — the fleet restarts with the staged scenario; the control plane rebinds on this port within seconds",
+        }))
+        .into_response(),
+        Ok(Ok(ack)) => {
+            s.take_next_scenario(); // supervisor nack: nothing is staged
+            err(
+                StatusCode::CONFLICT,
+                ack.reason.as_deref().unwrap_or("supervisor rejected the swap"),
+            )
+            .into_response()
+        }
+        _ => {
+            s.take_next_scenario(); // no supervisor answer: clean up the staging
+            err(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "supervisor did not drain the load — is the fleet running?",
+            )
+            .into_response()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fault proxy (ADR-0018, `POST /api/vehicles/{i}/faults`)
+// ---------------------------------------------------------------------------
+
+/// `POST /api/vehicles/{i}/faults`: inject a rustsitsim fault on vehicle i
+/// by proxying to its own control plane (:8200+i, the sim's §7.3 REST fault
+/// plane). The body is the sim's fault-event schema — `{"type":
+/// "motor_cut", "params": {...}, "duration_ms": ...}` — validated by the
+/// sim itself (single source of truth for the catalog) and the response is
+/// relayed verbatim, status included.
+async fn vehicle_faults_post(
+    State(s): State<Arc<AppState>>,
+    Path(index): Path<u8>,
+    body: Option<axum::extract::Json<serde_json::Value>>,
+) -> Response {
+    if index >= s.count {
+        return err(StatusCode::NOT_FOUND, &format!("vehicle {index} out of range (0..{})", s.count - 1));
+    }
+    let Some(axum::extract::Json(v)) = body else {
+        return err(StatusCode::BAD_REQUEST, "body must be a fault event JSON object");
+    };
+    let Some(t) = v.get("type").and_then(|t| t.as_str()) else {
+        return err(StatusCode::BAD_REQUEST, "body must carry a \"type\" (the rustsitsim fault catalog id)");
+    };
+    if t.trim().is_empty() {
+        return err(StatusCode::BAD_REQUEST, "\"type\" must not be empty");
+    }
+    let port = fleet_simctl::ports::sim_api(index);
+    match simproxy::post_json(port, "/api/faults", &v).await {
+        Ok((code, sim_body)) => {
+            let status = StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_GATEWAY);
+            // Relay the sim's own envelope {"ok","data"|"error"} verbatim —
+            // the catalog, ids ("runtime-N") and reasons are the sim's.
+            (status, Json(sim_body)).into_response()
+        }
+        Err(e) => err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &format!("vehicle {index} sim control plane not reachable: {e}"),
+        )
+        .into_response(),
+    }
 }
 
 /// `POST /api/estop` (and `/api/fleet/estop`) — operator e-stop: every
@@ -990,8 +1223,9 @@ async fn ws_entry(State(s): State<Arc<AppState>>, mut parts: Parts) -> Response 
             "service": "mavfleet",
             "scenario": s.scenario_path,
             "endpoints": [
-                "GET /api/fleet", "GET /api/vehicles/{i}", "GET /api/events",
-                "GET /api/tasks", "POST /api/estop", "POST /api/fleet/estop",
+                "GET /api/fleet", "PUT /api/fleet", "GET /api/vehicles/{i}", "GET /api/events",
+                "GET|POST /api/tasks", "POST /api/estop", "POST /api/fleet/estop",
+                "POST /api/vehicles/{i}/faults",
                 "GET /api/airframes", "GET /api/modes",
                 "GET /api/vehicles/{i}/setup", "GET|POST /api/vehicles/{i}/params",
                 "POST /api/vehicles/{i}/params/refresh",
@@ -1103,6 +1337,7 @@ mod tests {
             0,
             fleet_core::geo::GeoOrigin::DEFAULT,
             fleet_safety::geofence::Geofence::default_square(),
+            std::env::temp_dir(),
         );
         *s.tasks.lock().unwrap() = vec![TaskStatus {
             id: "wp_n".into(),
@@ -1365,7 +1600,242 @@ mod tests {
         assert!(j["error"].as_str().unwrap().contains("drain"));
     }
 
+    // -- runtime task append (ADR-0018, POST /api/tasks) -------------------
+
     #[tokio::test]
+    async fn tasks_post_validation_errors() {
+        let state = test_state();
+        let app = router(state);
+        // not an object/array -> 400
+        let (st, _) = post_json(app.clone(), "/api/tasks", r#""just a string""#).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST);
+        // missing pos_ned_m -> 422 with the field hint
+        let (st, j) = post_json(app.clone(), "/api/tasks", r#"{"id": "wp_x"}"#).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(j["error"].as_str().unwrap().contains("pos_ned_m"));
+        // empty array -> 422
+        let (st, j) = post_json(app.clone(), "/api/tasks", "[]").await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(j["error"].as_str().unwrap().contains("no tasks"));
+        // non-finite position -> 422 (serde passes NaN through JSON? no —
+        // guard anyway with an out-of-shape array)
+        let (st, j) = post_json(
+            app,
+            "/api/tasks",
+            r#"[{"pos_ned_m": [1.0, 2.0]}, {"pos_ned_m": [1.0, 2.0, -3.0], "hover_s": 1}]"#,
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(j["error"].as_str().unwrap().contains("task[0]"));
+    }
+
+    /// The queue+drain+ack loop for task appends — same discipline as the
+    /// mission upload: handler queues Append, this test plays supervisor.
+    #[tokio::test]
+    async fn tasks_post_queues_and_acks() {
+        let state = test_state();
+        let app = router(Arc::clone(&state));
+        let task = tokio::spawn(async move {
+            let req = Request::post("/api/tasks")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"[{"id": "wp_ned", "pos_ned_m": [20.0, 20.0, -12.0], "hover_s": 5}, {"pos_ned_m": [15.0, 0.0, -8.0]}]"#,
+                ))
+                .unwrap();
+            app.oneshot(req).await.unwrap()
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let cmds = state.take_operator_cmds();
+        assert_eq!(cmds.len(), 1, "exactly one queued command");
+        match cmds.into_iter().next().unwrap() {
+            OperatorCmd::Append { tasks, ack } => {
+                assert_eq!(tasks.len(), 2);
+                assert_eq!(tasks[0].id.as_deref(), Some("wp_ned"));
+                assert_eq!(tasks[0].pos_ned_m, [20.0, 20.0, -12.0]);
+                assert!((tasks[0].hover_s - 5.0).abs() < 1e-6);
+                assert!(tasks[1].id.is_none(), "auto id when omitted");
+                assert!((tasks[1].reward - 1.0).abs() < 1e-6, "default reward");
+                ack.send(crate::state::UploadAck {
+                    accepted: vec!["wp_ned".into(), "op1".into()],
+                    rejected: vec![],
+                    pool: 2,
+                })
+                .unwrap();
+            }
+            other => panic!("expected Append, got {other:?}"),
+        }
+        let resp = task.await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let j = body_json(resp).await;
+        assert_eq!(j["data"]["accepted"], serde_json::json!(["wp_ned", "op1"]));
+        assert_eq!(j["data"]["pool"], 2);
+    }
+
+    /// No supervisor -> 503, the honest timeout (not a hang).
+    #[tokio::test]
+    async fn tasks_post_times_out_without_supervisor() {
+        let state = test_state();
+        let app = router(state);
+        let (st, j) = post_json(app, "/api/tasks", r#"{"pos_ned_m": [1.0, 2.0, -3.0]}"#).await;
+        assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(j["error"].as_str().unwrap().contains("drain"));
+    }
+
+    // -- hot scenario load (ADR-0018, PUT /api/fleet) ----------------------
+
+    fn put_json(app: Router, uri: &str, body: &str) -> impl std::future::Future<Output = (StatusCode, serde_json::Value)> {
+        let req = Request::put(uri)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        async move {
+            let resp = app.oneshot(req).await.unwrap();
+            let status = resp.status();
+            (status, body_json(resp).await)
+        }
+    }
+
+    /// JSON-escape a TOML text into a PUT body string.
+    fn put_body(toml: &str) -> String {
+        serde_json::json!({ "scenario_toml": toml }).to_string()
+    }
+
+    const MIN_SCENARIO_TOML: &str = "[fleet]\ncount = 1\n\n[[tasks]]\nid = \"wp_a\"\npos_ned_m = [10.0, 0.0, -10.0]\nhover_s = 2\n";
+
+    #[tokio::test]
+    async fn fleet_put_validation_errors() {
+        let state = test_state();
+        let app = router(state);
+        // missing scenario_toml field -> 422 with the field named (the JSON
+        // envelope contract holds: the Json rejection is wrapped, not
+        // leaked as a text/plain axum rejection)
+        let (st, j) = put_json(app.clone(), "/api/fleet", "{}").await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(j["error"].as_str().unwrap().contains("scenario_toml"));
+        // invalid TOML -> 422 with the parse reason
+        let (st, j) = put_json(app.clone(), "/api/fleet", &put_body("not [valid toml")).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(j["error"].as_str().unwrap().contains("invalid scenario"));
+        // valid TOML but a compile-rejected task (outside the 100 m fence)
+        let bad = "[fleet]\ncount = 1\n\n[[tasks]]\nid = \"far\"\npos_ned_m = [500.0, 0.0, -10.0]\n";
+        let (st, j) = put_json(app, "/api/fleet", &put_body(bad)).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(j["error"].as_str().unwrap().contains("far"));
+        assert!(j["error"].as_str().unwrap().contains("compile"));
+    }
+
+    #[tokio::test]
+    async fn fleet_put_mission_active_conflict() {
+        let state = test_state();
+        state.set_mission_active(0, true);
+        let app = router(state);
+        let (st, j) = put_json(app, "/api/fleet", &put_body(MIN_SCENARIO_TOML)).await;
+        assert_eq!(st, StatusCode::CONFLICT);
+        assert!(j["error"].as_str().unwrap().contains("autonomous mission"));
+    }
+
+    /// Happy path: valid + quiescent -> staged file + HotLoad queued; the
+    /// test plays supervisor, accepts, and the response points at the staged
+    /// TOML. The staging is observable via next_scenario.
+    #[tokio::test]
+    async fn fleet_put_queues_and_acks() {
+        let state = test_state();
+        let app = router(Arc::clone(&state));
+        let task = tokio::spawn(async move {
+            let req = Request::put("/api/fleet")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(put_body(MIN_SCENARIO_TOML)))
+                .unwrap();
+            app.oneshot(req).await.unwrap()
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let cmds = state.take_operator_cmds();
+        assert_eq!(cmds.len(), 1);
+        match cmds.into_iter().next().unwrap() {
+            OperatorCmd::HotLoad { ack } => {
+                let staged = state.next_scenario_path().expect("staged before ack");
+                assert!(staged.to_string_lossy().contains("hot-scenario-"));
+                assert!(staged
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.ends_with(".toml")));
+                let written = std::fs::read_to_string(&staged).unwrap();
+                assert!(written.contains("[fleet]"));
+                assert!(written.contains("count = 1"));
+                ack.send(crate::state::HotLoadAck {
+                    accepted: true,
+                    reason: None,
+                })
+                .unwrap();
+            }
+            other => panic!("expected HotLoad, got {other:?}"),
+        }
+        let resp = task.await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let j = body_json(resp).await;
+        assert!(j["data"]["staged"].as_str().unwrap().contains("hot-scenario-"));
+        assert!(j["data"]["note"].as_str().unwrap().contains("rebinds"));
+        // still staged after the accepted ack (run_scenario consumes it
+        // later); take() consumes it exactly once.
+        assert!(state.next_scenario_path().is_some());
+        let consumed = state.take_next_scenario();
+        assert!(consumed.is_some());
+        assert!(state.next_scenario_path().is_none(), "take consumed it");
+    }
+
+    /// Supervisor nack (e.g. mission started in the race window) -> 409 and
+    /// the staging is cleared: nothing half-swapped.
+    #[tokio::test]
+    async fn fleet_put_nack_clears_staging() {
+        let state = test_state();
+        let app = router(Arc::clone(&state));
+        let task = tokio::spawn(async move {
+            let req = Request::put("/api/fleet")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(put_body(MIN_SCENARIO_TOML)))
+                .unwrap();
+            app.oneshot(req).await.unwrap()
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let cmds = state.take_operator_cmds();
+        match cmds.into_iter().next().unwrap() {
+            OperatorCmd::HotLoad { ack } => {
+                ack.send(crate::state::HotLoadAck {
+                    accepted: false,
+                    reason: Some("mission started but not complete".into()),
+                })
+                .unwrap();
+            }
+            other => panic!("expected HotLoad, got {other:?}"),
+        }
+        let resp = task.await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let j = body_json(resp).await;
+        assert!(j["error"].as_str().unwrap().contains("mission started"));
+        assert!(state.next_scenario_path().is_none(), "staging cleared on nack");
+    }
+
+    // -- fault proxy (ADR-0018, POST /api/vehicles/{i}/faults) -------------
+
+    #[tokio::test]
+    async fn vehicle_faults_post_validation() {
+        let state = test_state();
+        let app = router(state);
+        // index out of range -> 404
+        let (st, j) = post_json(app.clone(), "/api/vehicles/5/faults", r#"{"type": "motor_cut"}"#).await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
+        assert!(j["error"].as_str().unwrap().contains("out of range"));
+        // body without a "type" -> 400
+        let (st, j) = post_json(app.clone(), "/api/vehicles/0/faults", r#"{"params": {"motor": 1}}"#).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST);
+        assert!(j["error"].as_str().unwrap().contains("type"));
+        // empty type -> 400
+        let (st, _) = post_json(app, "/api/vehicles/0/faults", r#"{"type": "  "}"#).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+
     async fn guided_command_gates() {
         let state = test_state();
         let app = router(Arc::clone(&state));

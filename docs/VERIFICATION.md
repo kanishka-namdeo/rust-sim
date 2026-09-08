@@ -16,6 +16,7 @@ shell call, with CI-classifiable exit codes.
 | **S-2** | `scripts/browser_setup_test.sh` | The QGC-style Vehicle Setup tab driven end-to-end in a real browser through the gateway: tab LIVE + disarm badge, param download via the UI button, typed rows in the params table, airframe catalog (UAV/USV/UUV groups), calibration rows, mode switch via button, Boat apply via filter + confirm dialog, post-restart resolution to Boat, screenshots | **PASS** (13/13 checks) |
 | **O-1** | `fleet/tests/live_test_operator.sh` | The ADR-0017 operator map control plane against real PX4, REST-level: fleet frame carries geo_origin + geofence + per-vehicle GLOBAL_POSITION_INT fixes (degE7), go-to flight (engage ladder -> OFFBOARD -> 18 m transit, armed + lat/lon moving), hold (AUTO.LOITER) + land (disarm observed), mission upload with fence-validated accept/reject (3 + 1 at 12 km breach), mission start -> auction-flown op* tasks, e-stop teardown with clean exit | **PASS** (15 checks) |
 | **O-2** | `scripts/browser_map_test.sh` | The Operator Map tab driven end-to-end in a real browser through the gateway: Leaflet map LIVE with the real fence fitted + vehicle markers from GPS fixes, 3 waypoints placed by real map clicks (coordinate mouse events), waypoint table + geo-sanity guard, Upload -> op* tasks on the live board, Start mission -> phase RUNNING + vehicle armed/ACTIVE in flight on the map, screenshots | **PASS** (16/16 checks) |
+| **R-1** | `fleet/tests/live_test_runtime.sh` | The ADR-0018 runtime control plane against real PX4, REST-level: fault proxy (gps_denial accepted with the sim's runtime-N id + the sim's own :8200 plane listing it, bogus type relayed as the sim's 4xx, index 404), runtime NED task append (2 accepted / far one geofence-rejected with the compiler's reason / explicit id collision rejected, board visible), hot scenario load (invalid TOML 422, staged swap -> graceful ABORTED -> same-port rebind with new count + 80 m fence + hot-scenario path on the frame, isolated -hot-1 run dir, both reports naming their own scenarios), the staged scenario's timeline fault event ACTUALLY injected through the sim fault plane, mission-active 409 on a mid-flight PUT, e-stop exit 2 + port-free teardown | **PASS** (23 checks) |
 
 ## Unit tests
 
@@ -24,7 +25,7 @@ shell call, with CI-classifiable exit codes.
   sizing), sensor models (latency FIFO, denial ramp, glitch), engine mapping
   regressions incl. the PX4 v1.16.2 actuator wire layout + armed-frame
   decode. (Re-run 2026-09-08: 99/99 PASS.)
-- `fleet/`: 155 tests — FSM transitions, policy ladder ordering property,
+- `fleet/`: 169 tests — FSM transitions, policy ladder ordering property,
   allocator optimality, runner profile math, router integration tests
   (incl. WS upgrades on the gateway's `/?XTransformPort=` shape), wire-goal
   repro pinning NED setpoints on the wire, the vehicle-setup plane (param
@@ -33,8 +34,11 @@ shell call, with CI-classifiable exit codes.
   gates), the hold-for-setup scenario key, and the operator control plane
   (geodesy round-trips incl. the AGL waypoint convention, geo blocks on
   the fleet frame, mission upload queue/ack/validation gates, guided
-  command gates incl. the mission-active 409). (Re-run 2026-09-08:
-  155/155 PASS.)
+  command gates incl. the mission-active 409), plus the runtime control
+  plane (ADR-0018: task-append queue/ack + validation, hot-load staging
+  + nack-clears-staging, fault-proxy bounds/body gates, the simproxy HTTP
+  framing round-trip + closed-port path). (Re-run 2026-09-08:
+  169/169 PASS.)
 
 ## Hard-won protocol facts (all live-captured, all ADR'd)
 
@@ -67,5 +71,13 @@ shell call, with CI-classifiable exit codes.
 10. PX4 v1.16 battery params carry the `BAT1_` instance prefix
     (`BAT1_N_CELLS`, `BAT1_V_EMPTY`, ...); the unprefixed `BAT_*` ids of
     earlier versions do not exist.
+11. A hyper server aborts its response when the client half-closes its
+    write side mid-request — the fleet's fault proxy relies on
+    `Connection: close` instead (`fleet/docs/adr/0018`).
+12. A `gps_denial` in effect before the mission blocks PX4's arming gate
+    (TEMPORARILY_REJECTED, 10+ s after the denial ends) while OFFBOARD
+    mode changes are still accepted — a vehicle can sit in OFFBOARD
+    disarmed while its runner's tasks time out via deadline. Keep fault
+    windows clear of the arming phase (`fleet/docs/adr/0018`).
 
 Re-run any of this yourself: see [OPERATIONS.md](OPERATIONS.md).

@@ -3,7 +3,8 @@
 ## Purpose
 
 Repo-level documentation that spans components: the architecture and port
-contracts, the live verification record, the operations runbook, and the
+contracts, the live verification record, the operations runbook, the
+deployment guide for running the stack on an external system, and the
 verified sandbox bring-up sequence.
 Component-specific docs (SPEC, PROTOCOL, SCENARIOS, ADRs) stay with their
 components in `sim/docs/` and `fleet/docs/`.
@@ -11,8 +12,8 @@ components in `sim/docs/` and `fleet/docs/`.
 ## Ownership
 
 Owned here: `ARCHITECTURE.md`, `VERIFICATION.md`, `OPERATIONS.md`,
-`SANDBOX_SETUP.md`, `images/`. Not owned here: component specs/ADRs (see
-`../sim/AGENTS.md`, `../fleet/AGENTS.md`).
+`DEPLOYMENT.md`, `SANDBOX_SETUP.md`, `images/`. Not owned here:
+component specs/ADRs (see `../sim/AGENTS.md`, `../fleet/AGENTS.md`).
 
 ## Local Contracts
 
@@ -24,6 +25,11 @@ Owned here: `ARCHITECTURE.md`, `VERIFICATION.md`, `OPERATIONS.md`,
   environment changes or a harness's invocation pattern changes — commands
   in it must be copy-pasteable, in order, and actually pass.
 - `images/` holds evidence screenshots referenced from the READMEs.
+- `DEPLOYMENT.md` describes running the stack on an external system after
+  `git clone` (prerequisites, one-host quickstart, LAN/tunnel access
+  patterns, the port map, always-on wrapping). It must stay consistent
+  with `Caddyfile.example`'s binding (:81 all interfaces, backends
+  localhost) and the console's two routing modes.
 
 ## Work Guidance
 

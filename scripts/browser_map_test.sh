@@ -241,14 +241,16 @@ for _ in $(seq 1 60); do
     ST=$(curl -s --max-time 2 "http://127.0.0.1:$API/api/fleet" | python3 -c "
 import json,sys
 try:
-    v = json.load(sys.stdin)['data']['vehicles'][0]
-    print(1 if (v['armed'] or v['fsm'] == 'ACTIVE') else 0)
+    vs = json.load(sys.stdin)['data']['vehicles']
+    # ANY vehicle may win the auction (a boot-time EKF drift can fence-edge
+    # vehicle 0 out of the bid set) — the check is 'the fleet is flying'.
+    print(1 if any((v['armed'] or v['fsm'] == 'ACTIVE') for v in vs) else 0)
 except Exception: print('0')")
     [ "$ST" = "1" ] && { ACTIVE=1; break; }
     sleep 1
 done
-[ -n "$ACTIVE" ] || fail "vehicle 0 never engaged after mission start (not armed/ACTIVE)"
-ok "vehicle 0 engaged: armed + ACTIVE, flying the operator mission"
+[ -n "$ACTIVE" ] || fail "no vehicle ever engaged after mission start (not armed/ACTIVE)"
+ok "the auction's winner engaged: armed + ACTIVE, flying the operator mission"
 
 # watch the flight for a few seconds (trajectory grows on the map)
 agent-browser wait 12000 >/dev/null 2>&1

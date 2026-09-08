@@ -49,7 +49,11 @@ Highlights:
   success criteria (all_tasks_done, FSM trace arcs, no geofence breach) evaluated into
   a JSON run report
 - **Control plane**: REST + WS on 8400 (`/api/fleet`, `/api/vehicles/{i}`, `/api/tasks`,
-  `/api/events`, `/api/fleet/estop`, `/ws/fleet` at 10 Hz)
+  `/api/events`, `/api/fleet/estop`, `/ws/fleet` at 10 Hz) plus the runtime
+  plane (ADR-0018): `PUT /api/fleet` hot scenario load, `POST /api/tasks`
+  runtime NED task append, `POST /api/vehicles/{i}/faults` — the fault
+  proxy into each sim's own REST fault plane (scenario timeline `fault`
+  events inject through it too)
 
 ## Quickstart
 

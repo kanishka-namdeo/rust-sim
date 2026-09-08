@@ -259,9 +259,11 @@ One axum server on 127.0.0.1:8400 (configurable). Envelope identical to rustsits
 | Endpoint | Method | Purpose |
 |---|---|---|
 | /api/fleet | GET | Fleet summary: per-vehicle FSM state, health, battery, position, plus fleet phase |
+| /api/fleet | PUT | Hot scenario load (ADR-0018): body `{"scenario_toml": ...}`, validated (422) + quiescence-gated (409), staged, flown via a graceful stop + restart on the same port |
 | /api/fleet/estop | POST | E-stop: every vehicle LAND immediately, scenario marked ABORTED |
 | /api/vehicles/{i} | GET | Full vehicle detail incl. telemetry snapshot age, link counters |
 | /api/vehicles/{i}/mode | POST | Request mode change (implemented by ADR-0016: DO_SET_MODE + ACK) |
+| /api/vehicles/{i}/faults | POST | Inject a rustsitsim fault on vehicle i — proxied verbatim to its 8200+i plane, envelope + status relayed (ADR-0018) |
 | /api/airframes | GET | ROMFS-derived airframe catalog, QGC-browser grouped (ADR-0016) |
 | /api/modes | GET | Switchable flight-mode set with mode words (ADR-0016) |
 | /api/vehicles/{i}/setup | GET | QGC setup Summary: airframe, calibration, power, safety, download state (ADR-0016) |
@@ -278,15 +280,12 @@ One axum server on 127.0.0.1:8400 (configurable). Envelope identical to rustsits
 | /api/vehicles/{i}/rtl | POST | AUTO.RTL + setpoint-stream stop (ADR-0017) |
 | /api/vehicles/{i}/hold | POST | AUTO.LOITER pause + setpoint-stream stop (ADR-0017) |
 | /api/vehicles/{i}/goto | POST | Go To Location: geo->NED, fence-clamped, engage sequence (ADR-0017) |
-| /api/tasks | GET | Inspect task set (assignment, state, hover observation) |
+| /api/tasks | GET / POST | Inspect the task set; append NED tasks at runtime — compiler-validated, injected into the auction pool, triggers reallocation (ADR-0018) |
 | /api/events | GET | Event log tail (supervisor decisions, fault injections, state changes) |
 | /ws/fleet | WS | 10 Hz fleet state frames + event push |
 
-Not implemented in v0.1 (designed, deferred): `PUT /api/fleet` (hot scenario
-load), `POST /api/vehicles/{i}/faults` (proxy to the sim's fault plane), and
-`POST /api/tasks` (runtime task append). Runtime task injection exists today
-through the operator plane instead: `POST /api/mission` +
-`POST /api/mission/start` (ADR-0017).
+All §3.4 rows are implemented (ADR-0016/0017/0018). The frame also carries
+the live `scenario` path (ADR-0018) so clients can observe hot swaps.
 
 The WS frame carries the same fleet summary as GET /api/fleet at 10 Hz plus incremental
 events; the dashboard subscribes once and drives all views from it. Frame schema is
@@ -418,9 +417,9 @@ allocator, and it is the number CI enforces every run.
 ### 6.5 Runtime Reallocation
 
 Two triggers arm reallocation: a vehicle transitioning to FAULT or RTL with tasks still
-queued (its remaining tasks return to the pool), and operator task injection via
-POST /api/mission (ADR-0017 — the runtime append path; a direct POST /api/tasks
-append is designed but not implemented in v0.1). Reallocation is the same sequential auction over the pool, restricted to
+queued (its remaining tasks return to the pool), and operator task injection —
+`POST /api/mission` (ADR-0017) or `POST /api/tasks` (ADR-0018, NED tasks
+appended directly into the pool). Reallocation is the same sequential auction over the pool, restricted to
 vehicles that can still accept work. Mid-task abort: a vehicle currently flying a task
 that loses the task (never happens - tasks are only pooled from queues, not from the
 active task) or completes with pool remaining picks up the next queued item

@@ -5,10 +5,11 @@
 **PX4-native lockstep simulation, multi-vehicle fleet operations, and a live operator console — pure Rust, real PX4.**
 
 [![sim tests](https://img.shields.io/badge/sim-99%2B%20tests-brightgreen)](sim)
-[![fleet tests](https://img.shields.io/badge/fleet-155%2B%20tests-brightgreen)](fleet)
+[![fleet tests](https://img.shields.io/badge/fleet-169%2B%20tests-brightgreen)](fleet)
 [![I-2](https://img.shields.io/badge/live--verified-I--1%20%2F%20I--2%20flight-success)](docs/VERIFICATION.md)
 [![F-2](https://img.shields.io/badge/live--verified-F--1%20%2F%20F--2%20fleet-success)](docs/VERIFICATION.md)
 [![O-2](https://img.shields.io/badge/live--verified-O--1%20%2F%20O--2%20operator--map-success)](docs/VERIFICATION.md)
+[![R-1](https://img.shields.io/badge/live--verified-R--1%20runtime%20plane-success)](docs/VERIFICATION.md)
 [![console](https://img.shields.io/badge/console-browser--tested-live-blue)](docs/images/rustsim-fleetc2-live.png)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
@@ -56,6 +57,10 @@ Every headline claim has a single-invocation harness and a recorded PASS
   passes of the map view where the user flies SITL themselves — go-to
   flights, fence-validated mission upload + auction-flown op* tasks,
   guided arm/takeoff/land/RTL/hold, all against real PX4.
+- **R-1 — runtime control plane (ADR-0018)**: fault injection proxied live
+  into each sim's own fault plane (REST + scenario timeline events),
+  runtime NED task append with reallocation, and hot scenario load — PUT a
+  validated scenario, the fleet gracefully restarts on the same port.
 
 ## Architecture
 
@@ -130,8 +135,8 @@ ways that only live capture reveals — all documented with evidence in
 sim/       RustSim Core   — 8 crates, docs/ (SPEC, PROTOCOL, ADRs), live harnesses
 fleet/     RustSim Fleet  — 8 crates, docs/ (SPEC, SCENARIOS, ADRs), live harnesses
 console/   RustSim Console— Next.js 16 app, dual API routing (gateway/direct)
-docs/      architecture, verification record, operations runbook, evidence images
-scripts/   cross-repo live test (browser), golden-vector generator
+docs/      architecture, verification record, operations runbook, deployment guide, evidence images
+scripts/   cross-repo live tests (browser), golden-vector generator
 ```
 
 Each component carries its own `AGENTS.md` (the [DOX](https://github.com/agent0ai/dox)
@@ -142,7 +147,7 @@ contract hierarchy): the root [AGENTS.md](AGENTS.md) is the rail, and
 
 ```bash
 (cd sim   && cargo test --workspace)   # 99+ tests
-(cd fleet && cargo test --workspace)   # 155+ tests
+(cd fleet && cargo test --workspace)   # 169+ tests
 (cd console && npm run lint && npm run build)
 ```
 
@@ -154,11 +159,16 @@ measured time budgets without re-running the corresponding live case.
 
 - Offboard mission commands beyond position goals (velocity/attitude
   setpoints, camera/gimbal payload channels).
-- Fault events in fleet scenarios wired to the sims' REST fault plane
-  (today the F-catalog lives on the sim side).
 - Console: survey patterns (grids/corridors) on the Operator Map's plan
   editor; FC-side MAVLink mission protocol as an alternative flight path.
 - CI matrix across PX4 versions to track dialect drift.
+
+## Running it on your own machine
+
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) is the guide: prerequisites, the
+one-host quickstart, browser access from other machines (the Caddy gateway
+on :81 is the single network entry point; SSH tunnels for remote access),
+the port map, and an always-on service sketch.
 
 ## License
 

@@ -24,6 +24,10 @@ use crate::state::VehicleState;
 pub struct FleetFrame {
     pub t_ms: u64,
     pub phase: String,
+    /// The live scenario's source path (ADR-0018: on a hot swap this is how
+    /// a client tells which scenario the fleet is running — the staged
+    /// file's name carries `hot-scenario-`).
+    pub scenario: String,
     pub tick_count: u64,
     pub vehicles: Vec<VehicleView>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -208,6 +212,7 @@ mod tests {
         let f = FleetFrame {
             t_ms: 5,
             phase: "RUNNING".into(),
+            scenario: "tests/operator_bench.toml".into(),
             tick_count: 50,
             vehicles: vec![],
             tasks: Some(serde_json::json!([{"id": "wp_n"}])),
@@ -231,6 +236,7 @@ mod tests {
         let f = FleetFrame {
             t_ms: 5,
             phase: "RUNNING".into(),
+            scenario: "tests/operator_bench.toml".into(),
             tick_count: 50,
             vehicles: vec![],
             tasks: None,

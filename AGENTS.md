@@ -41,7 +41,7 @@ Core contract: work products, source materials, instructions, records, assets, a
 
 ## Work Guidance
 
-- Current test baselines: `sim/` 99 unit tests, `fleet/` 155 unit tests,
+- Current test baselines: `sim/` 99 unit tests, `fleet/` 169 unit tests,
   console `npm run lint` + `npm run build` clean.
 - Before changing FSM/policy/allocation/wire behavior, read the owning SPEC
   section and ADRs; ADRs override older spec text where they conflict.
@@ -119,12 +119,13 @@ When the user requests a durable behavior change, record it here or in the relev
 
 ## Verification
 
-- `cargo test --workspace` green in `sim/` (99 tests) and `fleet/` (155
+- `cargo test --workspace` green in `sim/` (99 tests) and `fleet/` (169
   tests); `console`: `npm run lint` + `npm run build` clean.
 - Live harness ladder recorded with evidence in `docs/VERIFICATION.md`:
   I-1/I-2 (single vehicle, real PX4), F-1/F-2 (fleet, real dynamics),
   S-1/S-2 (vehicle-setup plane), O-1/O-2 (operator map control),
-  browser-live (console end-to-end through the gateway).
+  R-1 (runtime control plane: fault proxy, task append, hot scenario
+  load), browser-live (console end-to-end through the gateway).
 
 ## Compatibility and Security Limits
 

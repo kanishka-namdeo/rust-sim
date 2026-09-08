@@ -29,3 +29,5 @@ console/tsconfig.tsbuildinfo
 # operator-map live-test artifacts (regenerated per run; screenshots are committed)
 fleet/tests/o1_artifacts/
 fleet/tests/map_browser_artifacts/
+# runtime-plane live-test artifacts (regenerated per run, R-1)
+fleet/tests/r1_artifacts/

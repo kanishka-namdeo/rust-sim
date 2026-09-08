@@ -202,6 +202,13 @@ bash scripts/browser_map_test.sh
 # Same caddy/leak preconditions as S-2; also kills stale next-server
 # instances (a leaked console server serves an old bundle — the map-fit
 # bug class documented in console/AGENTS.md).
+
+(cd fleet && bash tests/live_test_runtime.sh)
+# R-1: "R-1 PASS: RUNTIME CONTROL PLANE COMPLETE" — the ADR-0018 plane
+# against real PX4: fault proxy (accept + relayed rejections + 404),
+# runtime NED task append (fence/id gates), hot scenario load (422 gate,
+# staged swap + rebind + isolated run dirs), the timeline fault event
+# injected through the sim's own plane, mission-active 409, estop exit 2.
 ```
 
 ## 9. Known flakiness and its fix (applied in-repo)
@@ -215,12 +222,12 @@ this race (its inline comment says the window "can be <200 ms wide");
 `run_f1.sh` now uses the same predicate. If a future harness regresses this
 pattern, apply the f2-style gate, do not widen time budgets.
 
-## 10. Verification record (this sequence, executed 2026-09-07)
+## 10. Verification record (this sequence, executed 2026-09-07/08)
 
 | Gate | Result |
 |---|---|
 | `sim` unit tests | 99/99 PASS |
-| `fleet` unit tests | 126/126 PASS |
+| `fleet` unit tests | 169/169 PASS (155 through ADR-0017; +14 for ADR-0018) |
 | I-1 boot gate (real PX4 rcS + EKF2 + loop closed + ULog) | PASS |
 | I-2 physical flight (arm → offboard → z −1.72 m → land → disarm) | PASS |
 | F-1 bring-up + estop → ABORTED(2) + clean teardown | PASS |
@@ -230,6 +237,8 @@ pattern, apply the f2-style gate, do not widen time budgets.
 | S-2 Vehicle Setup browser test (QGC-style tab end-to-end, Boat apply via dialog) | PASS (13/13) |
 | O-1 operator-map REST live test (geo frame, go-to flight, hold+land, fence-validated upload, auction-flown mission, estop) | PASS (15 checks) |
 | O-2 Operator Map browser test (Leaflet LIVE, map-click waypoints, upload + start mission, live flight) | PASS (16/16) |
+| R-1 runtime control plane live test (fault proxy, task append, hot scenario load, timeline fault wiring, mission-active 409) | PASS (23 checks) |
+| F-1 / F-2 / O-1 / O-2 regression re-run after the ADR-0018 supervisor changes (2026-09-08) | PASS |
 | Console `npm run lint` + `npm run build` | clean |
 
 Artifacts from this run live under each harness's `tests/*_artifacts/`;

@@ -131,6 +131,22 @@ console/ Next.js 16 operator console (see console/README.md)
    origin to the sim wrapper via `RSIM_ORIGIN_*`, so the fleet's conversion
    and the sim's HIL_GPS can never disagree.
 
+6. **Runtime control plane (ADR-0018)**: the three remaining spec routes
+   are real. `POST /api/vehicles/{i}/faults` proxies verbatim into the
+   sim's own REST fault plane (:8200+i) through a ~90-line hand-rolled
+   localhost HTTP client (no new dependency) and relays the sim's status +
+   envelope — the sim stays the single source of truth for the fault
+   catalog; scenario timeline `fault` events inject through the same proxy
+   (async tick, 10 s first-attempt retry window). `POST /api/tasks`
+   appends NED tasks through the compiler's own validation into the
+   auction pool (reallocation next round, mid-mission included).
+   `PUT /api/fleet` validates a full scenario TOML (the `mavfleet check`
+   gate), stages it in the run dir, and — when no mission is flying —
+   gracefully aborts the current run; `run_scenario` loops, rebinding the
+   control plane on the same port with a fresh AppState and an isolated
+   `-hot-N` run dir per swap. The frame carries the live `scenario` path
+   so clients can observe swaps.
+
 ## Why native HIL instead of Gazebo?
 
 The goal is a **protocol-faithful, deterministic, dependency-free** testbed
