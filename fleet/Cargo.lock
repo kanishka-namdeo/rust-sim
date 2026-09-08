@@ -322,6 +322,7 @@ dependencies = [
  "fleet-modes",
  "fleet-safety",
  "fleet-simctl",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",

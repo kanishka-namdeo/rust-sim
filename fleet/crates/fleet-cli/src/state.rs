@@ -141,6 +141,17 @@ pub struct AppState {
     /// Per-vehicle "flying a mission right now" (runner live) — the gate
     /// guided commands check so a user command can never fight a runner.
     mission_active: Mutex<Vec<bool>>,
+    /// M5 (Fleet C2, GCS_SPEC.md §5.4): per-vehicle mission bindings —
+    /// one mission ULID per vehicle, `None` = unbound. Populated by
+    /// `POST /api/fleet/mission-bindings`, drained by `POST /api/fleet/start`
+    /// when it uploads + arms each bound vehicle.
+    mission_bindings: Mutex<Vec<Option<String>>>,
+    /// M5 (Fleet C2): the catalog server's base URL — `POST /api/fleet/start`
+    /// fetches each bound mission from `GET {catalog_url}/api/missions/{id}`.
+    /// Defaults to `http://127.0.0.1:8300`; overridden via the
+    /// `RSIM_CATALOG_URL` env var (set by `mavfleet run` callers or the
+    /// harness).
+    catalog_url: String,
     /// Geo origin (ADR-0017): `[env] origin` — published on the frame and
     /// used for all operator-plane geo conversion.
     pub geo_origin: GeoOrigin,
@@ -169,6 +180,36 @@ impl AppState {
         fence: fleet_safety::geofence::Geofence,
         run_dir: impl Into<std::path::PathBuf>,
     ) -> Arc<AppState> {
+        AppState::new_with_catalog_url(
+            registry,
+            log,
+            count,
+            scenario_path,
+            started_unix,
+            geo_origin,
+            fence,
+            run_dir,
+            default_catalog_url(),
+        )
+    }
+
+    /// M5 (Fleet C2) constructor that takes an explicit `catalog_url`.
+    /// Production callers go through `AppState::new` (env-var-driven); tests
+    /// use this to point at an ephemeral-port catalog server they've spun
+    /// up themselves (the env-var path can't safely serialize across
+    /// parallel `#[tokio::test]` threads — process-wide env, per-thread
+    /// runtimes).
+    pub fn new_with_catalog_url(
+        registry: Arc<Registry>,
+        log: Arc<EventLog>,
+        count: u8,
+        scenario_path: impl Into<String>,
+        started_unix: u64,
+        geo_origin: GeoOrigin,
+        fence: fleet_safety::geofence::Geofence,
+        run_dir: impl Into<std::path::PathBuf>,
+        catalog_url: impl Into<String>,
+    ) -> Arc<AppState> {
         let fence_view = GeofenceView {
             points_ned_m: fence.points.clone(),
             ceiling_m: fence.ceiling_m,
@@ -190,6 +231,8 @@ impl AppState {
             restart_requests: Mutex::new(std::collections::BTreeSet::new()),
             operator_cmds: Mutex::new(std::collections::VecDeque::new()),
             mission_active: Mutex::new(vec![false; count as usize]),
+            mission_bindings: Mutex::new(vec![None; count as usize]),
+            catalog_url: catalog_url.into(),
             geo_origin,
             fence,
             fence_view,
@@ -302,6 +345,52 @@ impl AppState {
     /// runner's setpoint stream (ADR-0017).
     pub fn mission_active(&self, index: u8) -> bool {
         self.mission_active.lock().unwrap().get(index as usize).copied().unwrap_or(false)
+    }
+
+    // -- M5 (Fleet C2): per-vehicle mission bindings ----------------------
+
+    /// Bind mission `mission_id` to vehicle `index` (M5, GCS_SPEC.md §5.4).
+    /// Silently no-ops when the index is out of range (the REST handler
+    /// already returns 404 in that case; this is a defensive backstop).
+    pub fn set_mission_binding(&self, index: u8, mission_id: String) {
+        if let Some(slot) = self.mission_bindings.lock().unwrap().get_mut(index as usize) {
+            *slot = Some(mission_id);
+        }
+    }
+
+    /// Vehicle i's bound mission ULID, if any (None = unbound). The REST
+    /// `GET /api/fleet/mission-bindings` handler emits this array-shaped.
+    pub fn mission_binding(&self, index: u8) -> Option<String> {
+        self.mission_bindings
+            .lock()
+            .unwrap()
+            .get(index as usize)
+            .and_then(|s| s.clone())
+    }
+
+    /// Clear vehicle i's mission binding (DELETE endpoint).
+    /// Returns true if a binding was cleared, false if the vehicle was
+    /// already unbound (or out of range).
+    pub fn clear_mission_binding(&self, index: u8) -> bool {
+        if let Some(slot) = self.mission_bindings.lock().unwrap().get_mut(index as usize) {
+            let was = slot.is_some();
+            *slot = None;
+            was
+        } else {
+            false
+        }
+    }
+
+    /// Snapshot of all vehicle mission bindings (one Option per slot).
+    /// `POST /api/fleet/start` walks this list to decide which vehicles
+    /// to upload + arm.
+    pub fn mission_bindings_snapshot(&self) -> Vec<Option<String>> {
+        self.mission_bindings.lock().unwrap().clone()
+    }
+
+    /// The catalog server's base URL (default `http://127.0.0.1:8300`).
+    pub fn catalog_url(&self) -> &str {
+        &self.catalog_url
     }
 
     pub fn estop_requested(&self) -> bool {
@@ -423,4 +512,36 @@ pub fn vehicle_detail(s: &AppState, index: u8) -> Option<serde_json::Value> {
 /// Event-log tail as JSON values.
 pub fn events_tail(s: &AppState, n: usize) -> Vec<Event> {
     s.log.tail(n)
+}
+
+// ---------------------------------------------------------------------------
+// M5 helpers (Fleet C2, GCS_SPEC.md §5.4)
+// ---------------------------------------------------------------------------
+
+/// Default catalog server base URL (M5). The `RSIM_CATALOG_URL` env var
+/// overrides this; `mavfleet run` callers typically leave the default
+/// (the catalog server runs on the same host at :8300).
+pub fn default_catalog_url() -> String {
+    std::env::var("RSIM_CATALOG_URL").unwrap_or_else(|_| "http://127.0.0.1:8300".into())
+}
+
+/// Validate a ULID (26 chars, Crockford base32). Returns true iff the
+/// string looks like a ULID — `POST /api/fleet/mission-bindings` uses
+/// this to reject malformed mission ids before storing them.
+///
+/// Crockford base32 excludes I, L, O, U (to avoid confusion with 1, 1,
+/// 0, V) — so the alphabet is `0-9 ABCDEFGH JK MN PQRST VWXYZ`.
+pub fn looks_like_ulid(s: &str) -> bool {
+    s.len() == 26
+        && s.chars().all(|c| {
+            matches!(
+                c,
+                '0'..='9'
+                    | 'A'..='H'
+                    | 'J'..='K'
+                    | 'M'..='N'
+                    | 'P'..='T'
+                    | 'V'..='Z'
+            )
+        })
 }
