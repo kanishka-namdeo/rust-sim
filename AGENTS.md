@@ -117,6 +117,19 @@ Small edits that do not change behavior or contracts may leave docs unchanged, b
 
 When the user requests a durable behavior change, record it here or in the relevant child `AGENTS.md`.
 
+- **Proactive web search**: when a task introduces an unfamiliar project,
+  error, library, or protocol, run a web search for context *before* guessing
+  at fixes. Record the query and the most useful result URL in the worklog.
+- **Commit + push on every development milestone**: a milestone is any point
+  at which a build, test, lint, or run gate passes (or is intentionally
+  blocked and the blocker is recorded). Do not accumulate uncommitted
+  changes across milestones — push each one to `origin/<current-branch>` so
+  the remote reflects the verified state. Use a Conventional-Commits-style
+  subject (`chore:`, `docs:`, `feat:`, `fix:`, `test:`) and reference the
+  milestone name in the body. Never commit session PATs, `.env` files, build
+  artifacts, or anything under `target/`, `node_modules/`, `.next/`, or
+  `*_artifacts/`.
+
 ## Verification
 
 - `cargo test --workspace` green in `sim/` (99 tests) and `fleet/` (169

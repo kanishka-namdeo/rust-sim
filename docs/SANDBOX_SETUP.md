@@ -241,5 +241,25 @@ pattern, apply the f2-style gate, do not widen time budgets.
 | F-1 / F-2 / O-1 / O-2 regression re-run after the ADR-0018 supervisor changes (2026-09-08) | PASS |
 | Console `npm run lint` + `npm run build` | clean |
 
+### Revalidation 2026-09-08 (environment bring-up only, no PX4 build)
+
+Re-ran the env-bring-up half of this sequence on a fresh Z.AI sandbox to
+confirm the lower half of the ladder still passes without rebuilding PX4.
+The PX4-dependent harnesses (I-1/I-2, F-1/F-2, S/O/R) were not executed
+this run — they require a fresh PX4-Autopilot build per step 6.
+
+| Gate | Result |
+|---|---|
+| `rustup` install of Rust stable (1.98.1) | PASS |
+| `sim` `cargo build --workspace` (42 s) | PASS |
+| `fleet` `cargo build --workspace` (88 s, 2 documented warnings) | PASS |
+| `sim` `cargo test --workspace` (99 tests) | PASS |
+| `fleet` `cargo test --workspace` (169 tests) | PASS |
+| `console` `npm install` (416 packages) + `npm run lint` + `npm run build` | PASS |
+| `console` `npm run dev` boots in 324 ms, `GET /` returns HTTP 200 | PASS |
+| `sitsim-cli replay-info smoke.replay` returns deterministic hash | PASS |
+| `mavfleet check tests/demo_live.toml` returns exit 0 | PASS |
+| Python deps `pymavlink`, `pyulog` installed for `/usr/bin/python3.13` | PASS |
+
 Artifacts from this run live under each harness's `tests/*_artifacts/`;
 screenshots under `docs/images/`.
