@@ -1011,9 +1011,8 @@ async fn ws_entry(State(s): State<Arc<AppState>>, mut parts: Parts) -> Response 
 }
 
 /// 10 Hz fleet frames + events over one socket, until the client leaves.
-/// (Spec §3.4 says 5 Hz; the task order for this build pins 10 Hz — the
-/// frame schema is identical, only the cadence differs. Documented in the
-/// run report header.)
+/// (Cadence pinned at 10 Hz since the first live build; spec §3.4 records
+/// it. The run report header also carries the frame cadence.)
 async fn forward_ws(state: Arc<AppState>, mut socket: WebSocket) {
     let mut ticker = tokio::time::interval(Duration::from_millis(100));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);

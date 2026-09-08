@@ -63,7 +63,9 @@ sim/     rustsitsim workspace — 8 crates
          sitsim-cli       the binary (REST+WS control plane)
 
 fleet/   mavfleet workspace — 8 crates
-         fleet-core       FSM, registry, health, events
+         fleet-core       FSM, registry, health, events, WGS84 geodesy
+                          (GeoOrigin ECEF + Bowring, the lat/lon <-> NED
+                          contract of the operator plane, ADR-0017)
          fleet-mavlink    links, command/ack ladder, 20 Hz setpoint pump,
                           typed param protocol + per-vehicle ParamStore
                           (QGC-style cache, ADR-0016)
@@ -72,9 +74,12 @@ fleet/   mavfleet workspace — 8 crates
          fleet-safety     geofence + 8-policy ladder
          fleet-modes      PX4 custom-mode words, type masks
          fleet-simctl     per-vehicle process supervision, port probes,
-                          controlled pair restart (airframe apply)
+                          controlled pair restart (airframe apply),
+                          RSIM_ORIGIN_* geo-anchor export (ADR-0017)
          fleet-cli        the binary (manager, control plane,
-                          vehicle-setup REST plane + ROMFS airframe catalog)
+                          vehicle-setup REST plane + ROMFS airframe catalog,
+                          operator control plane — mission upload/start and
+                          guided arm/takeoff/land/rtl/hold/goto, ADR-0017)
 
 console/ Next.js 16 operator console (see console/README.md)
 ```

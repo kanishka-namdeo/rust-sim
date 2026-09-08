@@ -69,6 +69,24 @@ moving telemetry on both consoles, and saves screenshots to
   fault form in the browser.
 - **Fleet control plane**: `curl :8400/api/fleet`, `curl :8400/api/events`,
   `curl -X POST :8400/api/estop`.
+- **Operator map control (ADR-0017, from the fly/plan map or curl)**:
+  upload waypoints (fence-validated, `lat_deg`/`lon_deg`/`alt_m` AGL), start
+  the mission, fly it under guided commands, then land:
+
+  ```bash
+  curl -X POST :8400/api/mission \
+    -d '{"items":[{"lat_deg":47.397889,"lon_deg":8.545734,"alt_m":15,"hover_s":5}]}'
+  curl -X POST :8400/api/mission/start
+  curl -X POST :8400/api/vehicles/0/takeoff -d '{"alt_m":10}'
+  curl -X POST :8400/api/vehicles/0/goto \
+    -d '{"lat_deg":47.397889,"lon_deg":8.545734,"alt_m":15}'
+  curl -X POST :8400/api/vehicles/0/hold
+  curl -X POST :8400/api/vehicles/0/land
+  ```
+
+  In the browser this is the **Operator Map** tab (QGC Fly/Plan-style):
+  click the map to Go To, place waypoints in Plan mode, Upload + Start, and
+  drive the guided action bar (arm/takeoff/land/RTL/hold, e-stop).
 
 ## Environment knobs
 
@@ -77,6 +95,7 @@ moving telemetry on both consoles, and saves screenshots to
 | `PX4_ROOT` | `../PX4-Autopilot` | PX4 checkout used by fleet harnesses |
 | `FLEET_SITSIM_BIN` | `../../sim/target/debug/sitsim-cli` | rustsitsim binary for per-vehicle sims |
 | `FLEET_SIM_CFG_DIR` | `./scratch/vsims` | where per-vehicle scenario TOMLs + replays are written |
+| `RSIM_ORIGIN_LAT` / `_LON` / `_ALT` | 47.397770 / 8.545580 / 500.0 | geo anchor a per-vehicle sim's HIL_GPS reports from — exported by the manager from the scenario `[env] origin` (ADR-0017); override only for manual `run_sitsim_vehicle.sh` runs |
 | `NEXT_PUBLIC_RSIM_API_STYLE` | `gateway` | console routing: `gateway` or `direct` |
 
 ## Notes for constrained machines

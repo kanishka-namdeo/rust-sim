@@ -49,7 +49,7 @@ Highlights:
   success criteria (all_tasks_done, FSM trace arcs, no geofence breach) evaluated into
   a JSON run report
 - **Control plane**: REST + WS on 8400 (`/api/fleet`, `/api/vehicles/{i}`, `/api/tasks`,
-  `/api/events`, `/api/fleet/estop`, `/ws/fleet` at 5 Hz)
+  `/api/events`, `/api/fleet/estop`, `/ws/fleet` at 10 Hz)
 
 ## Quickstart
 
@@ -88,11 +88,14 @@ all keys: [docs/SCENARIOS.md](docs/SCENARIOS.md).
 curl http://127.0.0.1:8400/api/fleet
 curl http://127.0.0.1:8400/api/vehicles/1
 curl http://127.0.0.1:8400/api/events
-curl -X POST http://127.0.0.1:8400/api/tasks -d '{"id":"wp_x","pos_ned_m":[20,20,-12],"hover_s":5}'
+# operator mission upload + start (ADR-0017 — the runtime task-injection path):
+curl -X POST http://127.0.0.1:8400/api/mission \
+  -d '{"items":[{"lat_deg":47.397889,"lon_deg":8.545734,"alt_m":15,"hover_s":5}]}'
+curl -X POST http://127.0.0.1:8400/api/mission/start
 curl -X POST http://127.0.0.1:8400/api/fleet/estop
 ```
 
-`/ws/fleet` pushes 5 Hz fleet frames plus events — the dashboard drives every view
+`/ws/fleet` pushes 10 Hz fleet frames plus events — the dashboard drives every view
 from it.
 
 ## Repository layout

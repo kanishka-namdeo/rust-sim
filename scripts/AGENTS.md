@@ -3,35 +3,44 @@
 ## Purpose
 
 Scripts that operate across component boundaries (or on repo-level
-artifacts): the live browser test that drives fleet + console together, and
-the golden-vector generator for the sim's MAVLink codec.
+artifacts): the three browser live tests that drive fleet + console
+together, and the golden-vector generator for the sim's MAVLink codec.
 
 ## Ownership
 
-Owned here: `browser_live_test.sh`, `gen_golden93.py`. Component-owned
-harnesses stay in their components (`../sim/tests/`, `../fleet/tests/`).
+Owned here: `browser_live_test.sh` (browser-live), `browser_setup_test.sh`
+(S-2, vehicle setup), `browser_map_test.sh` (O-2, operator map),
+`gen_golden93.py`. Component-owned harnesses stay in their components
+(`../sim/tests/`, `../fleet/tests/`, `../fleet/scripts/`).
 
 ## Local Contracts
 
-- `browser_live_test.sh` is single-invocation (start fleet + console + a
-  headless browser, assert, teardown) and assumes: both Rust binaries built,
+- All three browser tests are single-invocation (start fleet + console + a
+  headless browser, assert, teardown) and assume: both Rust binaries built,
   the console built (`console/.next/standalone`), PX4 at `PX4_ROOT`, and the
-  Caddy gateway reachable on :81. Screenshots land in `docs/images/`.
+  Caddy gateway answering on :81 (a 502 means the gateway is up and the
+  backends are not — that is the expected precondition). Screenshots land
+  in `docs/images/`. The setup and map tests also kill leaked
+  px4/sim/next-server processes from earlier runs — they squat the
+  per-instance ports or serve a stale bundle and abort the fresh run.
 - `gen_golden93.py` regenerates the PX4-v1.16-layout golden vector consumed
   by `sim/crates/sitsim-mavlink/tests/golden_vectors.rs` — after running it,
   the affected Rust tests must be re-run.
 
 ## Work Guidance
 
-- Keep the console path and ports in `browser_live_test.sh` in sync with
+- Keep the console path and ports in the browser tests in sync with
   `../console/AGENTS.md` and the port map in `../docs/ARCHITECTURE.md`.
-- The script intentionally tests through the gateway origin (:81), not the
+- The scripts intentionally test through the gateway origin (:81), not the
   direct :3000 origin, because the gateway path is the production routing.
 
 ## Verification
 
 - `browser_live_test.sh` exits 0 only when both consoles report LIVE,
   telemetry is demonstrably moving, and screenshots were written.
+- `browser_setup_test.sh` exits 0 only when the Vehicle Setup tab passes its
+  13 end-to-end checks (S-2); `browser_map_test.sh` only when the Operator
+  Map passes its 16 (O-2). Both are recorded in `../docs/VERIFICATION.md`.
 
 ## Child DOX Index
 

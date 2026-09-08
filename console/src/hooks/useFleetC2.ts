@@ -4,7 +4,7 @@
  * mavfleet Fleet C2 data hook (:8400).
  *
  * Same dual-mode lifecycle as useSimConsole: probe REST /api/fleet through the
- * gateway → LIVE via /ws/fleet frames (5 Hz) + /api/events tail polling, or
+ * gateway → LIVE via /ws/fleet frames (10 Hz) + /api/events tail polling, or
  * SIMULATED via the FleetMockEngine with periodic live retries. The only fleet
  * command surface is E-STOP (POST /api/fleet/estop) per SPEC §13 — everything
  * else is read-only by design.

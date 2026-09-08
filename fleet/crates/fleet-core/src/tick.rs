@@ -13,9 +13,9 @@ use crate::fsm::FsmState;
 use crate::health::HealthFlag;
 use crate::state::VehicleState;
 
-/// The 5 Hz WS frame / GET /api/fleet payload core (spec §3.4). `tasks` is
+/// The 10 Hz WS frame / GET /api/fleet payload core (spec §3.4). `tasks` is
 /// filled by the mission engine (fleet-mission types stay out of
-/// fleet-core; the wire contract is the JSON schema in `schemas/`).
+/// fleet-core; the wire contract is spec §3.4, pinned by the router tests).
 ///
 /// ADR-0017 adds the geo block: `geo_origin` (the scenario `[env] origin`
 /// the sims' HIL_GPS anchors to) and the fence, so the console's geo map

@@ -212,7 +212,7 @@ export function FleetC2() {
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-sm">Fleet table</CardTitle>
-          <CardDescription>click a row to track a vehicle · heartbeat ages refresh at 5 Hz</CardDescription>
+          <CardDescription>click a row to track a vehicle · heartbeat ages refresh at 10 Hz</CardDescription>
         </CardHeader>
         <CardContent>
           {connecting ? (

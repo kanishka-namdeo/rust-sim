@@ -1,7 +1,9 @@
 /**
  * Client-side stand-in for the mavfleet fleet plane (SPEC §3.4, §4–§8).
  *
- * Used when the Rust backend on :8400 is unreachable. Produces the same 5 Hz
+ * Used when the Rust backend on :8400 is unreachable. Produces fleet frames
+ * in the live 10 Hz schema (the mock engine itself ticks at 5 Hz — cadence
+ * differs, shape does not).
  * /ws/fleet summary shape as GET /api/fleet: three vehicles with FSM churn,
  * contract-net task allocation, the §8.1 safety ladder, geofence, and a
  * streaming event log — so the Fleet C2 UI is fully exercisable offline.

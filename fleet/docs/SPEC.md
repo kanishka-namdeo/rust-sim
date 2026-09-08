@@ -259,11 +259,9 @@ One axum server on 127.0.0.1:8400 (configurable). Envelope identical to rustsits
 | Endpoint | Method | Purpose |
 |---|---|---|
 | /api/fleet | GET | Fleet summary: per-vehicle FSM state, health, battery, position, plus fleet phase |
-| /api/fleet | PUT | Load and start a fleet scenario (body: scenario TOML as JSON) |
 | /api/fleet/estop | POST | E-stop: every vehicle LAND immediately, scenario marked ABORTED |
 | /api/vehicles/{i} | GET | Full vehicle detail incl. telemetry snapshot age, link counters |
 | /api/vehicles/{i}/mode | POST | Request mode change (implemented by ADR-0016: DO_SET_MODE + ACK) |
-| /api/vehicles/{i}/faults | POST | Inject a rustsitsim fault on vehicle i (proxied to its 8200+i plane) |
 | /api/airframes | GET | ROMFS-derived airframe catalog, QGC-browser grouped (ADR-0016) |
 | /api/modes | GET | Switchable flight-mode set with mode words (ADR-0016) |
 | /api/vehicles/{i}/setup | GET | QGC setup Summary: airframe, calibration, power, safety, download state (ADR-0016) |
@@ -280,13 +278,20 @@ One axum server on 127.0.0.1:8400 (configurable). Envelope identical to rustsits
 | /api/vehicles/{i}/rtl | POST | AUTO.RTL + setpoint-stream stop (ADR-0017) |
 | /api/vehicles/{i}/hold | POST | AUTO.LOITER pause + setpoint-stream stop (ADR-0017) |
 | /api/vehicles/{i}/goto | POST | Go To Location: geo->NED, fence-clamped, engage sequence (ADR-0017) |
-| /api/tasks | GET / POST | Inspect task set; append tasks at runtime (triggers reallocation) |
+| /api/tasks | GET | Inspect task set (assignment, state, hover observation) |
 | /api/events | GET | Event log tail (supervisor decisions, fault injections, state changes) |
-| /ws/fleet | WS | 5 Hz fleet state frames + event push |
+| /ws/fleet | WS | 10 Hz fleet state frames + event push |
 
-The WS frame carries the same fleet summary as GET /api/fleet at 5 Hz plus incremental
+Not implemented in v0.1 (designed, deferred): `PUT /api/fleet` (hot scenario
+load), `POST /api/vehicles/{i}/faults` (proxy to the sim's fault plane), and
+`POST /api/tasks` (runtime task append). Runtime task injection exists today
+through the operator plane instead: `POST /api/mission` +
+`POST /api/mission/start` (ADR-0017).
+
+The WS frame carries the same fleet summary as GET /api/fleet at 10 Hz plus incremental
 events; the dashboard subscribes once and drives all views from it. Frame schema is
-versioned in a shared JSON schema like the rustsitsim frame. Since ADR-0017 the frame
+pinned by this section and the router unit tests (the console normalizes tolerantly).
+Since ADR-0017 the frame
 also carries the geo blocks: `geo_origin` (the scenario `[env] origin` every sim's
 HIL_GPS anchors to) and the `geofence` (points_ned_m + ceiling + floor), and every
 vehicle carries its `GLOBAL_POSITION_INT` fix (`lat_deg_e7` / `lon_deg_e7` / `alt_mm`
@@ -413,8 +418,9 @@ allocator, and it is the number CI enforces every run.
 ### 6.5 Runtime Reallocation
 
 Two triggers arm reallocation: a vehicle transitioning to FAULT or RTL with tasks still
-queued (its remaining tasks return to the pool), and an operator POST /api/tasks
-appending tasks. Reallocation is the same sequential auction over the pool, restricted to
+queued (its remaining tasks return to the pool), and operator task injection via
+POST /api/mission (ADR-0017 — the runtime append path; a direct POST /api/tasks
+append is designed but not implemented in v0.1). Reallocation is the same sequential auction over the pool, restricted to
 vehicles that can still accept work. Mid-task abort: a vehicle currently flying a task
 that loses the task (never happens - tasks are only pooled from queues, not from the
 active task) or completes with pool remaining picks up the next queued item
@@ -507,6 +513,7 @@ file never repeats 60 lines of sensor parameters per vehicle unless it wants to.
 | [fleet] tick_hz | u8 | 10 | Supervisor rate (fixed 10 in v0.1; key reserved) |
 | [env] geofence.points_ned_m | [[f32;2]] | 100 m square | Inclusion polygon vertices |
 | [env] geofence.ceiling_m, floor_m | f32 | 60, 0 | Altitude box |
+| [env] origin.lat_deg, lon_deg, alt_m | f64 | 47.397770, 8.545580, 500.0 | Geodetic anchor of the local NED frame (ADR-0017): exported to each sim via RSIM_ORIGIN_* and used for operator lat/lon <-> NED conversion; lat/lon range-checked at compile time |
 | [env] wind_steady_ms, turbulence | [f32;3], enum | 0, moderate | Passed to every vehicle's sim config |
 | [tasks] entries | array | - | Task list: id, pos_ned_m, hover_s, reward, deadline_s |
 | [[vehicle_override]] | table array | - | index + partial rustsitsim config patch |
@@ -716,16 +723,23 @@ mavfleet/
     fleet-mission/          # DSL, compiler, orchestrator (Section 9)
     fleet-simctl/           # process supervision (2.4, Section 12)
     fleet-cli/              # binary + REST/WS plane (3.4)
-  dashboard/                # Next.js fleet app (Section 13)
+  dashboard/                # Next.js fleet app (Section 13) — now ../console in the unified repo
   tests/                    # fleet integration cases F-1..F-7
   docs/
     SPEC.md                 # this document
     SCENARIOS.md            # DSL reference with examples
     adr/
-  schemas/                  # shared JSON schemas (fleet frame, run report)
-  .github/workflows/
+  schemas/                  # deferred: the wire contract lives in §3.4 + router tests
+  .github/workflows/        # now the repo-root workflow (ci.yml)
   px4-version               # identical content to rustsitsim's pin
 ```
+
+> **Unified-repo note (2026-09):** the layout above is the original standalone
+> mavfleet tree, kept for design history. In this repository mavfleet lives
+> under `fleet/` with rustsitsim as a sibling workspace (`../sim/`), the
+> dashboard is the repo-level `console/`, CI is `.github/workflows/ci.yml`
+> at the root, and the git dependency on rustsitsim became a repo-local
+> path relationship (the binary is located via FLEET_SITSIM_BIN or PATH).
 
 Dependency on rustsitsim: git dependency in Cargo.toml pinned to a tag (sitsim-sdk for
 scenario generation and process control, sitsim-mavlink for the codec), plus runtime

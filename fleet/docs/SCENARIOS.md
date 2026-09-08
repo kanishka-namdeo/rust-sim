@@ -19,6 +19,7 @@ key is a test hazard. `mavfleet check <file>` validates without running.
 | `[fleet] tick_hz` | u8 | 10 | Supervisor rate (fixed at 10 in v0.1; key reserved) |
 | `[env] geofence.points_ned_m` | [[f32;2]] | 100 m square | Inclusion polygon vertices |
 | `[env] geofence.ceiling_m`, `floor_m` | f32 | 60, 0 | Altitude box (NED z: -ceiling..-floor) |
+| `[env] origin.lat_deg`, `lon_deg`, `alt_m` | f64 | 47.397770, 8.545580, 500.0 | Geodetic anchor of the NED frame (ADR-0017): every sim's HIL_GPS reports from it, the manager converts operator lat/lon <-> NED against it; range-validated at compile time |
 | `[env] wind_steady_ms`, `turbulence` | [f32;3], enum | 0, "moderate" | Passed to every vehicle's simulator config |
 | `[[tasks]]` | array | - | Task list: `id`, `pos_ned_m`, `hover_s`, `reward`, `deadline_s` |
 | `[[vehicle_override]]` | array | - | `index` + partial rustsitsim config patch (e.g. battery) |

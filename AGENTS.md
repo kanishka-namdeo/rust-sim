@@ -1,8 +1,12 @@
-# DOX Framework
+# DOX Framework — RustSim repository rail
 
 ## Purpose
 
-This file is the repository-wide `AGENTS.md` contract. It provides portable guidance for agents and maintainers; it is not a security boundary or deterministic permission system.
+This file is the repository-wide `AGENTS.md` contract for **RustSim** — the
+unified testbed of PX4-native lockstep simulation (`sim/`), multi-vehicle
+fleet operations (`fleet/`), and the live operator console (`console/`).
+It provides portable guidance for agents and maintainers; it is not a
+security boundary or deterministic permission system.
 
 Core contract: work products, source materials, instructions, records, assets, and durable docs must stay understandable from the nearest applicable `AGENTS.md` plus every parent `AGENTS.md` above it.
 
@@ -11,6 +15,38 @@ Core contract: work products, source materials, instructions, records, assets, a
 - Apply this file to the repository root and all descendants.
 - Add a nested `AGENTS.md` only for a durable package, service, library, infrastructure domain, or generated-artifact boundary.
 - Do not create speculative child files merely to populate an index.
+- RustSim repo rules (below) bind every component; component `AGENTS.md`
+  files specialize them locally.
+
+## RustSim Repository Rules (Local Contracts)
+
+- No credentials in the tree: git auth tokens (session PATs) live only in
+  `.git/config`, never in committed files, docs, or harness scripts.
+- Wire truth is live-captured: new protocol facts discovered against real
+  PX4 go into the owning `PROTOCOL.md`/ADR with capture evidence, not into
+  code comments alone.
+- Integration work happens in single-invocation harnesses (start → assert →
+  teardown in one shell call; background processes do not survive between
+  shell calls on some platforms): `sim/tests/run_i1.sh`,
+  `sim/tests/run_i2_flight.sh`, `fleet/tests/run_f1.sh`, `fleet/tests/run_f2.sh`,
+  `fleet/scripts/live_test_setup.sh`, `fleet/tests/live_test_operator.sh`,
+  `scripts/browser_live_test.sh`, `scripts/browser_setup_test.sh`,
+  `scripts/browser_map_test.sh`.
+- Sandbox / lean-container bring-up follows `docs/SANDBOX_SETUP.md`
+  top-to-bottom; every deviation recorded there was hit live. Do not
+  improvise around it.
+- Claims discipline: docs record only what a harness proved (`docs/
+  VERIFICATION.md`); a spec table lists implemented routes and names
+  planned-but-unbuilt ones explicitly.
+
+## Work Guidance
+
+- Current test baselines: `sim/` 99 unit tests, `fleet/` 155 unit tests,
+  console `npm run lint` + `npm run build` clean.
+- Before changing FSM/policy/allocation/wire behavior, read the owning SPEC
+  section and ADRs; ADRs override older spec text where they conflict.
+- Time budgets in harnesses are measured against real dynamics — do not
+  shrink them without re-running the corresponding live case.
 
 ## Hierarchy and Precedence
 
@@ -81,6 +117,15 @@ Small edits that do not change behavior or contracts may leave docs unchanged, b
 
 When the user requests a durable behavior change, record it here or in the relevant child `AGENTS.md`.
 
+## Verification
+
+- `cargo test --workspace` green in `sim/` (99 tests) and `fleet/` (155
+  tests); `console`: `npm run lint` + `npm run build` clean.
+- Live harness ladder recorded with evidence in `docs/VERIFICATION.md`:
+  I-1/I-2 (single vehicle, real PX4), F-1/F-2 (fleet, real dynamics),
+  S-1/S-2 (vehicle-setup plane), O-1/O-2 (operator map control),
+  browser-live (console end-to-end through the gateway).
+
 ## Compatibility and Security Limits
 
 - Use ordinary Markdown and headings only; do not require frontmatter, custom parsers, or tool-specific commands.
@@ -90,4 +135,10 @@ When the user requests a durable behavior change, record it here or in the relev
 
 ## Child DOX Index
 
-- None. Scanned 2026-09-08: only the root `AGENTS.md` exists. `docs/` and `.superpowers/` are working notes, not durable package, service, library, infrastructure-domain, or generated-artifact boundaries, so no nested file is warranted.
+| Child | Scope |
+|-------|-------|
+| `sim/AGENTS.md` | RustSim Core workspace: physics, sensors, MAVLink HIL codec, replay, fault engine, control plane |
+| `fleet/AGENTS.md` | RustSim Fleet workspace: mission manager, links, allocator, safety policies, fleet control plane |
+| `console/AGENTS.md` | Operator console: pages, hooks, gateway/direct API routing, build & run |
+| `docs/AGENTS.md` | Cross-repo documentation: architecture, verification evidence, operations runbook, sandbox setup sequence |
+| `scripts/AGENTS.md` | Shared cross-repo scripts: the three browser live tests, golden-vector generator |

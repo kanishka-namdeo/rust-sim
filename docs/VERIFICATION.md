@@ -19,11 +19,11 @@ shell call, with CI-classifiable exit codes.
 
 ## Unit tests
 
-- `sim/`: 99+ tests — codec golden vectors (byte-exact vs PX4's generated
+- `sim/`: 99 tests — codec golden vectors (byte-exact vs PX4's generated
   headers), dynamics validation (hover equilibrium, contact stability
   sizing), sensor models (latency FIFO, denial ramp, glitch), engine mapping
   regressions incl. the PX4 v1.16.2 actuator wire layout + armed-frame
-  decode.
+  decode. (Re-run 2026-09-08: 99/99 PASS.)
 - `fleet/`: 155 tests — FSM transitions, policy ladder ordering property,
   allocator optimality, runner profile math, router integration tests
   (incl. WS upgrades on the gateway's `/?XTransformPort=` shape), wire-goal
@@ -33,7 +33,8 @@ shell call, with CI-classifiable exit codes.
   gates), the hold-for-setup scenario key, and the operator control plane
   (geodesy round-trips incl. the AGL waypoint convention, geo blocks on
   the fleet frame, mission upload queue/ack/validation gates, guided
-  command gates incl. the mission-active 409).
+  command gates incl. the mission-active 409). (Re-run 2026-09-08:
+  155/155 PASS.)
 
 ## Hard-won protocol facts (all live-captured, all ADR'd)
 
