@@ -1,6 +1,6 @@
 # RustSim GCS v1 — Engineering Specification (SITL-only)
 
-**Status:** Draft v0.2 — 2026-09-09 (grounded with market research + zero-assumption UX flows)
+**Status:** Draft v0.2.1 — 2026-09-09 (M1-blocking ADRs accepted; spec ready for M1 implementation)
 **Owners:** RustSim core team
 **Scope:** `console/` (primary), `fleet/` (extensions), `sim/` (read-only consumer)
 **Supersedes:** v0.1 (2026-09-09)
@@ -1535,17 +1535,19 @@ the existing ADR format used in `sim/docs/adr/` and `fleet/docs/adr/`.
 
 | ADR | Title | Owning milestone | Status |
 |---|---|---|---|
-| 0019 | Mission file format (TOML vs JSON vs .plan) | M1 | Proposed |
-| 0020 | Mission + preset persistence (filesystem vs SQLite vs sled) | M1 | Proposed |
+| 0019 | Mission file format (TOML on disk, JSON on the wire) | M1 | **Accepted** (2026-09-09) |
+| 0020 | Mission + preset persistence (filesystem with atomic writes) | M1, M4 | **Accepted** (2026-09-09) |
 | 0021 | ULog serving (server-side pyulog vs WASM vs Rust crate) | M6 | Proposed |
 | 0022 | Map tiling strategy (live OSM vs offline bundle vs vector) | M1 (decision), v1.1 (offline) | Proposed |
 | 0023 | Multi-vehicle UI pattern (active-vehicle vs split vs fleet-aware) | M3 | Proposed |
 | 0024 | Replay streaming protocol (WS chunks vs HTTP range vs SSE) | M6 | Proposed |
 | 0025 | Param preset format (TOML vs JSON vs PX4 params) | M4 | Proposed |
-| 0026 | Mission validation rules (altitude/fence/rally bounds) | M1 | Proposed |
-| 0027 | `:8300` server shape (new binary vs fleet-cli extension vs Next API) | M1 | Proposed |
+| 0026 | Mission validation rules (strict bounds, any polygon, rally ≤ 5) | M1 | **Accepted** (2026-09-09) |
+| 0027 | `:8300` server shape (new binary vs fleet-cli extension vs Next API) | M1 | Proposed (non-blocking) |
 | 0028 (NEW v0.2) | Survey pattern generator location (client vs server) | M7 | Proposed |
-| 0029 (NEW v0.2) | PX4 version policy enforcement (hard reject vs warn) | M1 | Proposed |
+| 0029 (NEW v0.2) | PX4 version policy enforcement (hard reject vs warn) | M1 | **Accepted** (2026-09-09) |
+
+**M1-blocking ADRs status:** 0019 ✅, 0020 ✅, 0026 ✅, 0029 ✅ — all four accepted. M1 implementation can begin. ADR-0027 (`:8300` server shape) is non-blocking because both candidates can host the same `MissionFile` struct + `store` module + validation rules; the choice affects packaging, not M1's user-facing behavior.
 
 ## 14. References
 
@@ -1632,7 +1634,4 @@ the existing ADR format used in `sim/docs/adr/` and `fleet/docs/adr/`.
 
 ---
 
-**End of spec v0.2.** Implementation begins after ADRs 0019, 0020, 0026,
-and 0029 are accepted (the M1-blocking decisions, plus the new
-version-policy ADR). All other ADRs can be resolved in parallel with
-their owning milestone.
+**End of spec v0.2.1.** All four M1-blocking ADRs (0019, 0020, 0026, 0029) are accepted and live under `console/docs/adr/`. M1 implementation can begin. ADR-0027 (`:8300` server shape) should be accepted before M1's first commit but does not block design work. All other ADRs (0021..0025, 0027, 0028) can be resolved in parallel with their owning milestone.

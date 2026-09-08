@@ -77,6 +77,10 @@ contracts that already exist for the four mounted views).
 
 ## Child DOX Index
 
+| Child | Scope |
+|---|---|
+| `docs/adr/` | GCS-specific ADRs numbered 0019+ to continue the cross-repo sequence (the latest existing ADR outside console/ is fleet's 0018). Each ADR follows the same format as `sim/docs/adr/` and `fleet/docs/adr/`. Currently accepted: 0019 (mission file format), 0020 (persistence), 0026 (validation rules), 0029 (PX4 version policy). Proposed: 0021 (ULog serving), 0022 (map tiling), 0023 (multi-vehicle UI), 0024 (replay streaming), 0025 (param preset format), 0027 (`:8300` server shape), 0028 (survey pattern generator). |
+
 No child AGENTS.md files yet. Candidates when they become durable
 boundaries: `src/components/dashboard/` (the console widgets),
 `src/lib/conn.ts` + `src/hooks/` (the telemetry engines).
