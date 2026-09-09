@@ -124,6 +124,12 @@ start_fleet() {
     [ -x "$FLEET/target/debug/mavfleet" ] || die "mavfleet binary missing (cargo build --workspace in fleet/)"
     [ -f "$SCENARIO" ] || die "scenario missing: $SCENARIO"
     [ -x "$FLEET_PX4_DIR/build/px4_sitl_default/bin/px4" ] || die "PX4 binary missing (PX4_ROOT=$PX4_ROOT)"
+    # ULog growth reality: PX4's SITL logger writes ~0.5-0.7 MB/s/vehicle in
+    # mode=all; a 2 h 2-vehicle session is ~4 GB. Prune old fleet-run dirs
+    # (keep the newest one) at every fleet (re)launch, and restart the fleet
+    # (`start-fleet`) when disk gets tight — a completed operator mission
+    # ends the manager anyway, so relaunching is the natural cycle.
+    ls -1dt "$STATE"/fleet-run-* 2>/dev/null | tail -n +2 | xargs -r rm -rf
     local rundir="$STATE/fleet-run-$(date +%s)"
     mkdir -p "$rundir"
     ( cd "$FLEET" && daemonize "$STATE/fleet.pid" "$LOGS/fleet.log" \
