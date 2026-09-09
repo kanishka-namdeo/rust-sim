@@ -18,6 +18,18 @@ Core contract: work products, source materials, instructions, records, assets, a
 - RustSim repo rules (below) bind every component; component `AGENTS.md`
   files specialize them locally.
 
+The repo is in **GCS v1** scope: turning `console/` into a QGC/MP-class
+ground control station for PX4 SITL only. The buildout is structured as
+7 milestones (M1..M7) backed by 14 verification gates (G-0..G-13, which
+extend the existing I/F/S/O/R ladder in `docs/VERIFICATION.md`). The
+buildout introduced a third Rust control plane — the `:8300` mission
+catalog + replay server (binary `fleet-catalog`, owned by
+`fleet/crates/fleet-mission/`, see ADR-0027) — and grew the console
+from 4 mounted views to 7 tabs (Plan, Fly, Sim Console, Fleet C2,
+Operator Map, Vehicle Setup, Analyze). The binding spec is
+`docs/GCS_SPEC.md`; GCS-specific ADRs live in `console/docs/adr/`
+(numbered 0019+ to continue the cross-repo sequence).
+
 ## RustSim Repository Rules (Local Contracts)
 
 - No credentials in the tree: git auth tokens (session PATs) live only in
@@ -41,8 +53,14 @@ Core contract: work products, source materials, instructions, records, assets, a
 
 ## Work Guidance
 
-- Current test baselines: `sim/` 99 unit tests, `fleet/` 169 unit tests,
-  console `npm run lint` + `npm run build` clean.
+- Current test baselines: `sim/` 99 unit tests (97 pass in a no-PX4
+  sandbox; the 2 in `tests/fake_px4_boot.rs` require a live PX4 SITL
+  process), `fleet/` 285 unit tests (was 169 before GCS v1 added the
+  `fleet-mission` GCS modules + tests), `console/` `npm run lint` +
+  `npm run build` clean.
+- GCS v1 verification ladder: 14 gates G-0..G-13 under
+  `console/tests/run_g*.sh` (single-invocation: start → assert →
+  teardown, see `docs/GCS_SPEC.md` §9). All 14 are green as of M7.
 - Before changing FSM/policy/allocation/wire behavior, read the owning SPEC
   section and ADRs; ADRs override older spec text where they conflict.
 - Time budgets in harnesses are measured against real dynamics — do not
@@ -132,13 +150,20 @@ When the user requests a durable behavior change, record it here or in the relev
 
 ## Verification
 
-- `cargo test --workspace` green in `sim/` (99 tests) and `fleet/` (169
-  tests); `console`: `npm run lint` + `npm run build` clean.
+- `cargo test --workspace` green in `sim/` (99 tests; 2 of them need a
+  live PX4 SITL process — see `sim/tests/fake_px4_boot.rs`) and `fleet/`
+  (285 tests); `console`: `npm run lint` + `npm run build` clean.
 - Live harness ladder recorded with evidence in `docs/VERIFICATION.md`:
   I-1/I-2 (single vehicle, real PX4), F-1/F-2 (fleet, real dynamics),
   S-1/S-2 (vehicle-setup plane), O-1/O-2 (operator map control),
-  R-1 (runtime control plane: fault proxy, task append, hot scenario
+  R-1 (runtime control plane: fault proxy, task append, hot scenarios
   load), browser-live (console end-to-end through the gateway).
+- GCS v1 ladder: G-0..G-13 under `console/tests/run_g*.sh` — 14 gates
+  spanning mission version-check, validation, persistence, MAVLink
+  upload + download, Fly View telemetry, multi-vehicle select, pre-arm
+  + arm, Vehicle Setup param extensions, fleet mission binding +
+  orchestration, ULog + replay analyze, and survey/corridor/perimeter
+  patterns (GCS_SPEC.md §9). All 14 are green as of M7.
 
 ## Compatibility and Security Limits
 
@@ -152,7 +177,8 @@ When the user requests a durable behavior change, record it here or in the relev
 | Child | Scope |
 |-------|-------|
 | `sim/AGENTS.md` | RustSim Core workspace: physics, sensors, MAVLink HIL codec, replay, fault engine, control plane |
-| `fleet/AGENTS.md` | RustSim Fleet workspace: mission manager, links, allocator, safety policies, fleet control plane |
-| `console/AGENTS.md` | Operator console: pages, hooks, gateway/direct API routing, build & run |
-| `docs/AGENTS.md` | Cross-repo documentation: architecture, verification evidence, operations runbook, sandbox setup sequence |
+| `fleet/AGENTS.md` | RustSim Fleet workspace: mission manager, links, allocator, safety policies, fleet control plane, `fleet-mission` GCS catalog (`:8300`) |
+| `console/AGENTS.md` | Operator console: 7 mounted tabs (Plan, Fly, Sim Console, Fleet C2, Operator Map, Vehicle Setup, Analyze), gateway/direct API routing incl. `:8300`, build & run |
+| `docs/AGENTS.md` | Cross-repo documentation: architecture, GCS_SPEC.md, verification evidence, operations runbook, sandbox setup sequence |
 | `scripts/AGENTS.md` | Shared cross-repo scripts: the three browser live tests, golden-vector generator |
+| `console/docs/adr/` | GCS-specific ADRs numbered 0019+ (child of `console/AGENTS.md` — listed there with the accepted/proposed split) |
