@@ -1,4 +1,4 @@
-# fleet/ — RustSim Fleet (mavfleet)
+# fleet/ — RustSim Fleet (mavfleet + fleet-catalog)
 
 ## Purpose
 
@@ -7,17 +7,49 @@ pairs (scenario `[sim]` command template -> `scripts/run_sitsim_vehicle.sh`),
 binds per-vehicle MAVLink telemetry/onboard links, allocates tasks with a
 sequential auction (Hungarian-optimal baseline), flies offboard missions via
 a 20 Hz setpoint pump, enforces the 8-policy safety ladder, serves the fleet
-REST+WS control plane, and writes run reports + event logs with
-CI-classifiable exit codes.
+REST+WS control plane on `:8400`, writes run reports + event logs with
+CI-classifiable exit codes, and (new in GCS v1) hosts the `:8300` mission
+catalog + replay server (`fleet-catalog` binary, ADR-0027) so the console's
+Plan and Analyze tabs can CRUD missions and stream `.replay` / `.ulg`
+artifacts.
 
 ## Ownership
 
 Owned here: FSM, health/policy engine, allocator, runner profile math,
-fleet-mavlink command/ack semantics, fleet control-plane schema (spec §3.4),
-run report format.
+fleet-mavlink command/ack semantics, fleet control-plane schema (spec
+§3.4), run report format, and the GCS v1 `:8300` catalog server
+(`fleet-catalog` binary). The catalog's library modules live in
+`crates/fleet-mission/src/gcs/`:
+
+- `gcs/mod.rs` — module root.
+- `gcs/mission_file.rs` — `MissionFile` serde struct (ADR-0019:
+  TOML on disk, JSON on wire; the single source of truth for both
+  serializations).
+- `gcs/store.rs` — filesystem persistence with atomic writes
+  (ADR-0020: temp-file + fsync + rename; version history as sibling files;
+  tombstone soft-deletes).
+- `gcs/validation.rs` — strict mission validation (ADR-0026: empty
+  mission rejected, waypoints must be inside the inclusion geofence, any
+  simple polygon permitted, rally ≤ 5 points).
+- `gcs/version_check.rs` — PX4 version policy enforcement (ADR-0029:
+  hard reject with HTTP 426 if the vehicle's reported PX4 version is not
+  exactly `v1.16.2`; `RSIM_ALLOW_UNPINNED_PX4=1` escape hatch for core-team
+capture sessions).
+- `gcs/server.rs` — the axum app for `:8300`; thin handlers delegating
+to `store` / `validation` / `version_check` / `replay` / `ulog`.
+- `gcs/replay.rs` — `.replay` file parser (64-byte header + 96-byte fixed
+tick records; vendored here so `fleet-mission` does not pull in the full
+sim workspace).
+- `gcs/ulog.rs` — `.ulg` filesystem listing + meta; ULog parsing is
+delegated to `pyulog` per ADR-0021 (graceful 503 when unavailable).
+- `gcs/preset.rs` — vehicle-param presets (ADR-0025 draft; per-vehicle
+  TOML files, in-place overwrite, no version history).
 
 Not owned here: vehicle dynamics and wire codec (`../sim/`), operator UI
-(`../console/`), repo-level contracts (`../AGENTS.md`).
+(`../console/`), repo-level contracts (`../AGENTS.md`). The GCS v1 spec
+(`../docs/GCS_SPEC.md`) owns the scope and feature areas; ADRs for the
+`:8300` catalog live in `../console/docs/adr/` (0019, 0020, 0026, 0027,
+0029 accepted; 0021, 0024, 0025 proposed).
 
 ## Local Contracts
 
@@ -47,8 +79,11 @@ Not owned here: vehicle dynamics and wire codec (`../sim/`), operator UI
 
 ## Verification
 
-- `cargo test --workspace` — FSM/policy/alloc/runner unit tests + router
-  tests incl. gateway-shaped WS upgrades.
+- `cargo test --workspace` — 285 tests (was 169 before GCS v1 added the
+  `fleet-mission` GCS modules + their unit tests). Covers FSM/policy/alloc/
+  runner unit tests, router tests incl. gateway-shaped WS upgrades, and the
+  `:8300` catalog's mission-file round-trip, store atomic-write,
+  validation, version-check, replay-parsing, and preset unit tests.
 - Live: `tests/run_f1.sh` (bring-up + estop), `tests/run_f2.sh` (2 vehicles
   with real rustsitsim dynamics, physical flight asserted from replay ground
   truth), `tests/demo_live.toml` + `../scripts/browser_live_test.sh` for the
@@ -61,6 +96,10 @@ Not owned here: vehicle dynamics and wire codec (`../sim/`), operator UI
   proxy to the sims' REST planes, runtime NED task append, and the hot
   scenario load (staged PUT, graceful abort, same-port rebind, isolated
   run dirs), all against real PX4.
+- GCS v1 G-ladder: the catalog-side endpoints on `:8300` are exercised by
+  the `console/tests/run_g*.sh` harnesses (G-0..G-13, see
+  `../console/AGENTS.md`); they spin up `fleet-catalog` directly or via
+  the Caddy gateway `?XTransformPort=8300`.
 - The scenario `fault` events inject for real through the sim fault plane
   (ADR-0018; the old "NOT injected" interim placeholder is gone). Keep
   fault windows clear of the arming phase — a live gps_denial blocks

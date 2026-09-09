@@ -53,6 +53,12 @@ here: component specs/ADRs (see `../sim/AGENTS.md`, `../fleet/AGENTS.md`,
 
 - Keep the port map in `ARCHITECTURE.md` in sync with `fleet-simctl`'s port
   constants and the console's `SIM_PORT` / `FLEET_PORT` hooks.
+- **Known debt (post-M7):** `ARCHITECTURE.md`'s ASCII topology + port map
+  still show only `:8200+i` and `:8400`. It must be extended to include the
+  GCS v1 `:8300` mission-catalog + replay server (binary `fleet-catalog`,
+  owned by `fleet/crates/fleet-mission/`, ADR-0027) and the 7 console tabs.
+  `GCS_SPEC.md` §4.2/§4.3 is the authoritative reference for the v1 topology
+  and port map until `ARCHITECTURE.md` catches up.
 
 ## Verification
 
