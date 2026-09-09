@@ -275,27 +275,64 @@ default→`:3000` + `?XTransformPort=<port>` routing as
 the harness precondition ":81 answers 502" is satisfied by the system
 gateway. Background processes still do not survive between agent tool
 invocations (verified again); a classic double-fork daemon does survive
-and is the pattern for a persistent operator stack.
+and is the pattern for a persistent operator stack
+(`scripts/stack_up.sh`).
 
-One harness fix landed this run: `scripts/browser_live_test.sh` still
-assumed the pre-GCS-v1 console default view (Sim Console) for its first
-LIVE-badge assertion, but GCS v1 defaults to the Plan tab and CSS-hides
-non-active tabpanels (a11y snapshots only carry the active panel). The
-harness now clicks the Sim Console tab before asserting (same pattern
-its Fleet C2 section already used).
+Two fixes landed this run, both found by driving the *persistent
+operator stack* (long-idle `hold_for_setup` fleets — a use case no
+harness had exercised before; every harness arms within ~8 s of READY
+and masked both bugs):
+
+1. **`scripts/browser_live_test.sh` GCS-v1 tab click** — the harness
+   asserted the LIVE badge on the initial snapshot, which pre-GCS-v1
+   consoles satisfied because Sim Console was the default view. GCS v1
+   defaults to Plan and CSS-hides non-active tabpanels, so the badge
+   never appears until the tab is clicked (the Fleet C2 section of the
+   same harness already did this).
+2. **Per-vehicle-pair CPU pinning in `fleet-simctl`** (the arming-window
+   fix). Symptom: a 2-vehicle `hold_for_setup` fleet left idle ≥ ~40 s
+   could never arm — PX4 logged "Preflight Fail: High Accelerometer
+   Bias" / "vertical velocity unstable" forever, and the EKF z estimate
+   wandered (est −3.5 m, truth 0.001 m). Root cause, measured from the
+   ULogs (`estimator_sensor_bias`, `ekf2_timestamps`): with 5
+   timing-sensitive processes (2 sims at 200 Hz + 2 PX4 lockstep loops +
+   the manager) on 2 vCPUs, ~6% of the EKF2 IMU intervals measured
+   10–20 ms instead of 5 ms — PX4's SITL sensor timestamps are
+   arrival-driven, so scheduler jitter corrupts the variable-dt
+   integration and rails the vertical accel-bias state into
+   `EKF2_ABL_LIM` (PX4 #10833/#11350 class). The manager now spawns each
+   sim+px4 pair under `taskset -c instance % ncpu` (EXEC-wrapped, 1:1
+   process tree, `RSIM_NO_CPU_AFFINITY` kill switch, graceful fallback):
+   gap rate 6.4% → 0.02%, bias railed → ~0, and a goto issued **80 s
+   into an idle hold** arms and flies to target exactly (truth
+   [22.23, 0, −10.02] for a [22.2, 0, −10] goal). Sensor noise stays at
+   the historical noiseless-GPS/baro profile — GPS pos noise ≥ ~0.5 m
+   trips PX4's `EKF2_REQ_HDRIFT` (0.3 m/s) stationary-drift check
+   instead. A third, related fix: the manager now propagates the
+   scenario `[env]` (wind/turbulence) to the sim wrapper
+   (`RSIM_WIND_MS`/`RSIM_TURBULENCE`) — previously the wrapper
+   hard-coded turbulence "off", so a scenario's declared env was
+   documentation-only for the physics.
+
+Full re-verification after the fixes (fresh binaries, real PX4):
 
 | Gate | Result |
 |---|---|
 | `rustup` install of Rust stable (1.98.1) | PASS |
 | `sim` `cargo build --workspace` (43 s) | PASS |
-| `fleet` `cargo build --workspace` (2m 48s, 1 documented warning) | PASS |
+| `fleet` `cargo build --workspace` (rebuilds incl. pinning) | PASS |
+| `fleet` `cargo test --workspace` (285 tests) | PASS |
 | `console` `npm install` + `npm run build` (standalone out) | PASS |
 | PX4-Autopilot v1.16.2 clone (1.6 GB, 25 submodules) + NuttX tag fetch + `make px4_sitl_default` (1068/1068) | PASS |
 | I-1 boot gate (rcS + EKF2 + loop closed + ULog) | PASS |
 | I-2 physical flight (arm → offboard → z −1.77 m → land → disarm) | PASS |
 | F-1 bring-up + estop → ABORTED(2) + clean teardown | PASS |
 | F-2 two-vehicle auctioned mission, real dynamics, from replay truth | PASS |
+| O-1 operator-map REST live test (goto arrival now exact: NED 18.02, −0.01, −9.98) | PASS |
+| R-1 runtime control plane live test (24 checks) | PASS |
 | Browser live test (gateway :81, Sim Console LIVE, Fleet C2 LIVE, telemetry moving, screenshots) | PASS |
+| G-ladder G-0…G-13 (all 14, incl. G-5/G-6/G-7/G-8/G-9/G-10 live-vehicle gates) | PASS |
+| **New: long-idle operator goto** — `hold_for_setup` fleet, goto at **+80 s**, arm + fly to target from replay truth | **PASS** |
 
 Artifacts from this run live under each harness's `tests/*_artifacts/`;
 screenshots under `docs/images/`.

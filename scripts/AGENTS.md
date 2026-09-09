@@ -4,14 +4,19 @@
 
 Scripts that operate across component boundaries (or on repo-level
 artifacts): the three browser live tests that drive fleet + console
-together, and the golden-vector generator for the sim's MAVLink codec.
+together, the golden-vector generator for the sim's MAVLink codec, and
+the persistent operator-stack launcher.
 
 ## Ownership
 
 Owned here: `browser_live_test.sh` (browser-live), `browser_setup_test.sh`
 (S-2, vehicle setup), `browser_map_test.sh` (O-2, operator map),
-`gen_golden93.py`. Component-owned harnesses stay in their components
-(`../sim/tests/`, `../fleet/tests/`, `../fleet/scripts/`).
+`gen_golden93.py`, `stack_up.sh` (start/stop/status for the daemonized
+operator stack: catalog :8300 + fleet :8400 + console :3000, fleet on
+`tests/operator_session.toml` — double-fork daemons survive agent-shell
+process reaping; see SANDBOX_SETUP.md reval 2026-09-09). Component-owned
+harnesses stay in their components (`../sim/tests/`, `../fleet/tests/`,
+`../fleet/scripts/`).
 
 ## Local Contracts
 

@@ -1,0 +1,34 @@
+# OPERATOR SESSION scenario (ADR-0017 bench semantics, long-lived).
+#
+# Identical control semantics to tests/operator_bench.toml — hold_for_setup
+# keeps the fleet at READY and disarmed until the operator acts, the
+# Operator Map drives go-to / takeoff / land / RTL / hold, waypoint missions
+# are uploaded + started on demand, zero scenario tasks — but the sim
+# duration and the run deadline are stretched to a 2 h operator session so
+# the persistent stack (scripts/stack_up.sh) does not age out mid-browse.
+# battery_sim off for the same reason operator_bench turns it off.
+#
+# This file exists for the *persistent operator stack* only; the O-1/R-1
+# harnesses keep using operator_bench.toml with its measured budgets.
+
+[fleet]
+count = 2
+battery_sim = false
+hold_for_setup = true
+
+[env]
+geofence = { points_ned_m = [[-60, -60], [60, -60], [60, 60], [-60, 60]], ceiling_m = 50, floor_m = 0 }
+# Calm air: the long-idle arming robustness comes from the wrapper's
+# realistic GPS/baro sensor noise (run_sitsim_vehicle.sh defaults, the
+# ADR-0012/0014 noiseless-sensor correctness class), not from wind
+# excitation — turbulence on a grounded vehicle pushes the EKF's
+# innovation gating around instead (observed live 2026-09-09).
+wind_steady_ms = [0.0, 0.0, 0.0]
+turbulence = "off"
+
+[sim]
+command = "scripts/run_sitsim_vehicle.sh {instance} {hil_port} {duration_s}"
+duration_s = 7200
+
+[success]
+max_time_s = 7100

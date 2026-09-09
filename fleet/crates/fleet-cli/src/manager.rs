@@ -506,6 +506,24 @@ async fn run_once(
     let mut sim_cfg = SimCtlConfig::from_env(sim_template, scenario.sim_duration_s());
     sim_cfg.process_logs = true;
     sim_cfg.geo_origin = geo_origin; // ADR-0017: RSIM_ORIGIN_* for the sim wrapper
+    // Scenario [env] -> sim physics (RSIM_WIND_MS / RSIM_TURBULENCE for the
+    // wrapper): the declared wind/turbulence now actually reaches the sims.
+    // Before 2026-09-09 the wrapper hard-coded turbulence "off" and no wind,
+    // so a scenario's [env] was documentation-only for the physics (found
+    // live while debugging the long-idle arming window — see
+    // SimCtlConfig::cpu_pinning for the actual arming fix).
+    sim_cfg.sim_env = vec![
+        (
+            "RSIM_WIND_MS".into(),
+            format!(
+                "{:.3},{:.3},{:.3}",
+                scenario.env.wind_steady_ms[0],
+                scenario.env.wind_steady_ms[1],
+                scenario.env.wind_steady_ms[2]
+            ),
+        ),
+        ("RSIM_TURBULENCE".into(), scenario.env.turbulence.clone()),
+    ];
     let mut simctl = SimCtl::new(sim_cfg);
 
     // Links (bind 14540+i BEFORE px4 boots, §3.1) + aggregators.

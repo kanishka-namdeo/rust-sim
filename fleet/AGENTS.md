@@ -3,8 +3,13 @@
 ## Purpose
 
 Multi-vehicle mission manager: spawns and supervises per-vehicle sim+PX4
-pairs (scenario `[sim]` command template -> `scripts/run_sitsim_vehicle.sh`),
-binds per-vehicle MAVLink telemetry/onboard links, allocates tasks with a
+pairs (scenario `[sim]` command template -> `scripts/run_sitsim_vehicle.sh`,
+each pair CPU-pinned to its own core via `taskset` since 2026-09-09 —
+PX4's arrival-driven SITL sensor timing rails the EKF2 accel bias under
+cross-pair scheduler jitter; kill switch `RSIM_NO_CPU_AFFINITY`), exports
+the scenario `[env]` wind/turbulence to the sim wrapper
+(`RSIM_WIND_MS`/`RSIM_TURBULENCE`), binds per-vehicle MAVLink
+telemetry/onboard links, allocates tasks with a
 sequential auction (Hungarian-optimal baseline), flies offboard missions via
 a 20 Hz setpoint pump, enforces the 8-policy safety ladder, serves the fleet
 REST+WS control plane on `:8400`, writes run reports + event logs with

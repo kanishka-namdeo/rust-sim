@@ -762,6 +762,15 @@ pub async fn run(
 
     let send_frame = |sock: &UdpSocket, frame: &Frame, seq: u8| -> std::io::Result<()> {
         let bytes = frame.encode_v2(seq, crc_extra(frame.msgid).unwrap_or(0));
+        if std::env::var("RSIM_DEBUG_WIRE").is_ok() {
+            eprintln!(
+                "[wire v{}] -> msgid {} seq {} ({}B)",
+                std::process::id(),
+                frame.msgid,
+                seq,
+                bytes.len()
+            );
+        }
         sock.try_send_to(&bytes, remote)?;
         Ok(())
     };

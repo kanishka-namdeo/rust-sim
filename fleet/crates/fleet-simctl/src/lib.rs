@@ -89,6 +89,28 @@ pub struct SimCtlConfig {
     /// fleet's lat/lon <-> NED conversion exactly (default: the PX4 test
     /// field — same constant rustsitsim pins).
     pub geo_origin: fleet_core::geo::GeoOrigin,
+    /// Extra env vars exported to the sim child (RSIM_*). The manager
+    /// fills this from the scenario `[env]` (wind/turbulence) so the
+    /// declared physics reaches the sim — previously the wrapper
+    /// hard-coded turbulence off and ignored the scenario's wind, i.e.
+    /// the scenario [env] was documentation-only for the sims (observed
+    /// live 2026-09-09 when testing a light-turbulence operator hold).
+    pub sim_env: Vec<(String, String)>,
+    /// Pin each vehicle pair (sim+px4) to its own core via `taskset -c
+    /// instance % ncpu` (2026-09-09). Rationale, measured live on a
+    /// 2-vCPU host with a 2-vehicle fleet: PX4's SITL sensor timestamps
+    /// are arrival-driven, and scheduler jitter across 5 timing-sensitive
+    /// processes leaves ~6% of EKF2 IMU intervals at 10-20 ms instead of
+    /// 5 ms; the variable-dt integration then rails the vertical
+    /// accel-bias state into EKF2_ABL_LIM and PX4 denies arming for the
+    /// rest of the run ("High Accelerometer Bias" / "vertical velocity
+    /// unstable" — the class behind the flaky long-idle operator holds).
+    /// With per-pair pinning the gap rate drops to ~0.02% and the bias
+    /// stays at ~0. `taskset` EXECs its target, so the process tree stays
+    /// 1:1 and teardown is unchanged. Probed once (taskset present,
+    /// multicore, RSIM_NO_CPU_AFFINITY unset); hosts that fail the probe
+    /// keep the previous behavior.
+    pub cpu_pinning: bool,
 }
 
 impl SimCtlConfig {
@@ -104,7 +126,47 @@ impl SimCtlConfig {
             sim_settle: Duration::from_millis(SIM_SETTLE_MS),
             process_logs: false,
             geo_origin: fleet_core::geo::GeoOrigin::DEFAULT,
+            sim_env: Vec::new(),
+            cpu_pinning: Self::probe_cpu_pinning(),
         }
+    }
+
+    /// taskset present, more than one core, and no RSIM_NO_CPU_AFFINITY
+    /// kill switch (see `cpu_pinning` docs).
+    fn probe_cpu_pinning() -> bool {
+        if std::env::var("RSIM_NO_CPU_AFFINITY").is_ok() {
+            return false;
+        }
+        let ncpu = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        if ncpu <= 1 {
+            return false;
+        }
+        std::process::Command::new("taskset")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    /// The `taskset -c <cpu>` argv prefix for one vehicle pair (empty when
+    /// pinning is off).
+    fn pin_prefix(&self, instance: u8) -> Vec<String> {
+        if !self.cpu_pinning {
+            return Vec::new();
+        }
+        let ncpu = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            .max(1);
+        vec![
+            "taskset".into(),
+            "-c".into(),
+            format!("{}", instance as usize % ncpu),
+        ]
     }
 
     /// Resolve the sim argv template for one vehicle.
@@ -292,16 +354,26 @@ impl SimCtl {
             .map_err(SpawnError::Io)?;
 
         // 1-2: simulator first (px4's rcS blocks on the HIL stream).
+        // CPU pinning: the sim runs under `taskset -c <pair cpu>` (see
+        // SimCtlConfig::cpu_pinning — arrival-driven PX4 sensor timing
+        // needs an unperturbed core pair per vehicle).
         let template = self.cfg.sim_template();
         let argv = render_template(&template, instance, self.cfg.sim_duration_s);
-        let program = argv.first().cloned().unwrap_or_else(|| "python3".into());
+        let mut sim_argv = self.cfg.pin_prefix(instance);
+        sim_argv.extend(argv);
+        let program = sim_argv.first().cloned().unwrap_or_else(|| "python3".into());
         let sim_out = self.cfg.process_stdio(&workdir, "sim.log")?;
         let sim_err = self.cfg.process_stdio(&workdir, "sim.log")?;
-        let sim = Command::new(program)
-            .args(&argv[1..])
+        let mut sim_cmd = Command::new(program);
+        sim_cmd
+            .args(&sim_argv[1..])
             .env("RSIM_ORIGIN_LAT", format!("{:.9}", self.cfg.geo_origin.lat_deg))
             .env("RSIM_ORIGIN_LON", format!("{:.9}", self.cfg.geo_origin.lon_deg))
-            .env("RSIM_ORIGIN_ALT", format!("{:.3}", self.cfg.geo_origin.alt_m))
+            .env("RSIM_ORIGIN_ALT", format!("{:.3}", self.cfg.geo_origin.alt_m));
+        for (k, v) in &self.cfg.sim_env {
+            sim_cmd.env(k, v);
+        }
+        let sim = sim_cmd
             .stdout(sim_out)
             .stderr(sim_err)
             .kill_on_drop(true)
@@ -313,15 +385,19 @@ impl SimCtl {
         // which would consume its single accept()).
         tokio::time::sleep(self.cfg.sim_settle).await;
 
-        // 4: px4 with the shared etc dir, cwd = per-run instance dir.
+        // 4: px4 with the shared etc dir, cwd = per-run instance dir —
+        // pinned to the same core as its sim (one lockstep pair per core).
         let px4_etc = self.cfg.px4_etc();
         let px4_out = self.cfg.process_stdio(&workdir, "px4.log")?;
         let px4_err = self.cfg.process_stdio(&workdir, "px4.log")?;
-        let px4 = Command::new(&px4_bin)
-            .arg("-i")
-            .arg(instance.to_string())
-            .arg("-d")
-            .arg(&px4_etc)
+        let mut px4_argv = self.cfg.pin_prefix(instance);
+        px4_argv.push(px4_bin.display().to_string());
+        px4_argv.push("-i".into());
+        px4_argv.push(instance.to_string());
+        px4_argv.push("-d".into());
+        px4_argv.push(px4_etc.display().to_string());
+        let px4 = Command::new(px4_argv.first().unwrap())
+            .args(&px4_argv[1..])
             .current_dir(&workdir)
             .env("PX4_SIM_MODEL", "gazebo-classic_iris")
             .stdout(px4_out)

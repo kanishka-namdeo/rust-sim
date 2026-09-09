@@ -28,6 +28,22 @@ SEED=$((100 + INSTANCE))
 ORIGIN_LAT="${RSIM_ORIGIN_LAT:-47.397770}"
 ORIGIN_LON="${RSIM_ORIGIN_LON:-8.545580}"
 ORIGIN_ALT="${RSIM_ORIGIN_ALT:-500.0}"
+# Wind + turbulence (the manager exports the scenario [env] values).
+# Defaults keep the pre-propagation behavior: wind 0, turbulence off.
+WIND_MS="${RSIM_WIND_MS:-0.0,0.0,0.0}"
+TURBULENCE="${RSIM_TURBULENCE:-off}"
+# GPS + baro noise (default 0 = the historical noiseless profile; override
+# via RSIM_GPS_POS_NOISE_M etc. for experiments). NOTE: the long-idle
+# arming fix is NOT sensor noise — it is the manager's per-pair CPU
+# pinning (fleet-simctl, 2026-09-09): PX4's SITL sensor timestamps are
+# arrival-driven, and lockstep HIL jitter under cross-process CPU
+# contention was what railed the EKF2 accel-bias state. Noiseless GPS
+# also keeps PX4's EKF2_REQ_HDRIFT (0.3 m/s) stationary-drift check
+# trivially green; GPS pos noise of ~0.5 m makes that check fail.
+GPS_POS_NOISE="${RSIM_GPS_POS_NOISE_M:-0.0}"
+GPS_VERT_NOISE="${RSIM_GPS_VERT_NOISE_M:-0.0}"
+GPS_VEL_NOISE="${RSIM_GPS_VEL_NOISE_MS:-0.0}"
+BARO_NOISE="${RSIM_BARO_NOISE_M:-0.0}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SITSIM="${FLEET_SITSIM_BIN:-$SCRIPT_DIR/../../sim/target/debug/sitsim-cli}"
 
@@ -76,19 +92,20 @@ noise_gauss = 0.005
 hard_iron_gauss = 0.0
 
 [sensors.baro]
-noise_m = 0.0
+noise_m = $BARO_NOISE
 walk_m_per_min = 0.0
 
 [sensors.gps]
 rate_hz = 5
 latency_ms = 0
-pos_noise_m = 0.0
-pos_noise_vert_m = 0.0
-vel_noise_ms = 0.0
+pos_noise_m = $GPS_POS_NOISE
+pos_noise_vert_m = $GPS_VERT_NOISE
+vel_noise_ms = $GPS_VEL_NOISE
 lock_s = 0.0
 
 [env]
-turbulence = "off"
+wind_steady_ms = [$WIND_MS]
+turbulence = "$TURBULENCE"
 EOF
 
 exec "$SITSIM" scenario-run "$CFG" --speed 1.0 \
