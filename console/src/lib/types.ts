@@ -120,6 +120,21 @@ export interface FleetVehicle {
   /** HEARTBEAT's MAV_MODE_FLAG_SAFETY_ARMED (the command bar's gate). */
   armed: boolean
   yaw_deg: number
+  /**
+   * Attitude quaternion in ZYX NED aerospace convention, `[w, x, y, z]`.
+   *
+   * P5 (GCS v2, GCS_V2_SPEC.md §8.3): the wire HAS this field (live wire:
+   * `vehicles[].attitude_q_wxyz`; v1's `conn.ts:301` probed
+   * `q_wxyz` / `attitude.q_wxyz` and missed it, so v1's FlyView HUD
+   * synthesized a fake quaternion from `yaw_deg` alone — roll/pitch = 0).
+   *
+   * Optional for v1 backward compatibility (mock engines and older
+   * backends omit it); the v2 `lib/normalize.ts` always populates it when
+   * present on the wire. The v2 FlyView / Attitude HUD reads it directly
+   * via `lib/format.ts:quatToEulerDeg`; `null` = not on the wire, fall back
+   * to the v1 yaw-only synthesis.
+   */
+  attitude_q_wxyz?: [number, number, number, number] | null
   heartbeat_age_s: number
   stale: boolean
   health: string[]
