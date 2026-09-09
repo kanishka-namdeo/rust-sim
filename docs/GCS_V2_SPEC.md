@@ -1,6 +1,6 @@
 # RustSim GCS v2 — Operations Canvas Engineering Specification
 
-**Status:** Draft v1.1 — 2026-09-09 (execution-ready; grounded in the shipped console, the 2026-09-09 UX/tech research, and the 2026-09-09 verification pass — source-level codebase cross-check, full spec audit, market re-validation)
+**Status:** Draft v1.2 — 2026-09-10 (execution-ready; v1.1 verification pass 2026-09-09 + implementation-readiness review 2026-09-10 — board verdict and amendment log in `docs/GCS_V2_READINESS_REVIEW.md`)
 **Owners:** RustSim core team
 **Scope:** `console/` (primary — full front-end re-architecture); `fleet/`, `sim/`, `fleet-catalog` (read-only consumers, **zero backend changes**, §10)
 **Supersedes:** the UX/presentation layer of `GCS_SPEC.md` v0.2.1 (§8 UX flows and §9 UI-facing gate assertions). All backend contracts of v1 (ADRs 0016–0029, mission persistence, validation V-1..V-13, the `:8300`/`:8400`/`:8200+i` planes, the G-0..G-13 backend-level gates) carry over unchanged.
@@ -32,6 +32,23 @@
   CARTO fallback annotated deprecated + Plan B; QGC 5.1 convergence patterns
   (unified plan tree, chart scrubbing); G-14/G-20/G-21 assertions corrected; route
   flip moved from M8 to M9.
+- v1.2 (2026-09-10): readiness-review amendment (Tasks 17/18/19 — pilot-engineer
+  simulation + QA gate audit). M8 route mechanism specified: `/canvas` dedicated
+  route (kills the `useSearchParams` static-prerender build hazard) and `/legacy`
+  (not query flags); M8 scope corrected to **streams A+B** (T-B1 zone furniture is
+  an M8 deliverable — G-14 always asserted zones); cross-stream skeleton contracts
+  written down (telemetry-store module API, HUD ref registry, real `app-store` at
+  M8, command-bus signature); gate instruments added: `window.__rsimMapDebug`
+  (loadedAtMs / layers / pitch / mode) + `window.__rsimTelemetry`
+  (framesIn/framesRendered/simSockets); G-14 assertion methods pinned
+  (bounding-box ≥ 60 %, screenshot+PIL pixel-sample — never canvas readback;
+  CDP-attach SwiftShader spike in T-D1); §12 per-gate SOURCE column (mock vs real
+  SITL); G-15 guard/P5 re-worded (goto alt chip; quaternion-delta + normalize
+  unit test — raw "roll/pitch non-zero" is flaky on a parked vehicle); G-16/G-18/
+  G-20/G-21 assertion completions; ~15 pilot questions resolved (globals.css
+  additive+scoped, L1/L2 in T-A2, mono stack without webfont, Radix pins,
+  gitignored `public/maplibre/`, license path, ConnBadge v2 home, normalize-P5
+  timing, R-7 decision rule, effort estimate A+B).
 
 ---
 
@@ -235,7 +252,7 @@ detail lives in the inventory worklog entry; this section is the binding summary
 |---|---|---|
 | Framework | Next.js `^16.1.1` (App Router, single page `/`, `output:"standalone"`) | unchanged; still one page |
 | React | 19.x | unchanged |
-| Styling | Tailwind CSS 4 + shadcn/ui (new-york) + CSS-var tokens in `globals.css` | tokens re-authored (§5), shadcn retained |
+| Styling | Tailwind CSS 4 + shadcn/ui (new-york) + CSS-var tokens in `globals.css` | `--rsim-*` tokens **added** alongside v1 vars, scoped under the `rsim-canvas` root (§5.1); shadcn retained |
 | Map | Leaflet 1.9.4 direct-import, 3 imperative map components (~1,100 lines) | replaced by MapLibre GL 6 (§6); Leaflet deleted at M14 |
 | State | pure React hooks + refs, hoisted engines in `page.tsx`; no store lib | module stores via `useSyncExternalStore` (§9), zero new deps |
 | Tests | 14 `console/tests/run_g*.sh` + 3 `scripts/browser_*.sh`, agent-browser CLI as driver | extended G-14..G-21 + browser gates (§12) |
@@ -306,7 +323,9 @@ vehicle count · P12 spec↔code drift (GCS_SPEC §8 prescribes 5 tabs, shipped 
 ### 4.1 Component tree (target)
 
 ```
-app/page.tsx                      — server shell, renders <CanvasLoader/>
+app/page.tsx                      — server shell, renders <CanvasLoader/> (from M9: the `/` route)
+app/canvas/page.tsx               — M8 shell route (server, ~10 lines; stream A owns)
+app/legacy/page.tsx               — M9: the v1 tab tree moves here until M14
 components/canvas/CanvasLoader.tsx      ('use client', dynamic import, ssr:false)
 components/canvas/OperationsCanvas.tsx  — zone grid only (stream B owns this file)
 components/canvas/FlushLoop.tsx         — 'use client', the single rAF flush loop (§9.2; stream A)
@@ -323,8 +342,9 @@ components/canvas/overlays/*            — MissionStrip, LibraryPanel, FleetC2P
                                           SetupDrawer, AnalyzeOverlay, SimControlPanel,
                                           PreFlightPanel, CheatSheetDialog
 components/canvas/notify/NotificationStack.tsx  — zone G
-state/app-store.ts        — selection, modes, overlay toggles (§9.3; stream C — B builds
-                          against state/app-store.mock.ts until C ships the real store)
+state/app-store.ts        — selection, modes, overlay toggles (§9.3; ships REAL at M8
+                          as a skeleton interface (§13.1) — C adds command dispatch
+                          at M9; app-store.mock.ts serves unit tests only)
 state/telemetry-store.ts  — WS ingest + rAF flush (§9.1/§9.2)
 state/command-bus.ts      — POST + busy + error envelope → notifications (§9.4)
 lib/conn.ts, lib/geo.ts, lib/plan-types.ts, lib/patterns.ts, lib/types.ts,
@@ -333,14 +353,22 @@ lib/format.ts (has `quatToEulerDeg` — P5), lib/fsm.ts, lib/utils.ts
 ```
 
 Old `tabs/` components are deleted in M14 only after their functions pass the
-parity gates (D5). During M8 the canvas mounts **opt-in at `/?canvas=1`** (the
-default route stays v1 — the M8 canvas ships read-only telemetry with no command
+parity gates (D5). During M8 the canvas mounts at a **dedicated route `/canvas`**
+(`app/canvas/page.tsx`, a ~10-line Server Component shell rendering
+`<CanvasLoader/>`; stream A owns both files). The default route `/` keeps serving
+the untouched v1 page — the M8 canvas ships read-only telemetry with no command
 verbs, so v1 remains the operable surface and "shippable at every gate" means
-*operable*, not just viewable). At M9 the default route flips to OperationsCanvas
-and the legacy tabs move to `/?legacy=1` (not a user surface, just a migration
-safety net) until M14. The three v1 browser scripts (`scripts/browser_*.sh`)
-re-point to `/?legacy=1` at the M9 flip (one-line URL change, stream D) and
-retire at M14.
+*operable*, not just viewable. A dedicated route rather than a `/?canvas=1` query
+flag is deliberate (v1.2): v1's `page.tsx` is a statically-prerendered
+`'use client'` page, and branching it on a query param forces either
+`useSearchParams()` at page top level (a known Next.js build failure without a
+Suspense boundary — the first code an agent would write) or a server-shell
+refactor of the 700-line v1 page at M8; a sibling route touches zero v1 code.
+At M9 the routes swap: the shell moves up to `/` (renders `<CanvasLoader/>`) and
+the v1 tree moves to `/legacy` (`app/legacy/page.tsx` — `'use client'` is legal
+on any route; not a user surface, just a migration safety net) until M14. The
+three v1 browser scripts (`scripts/browser_*.sh`) re-point from `/` to `/legacy`
+at the M9 flip (one-line URL change, stream D) and retire at M14.
 
 ### 4.2 Focus and z-order model
 
@@ -394,8 +422,11 @@ zone E never needs to know zone A/C/D exist.
 | `--rsim-v0` / `--rsim-v1` | `#22D3EE` / `#A78BFA` | per-vehicle identity colors (extends per fleet size, HSL-spaced) |
 | `--rsim-grid` | `#151C26` | map graticule, chart grids |
 
-Light mode is **out of scope for v2** (D7: dark tactical); the v1
-`ThemeToggle` is retired with the tabs. The token layer keeps names
+Tokens land **additively in M8** (v1.2): v1's `globals.css` variables stay
+untouched for the v1 routes; the canvas tree carries the `rsim-canvas` class and
+the `--rsim-*` set applies under it. Wholesale re-authoring waits for M14 when
+the v1 tree dies. Light mode is **out of scope for v2** (D7: dark tactical); the
+v1 `ThemeToggle` is retired with the tabs. The token layer keeps names
 engine-neutral so a light set can be added later without re-speccing.
 
 ### 5.2 Typography
@@ -408,6 +439,10 @@ engine-neutral so a light set can be added later without re-speccing.
 
 Numerals are always monospace/tabular — telemetry that reflows is telemetry you
 stop reading (operator-HUD convention).
+
+The mono family is a **CSS stack only** — no webfont download, no font package
+(dep budget, §9.3): JetBrains Mono renders when locally installed, otherwise
+Sarasa Mono SC or the system mono carry the tabular figures.
 
 ### 5.3 Spacing, radius, elevation
 
@@ -784,7 +819,7 @@ loop (§9.2), "state" = React state committed ≤ 5 Hz.
 |---|---|---|---|
 | brand chip | `RSIM` + fleet phase badge | fleet frame (state) | phase colors §5.4 |
 | vehicle chips | `v0 READY · 87 %` per vehicle, active outlined | fleet frame | click = select |
-| link chips | per-plane ConnBadge (fleet/sim/catalog) + OFFLINE chip | probe engines | v1 ConnBadge contract |
+| link chips | per-plane ConnBadge (fleet/sim/catalog) + OFFLINE chip | probe engines | v1 ConnBadge contract; v2-native port at `strip/PlaneBadges.tsx` (the v1 file retires at M14) |
 | clock | sim time + wall clock (mono) | fleet frame | UTC default; local opt-in via Settings (§8.5) |
 | debug overlay | WS frame inspector + commit counter (`?debug=ws` query flag) | telemetry store (§9.2) | dev surface, §13.3 |
 | **E-STOP** | amber button, rightmost, 48 px | — | `E` key equivalent; flash 2 s on fire |
@@ -903,6 +938,25 @@ React churn is measurable without DevTools: a dev-only counter
 `Runtime.evaluate` (agent-browser can't drive the React profiler — this replaces
 it, Task 15).
 
+**Gate instruments (v1.2 — binding, always-on, negligible cost):** MapLibre
+renders L1–L13 into ONE WebGL canvas with zero per-layer DOM, so the v1 assert
+idiom (`.rsim-vmarker` DOM nodes, overlay-pane paths) is dead in v2. Its
+successors, defined here so no gate discovers its own instrumentation:
+
+- `window.__rsimMapDebug = { loadedAtMs, styleName, pitch, bearing,
+  mode: 'geo'|'ned', layers: {<id> → featureCount} }` — updated on
+  `load`/`moveend`/`sourcedata`; feature counts are plain counters kept by
+  `layers.ts` on each `setData` (never `queryRenderedFeatures` in the hook
+  path). Read by G-14 (load, layers), G-20 (load timing), G-21 (pitch / NED /
+  measure observables).
+- `window.__rsimTelemetry = { framesIn, framesRendered, lastFrameAt,
+  simSockets, commits }` — framesIn = WS frames normalized into the store;
+  framesRendered = rAF passes that flushed work. Read by G-14 (P11 socket
+count), G-20 (dropped-frame budget), the `?debug=ws` human inspector.
+- The `?debug=ws` inspector renders per-plane: state (LIVE / SIMULATED /
+  CONNECTING), framesIn, lastFrameAt, simSockets, commits — the P11 assertion
+  reads `__rsimTelemetry.simSockets`, not pixels.
+
 Telemetry numbers never touch React state (the 60 fps rule from the MapLibre
 realtime pattern + HUD convention). Plots (canvas 2D) draw in the same rAF pass.
 
@@ -918,7 +972,11 @@ stands; total new runtime deps: `maplibre-gl`, `react-map-gl`,
 `@radix-ui/react-dropdown-menu` (the §7.2 context menus are controlled
 DropdownMenus at a virtual anchor — Radix `ContextMenu` is deliberately NOT used,
 and this keeps the count at four), `@radix-ui/react-dialog` (cheat sheet;
-alert-dialog's dialog dep is only transitive in v1). Pin `lucide-react` at 0.525 —
+alert-dialog's dialog dep is only transitive in v1). Pin the two Radix adds
+**exactly** — `@radix-ui/react-dropdown-menu@2.1.24`,
+`@radix-ui/react-dialog@1.1.23` (2026-07 releases; caret convention elsewhere).
+`public/maplibre/` is build output: **gitignored, regenerated by the prebuild
+copy script — never committed**. Pin `lucide-react` at 0.525 —
 a 1.x major exists (2026-09); no incidental upgrades during v2 (diff hygiene,
 Task 14).
 
@@ -966,7 +1024,7 @@ v2 is a console-only re-architecture. Concretely and binding:
 | P2 | 1,100 lines imperative Leaflet × 3 | one MapCanvas + layers.ts catalog (§6.4) | G-14 |
 | P3 | toast ceiling (1 sticky, drops rest) | notification queue (§8.6) | G-17 |
 | P4 | zero keyboard handling | full keymap + guards + cheat sheet (§7.3) | G-15 |
-| P5 | attitude from yaw only (roll/pitch = 0) — field-name miss; the wire HAS the quaternion | read fleet-frame `attitude_q_wxyz` in the normalizer (§8.3) | G-15 |
+| P5 | attitude from yaw only (roll/pitch = 0) — field-name miss; the wire HAS the quaternion | read fleet-frame `attitude_q_wxyz` in the normalizer (§8.3) | G-14 (`normalize.test.ts` field-name regression) + G-15 (HUD quaternion, REAL-SITL leg) |
 | P6 | no mission polyline on Fly map | L5 mission-active layer (§6.4) | G-16 |
 | P7 | cannot delete single fence vertex | M4 context menu + shared editor (§7.2) | G-16 |
 | P8 | normalizers re-implemented 3× | `lib/normalize.ts` consolidation (§9.1) | G-14 |
@@ -983,28 +1041,49 @@ Ladder rules (inherited): every milestone ships on `main` with the console
 shippable (all previous gates + the v1 backend gates green); every new gate is a
 **single-invocation harness** (`console/tests/run_g*.sh` pattern: start → assert →
 teardown, one shell call, PID-trap cleanup, work dir preserved on failure);
-FSM-dependent assertions use the f2-style "READY or any post-READY state" predicate;
-browser gates drive agent-browser with `--enable-unsafe-swiftshader` (headless
-WebGL2, §14 R-2) and follow the v1 selector conventions (a11y snapshot → `@eN`).
+FSM-dependent assertions use the f2-style "READY or any post-READY state" predicate.
+Browser-gate measurement conventions (v1.2, binding): map truth is observed
+through the `__rsimMapDebug` / `__rsimTelemetry` hooks (§9.2), zone presence
+through the `data-rsim-zone="A…H"` + `data-rsim-*` test-id convention; the
+≥ 60 % map law is asserted by bounding-box arithmetic (`eval`
+`getBoundingClientRect`, canvas vs opaque-chrome union) plus screenshot+PIL
+pixel-sampling for render presence — never canvas readback
+(`preserveDrawingBuffer` stays false). Headless WebGL2 launches via the
+T-D1-proven path: agent-browser `--cdp <port>` attach to a self-launched chromium
+with `--enable-unsafe-swiftshader` (agent-browser 0.35.0 exposes no launch-args
+flag on `open` — CDP attach is the mechanism of record); assertions are
+pixel-presence, never fps (§14 R-2).
 
 | Milestone | Scope (shippable state) | New gate | Asserts |
 |---|---|---|---|
-| **M8 — Canvas shell** | MapLibre canvas + zones A–G + tokens + basemap ladder + offline + NO-GL fallback; telemetry store + rAF pipeline; fleet WS LIVE badge; canvas **opt-in at `/?canvas=1`** (default route stays v1 — M9 flips it); sim/catalog probes | **G-14** `run_g14_canvas.sh` | map `load` fires + canvas exists + attribution visible; zones A–G present and map visible area ≥ 60 % at 1440×900; vehicles + tracks render from real fleet WS (pixel-sample non-background); telemetry numerics change across 12 s (snapshot-diff); sim socket count == fleet-frame vehicle count (P11); `window.__rsimCommits` ≤ 5 Hz over 60 s; all three planes' ConnBadges correct incl. forced-offline → SIMULATED; maplibre license file check (BSD-3); `npm run build` + worker files present in standalone |
-| **M9 — Command & keys** | command bus + state gating + hold-to-confirm; command bar verbs; full keymap + guards + cheat sheet + shortcuts-disable toggle (§7.3.4); goto flow (G key + right-click); estop (E + strip button); P5 quaternion HUD; **default route flips to OperationsCanvas, legacy → `/?legacy=1`, `scripts/browser_*.sh` re-pointed (stream D)** | **G-15** `run_g15_keys.sh` | keymap fires verbs via REST spies (assert `POST /arm` etc.); guards: typing in param search does not trigger verbs; hold-to-confirm requires 400 ms (agent-browser press timing); `E` → fleet estop REST observed + strip flash; shortcuts-disable toggle kills verbs and re-enables them; attitude roll/pitch non-zero **from live fleet WS** (P5 — wire-verified, not mock) |
-| **M10 — Plan-on-map** | map modes (Waypoint/Fence/Corridor) + drag/insert/delete via context menus M3/M4/M5; mission strip + library overlays; validation markers (L4 `wp-err`); save/upload/download parity flows | **G-16** `run_g16_plan.sh` | click-to-add → validate (V-rules round-trip via catalog) → save → upload 3-type progress via `:8400` with real ack counts → G-3/G-4 still green; exclusion-polygon round-trip (draw → save → re-load); upload-failure rollback + 426 paths (§8.7); fence vertex delete + insert (P7); mission polyline L5 visible during flight (P6) |
+| **M8 — Canvas shell** | MapLibre canvas + zones A–G (zone H event rail is M11) + tokens (additive, scoped) + basemap ladder + offline + NO-GL fallback + L1/L2 vehicle & track layers; telemetry store + rAF pipeline + HUD ref registry + gate instruments; fleet WS LIVE badge; canvas at **`/canvas`** (dedicated route — default route stays v1 until M9; E-STOP and verb controls render disabled, the command bus lands M9); sim/catalog probes | **G-14** `run_g14_canvas.sh` | map `load` fires + `__rsimMapDebug.loadedAtMs` finite + attribution visible; zones A–G via `[data-rsim-zone]` (E-STOP present-disabled) + map ≥ 60 % at 1440×900 (bounding-box + pixel-sample); vehicles + tracks from a REAL 2-vehicle SITL fleet (`__rsimMapDebug.layers["vehicles-body"] ≥ 2`, pixel-sample non-background); telemetry numerics change across 12 s (snapshot-diff); `__rsimTelemetry.simSockets` == fleet-frame vehicle count (P11); `window.__rsimCommits` ≤ 5 Hz over 60 s (mock-engine soak leg, SIMULATED badge asserted — covers R-11); forced-offline (kill fleet WS) → CONNECTING → SIMULATED badge path; `node_modules/maplibre-gl/LICENSE.txt` contains BSD-3; standalone artifacts exist (`.next/standalone/public/maplibre/*` — build is a preflight outside the harness) |
+| **M9 — Command & keys** | command bus + state gating + hold-to-confirm; command bar verbs; full keymap + guards + cheat sheet + shortcuts-disable toggle (§7.3.4); goto flow (G key + right-click); estop (E + strip button); P5 quaternion HUD; **route swap: `/` renders the canvas shell, v1 tree → `/legacy`, `scripts/browser_*.sh` re-pointed (stream D; shell move = stream A)** | **G-15** `run_g15_keys.sh` | keymap fires verbs via REST spies (assert `POST /arm` etc.); guards: typing in any live text input (the goto alt chip) does not trigger verbs — the param-search guard re-asserts at G-18 when the Setup drawer ships; hold-to-confirm requires 400 ms (agent-browser press timing); `E` → fleet estop REST observed + strip flash; shortcuts-disable toggle kills verbs and re-enables them; vehicle select (click / `1`–`9`) updates the active chip ≤ 100 ms (re-homes v1 G-6's budget); P5 REAL-SITL leg: `attitude_q_wxyz` quaternion delta ≠ 0 across 12 s + HUD roll/pitch derived from the quaternion + `lib/normalize.test.ts` regression green (a parked vehicle sits near level — assert the field and the derivation, not the physics) |
+| **M10 — Plan-on-map** | map modes (Waypoint/Fence/Corridor) + drag/insert/delete via context menus M3/M4/M5; mission strip + library overlays; validation markers (L4 `wp-err`); save/upload/download parity flows | **G-16** `run_g16_plan.sh` | click-to-add → validate (V-rules round-trip via catalog) → save → upload 3-type progress via `:8400` with real ack counts → G-3/G-4 still green; exclusion-polygon round-trip (draw → save → re-load); upload-failure rollback + 426 paths (§8.7); fence vertex delete + insert (P7); mission polyline L5 visible during flight (P6); 50+ waypoint drag sequence with rAF commits continuing (re-homes v1 G-1's stress budget) |
 | **M11 — Fleet C2 on canvas** | vehicle cards + bindings + patterns + start dialog + task markers (L6) + event rail + notification queue (P3) | **G-17** `run_g17_fleet.sh` | 2-vehicle fleet: cards show live state; bind v0/v1 missions → start (parallel + sequential) → flights observed on canvas; estop teardown; events rail + queue behaviors (max 5, sticky errors) |
 | **M12 — Setup drawer** | full setup surface as drawer, per-vehicle (P11 dynamic count) | **G-18** `run_g18_setup.sh` | v1 S-1/S-2 flows through the drawer (param download/search/write, calibrate, mode, airframe apply + restart, presets) |
 | **M13 — Analyze + SITL** | analyze overlay (scrub, plots, overlay-live, replay trail layers L11/L12); SimControl overlay with per-vehicle plane selector (P9), fault inject via context menu + panel, per-vehicle SIM E-STOP, scenario hot-swap (file-open → `PUT /api/fleet`) | **G-19** `run_g19_analyze_sim.sh` | replay scrub ranges + monotonicity (G-12 parity), ULog plots, overlay-live; fault inject/clear on any vehicle's sim plane; per-vehicle SIM E-STOP observed (REST); scenario swap asserted via `GET /api/fleet` (staged + graceful restart) |
-| **M14 — Legacy removal + parity audit** | delete `tabs/` + Leaflet + `ThemeToggle`; retire `/?legacy=1` and the re-pointed v1 browser scripts; `ignoreBuildErrors:false` (P10); full parity checklist §3.2; perf pass (§14 R-3) | **G-20** `run_g20_parity.sh` | every §3.2 row exercised end-to-end on real SITL; budgets: cold route → map `load` ≤ 3 s; route-chunk JS ≤ 400 KB gz (maplibre core+CSS ≈ 159 KB gz of it — worker/shared are `public/` sidecars, §6.1); steady-state heap ≤ 350 MB; 60 s soak with a 4-vehicle fleet (N=4 supported, keymap 1–9, HSL-spaced colors): 0 dropped WS frames rendered, `window.__rsimCommits` ≤ 5 Hz; O-2 fence-size guard re-implemented as a canvas-era assertion (the Leaflet-era script retires with the tabs) |
-| **M15 — Polish** | pitch glance, NED inset `V`, measure tool, undo stack everywhere, first-run hints, Settings panel (units/coords/clock/shortcuts toggle/Reset layout, §8.5) | **G-21** `run_g21_polish.sh` | feature-level assertions for each polish item incl. Settings persistence + shortcuts toggle; spec dead-ref lint (every §x.y/L#/M#/P#/G-# cited in this spec resolves); full ladder re-run (all 22 gates, G-0..G-21) |
+| **M14 — Legacy removal + parity audit** | delete `tabs/` + Leaflet + `ThemeToggle`; retire `/legacy` and the re-pointed v1 browser scripts; `ignoreBuildErrors:false` (P10); full parity checklist §3.2; perf pass (§14 R-3) | **G-20** `run_g20_parity.sh` | every §3.2 row exercised end-to-end on real SITL; budgets: cold route → map `load` ≤ 3 s; route-chunk JS ≤ 400 KB gz (maplibre core+CSS ≈ 159 KB gz of it — worker/shared are `public/` sidecars, §6.1); steady-state heap ≤ 350 MB; 60 s soak with a 4-vehicle fleet (N=4 supported, keymap 1–9, HSL-spaced colors): 0 dropped WS frames rendered, `window.__rsimCommits` ≤ 5 Hz; O-2 fence-size guard re-implemented as a canvas-era assertion (the Leaflet-era script retires with the tabs); `ignoreBuildErrors:false` typecheck + build green (P10); harness decomposed — re-runs G-16..G-19 as sub-runs under a §3.2 checklist runner, not a monolith |
+| **M15 — Polish** | pitch glance, NED inset `V`, measure tool, undo stack everywhere, first-run hints, Settings panel (units/coords/clock/shortcuts toggle/Reset layout, §8.5) | **G-21** `run_g21_polish.sh` | feature-level assertions for each polish item incl. Settings persistence + shortcuts toggle; pitch glance / NED / measure asserted through `__rsimMapDebug` (`pitch` numeric, `mode === "ned"`, measure-layer presence); spec dead-ref lint (every §x.y/L#/M#/P#/G-# cited in this spec resolves); full ladder re-run (all 22 gates, G-0..G-21) |
+
+**Per-gate SOURCE (v1.2, binding — REAL = live PX4 SITL via `stack_up.sh
+start-fleet`, stop-fleet teardown per §13.3; MOCK legs never substitute for a
+live-behavior assertion, the project's real-SITL validation rule):** G-14 REAL
+(2-vehicle fleet for live render + telemetry-diff; forced-offline leg kills the
+fleet WS; the commits-soak leg runs on the mock engine with the SIMULATED badge
+asserted) · G-15 MOCK (verb REST spies) + REAL leg (P5 quaternion) · G-16 REAL
+(L5-during-flight needs flying vehicles) · G-17 REAL (flights observed) · G-18
+REAL (S-1/S-2 inheritance) · G-19 REAL (sim planes + fleet for scenario swap) ·
+G-20 REAL (4-vehicle soak) · G-21 mixed (Settings is local; the full-ladder
+re-run implies each gate's own source).
 
 Rollback strategy: every milestone is one revert away from green (no long-lived
-branches); the `/?legacy=1` escape hatch (from the M9 route flip) remains until
+branches); the `/legacy` escape hatch (from the M9 route swap) remains until
 M14 removes it.
 
-Serial effort estimate (planning aid, not a gate criterion): ≈ 13.5 engineer-weeks
-(M8 2 · M9 1.5 · M10 2 · M11 2 · M12 1.5 · M13 2.5 · M14 1 · M15 1); ~6–7 weeks
-with three streams running in parallel after M8.
+Serial effort estimate (planning aid, not a gate criterion): ≈ 14.5 engineer-weeks
+(M8 2.5 — streams A+B run in parallel · M9 1.5 · M10 2 · M11 2 · M12 1.5 ·
+M13 2.5 · M14 1 · M15 1); ≈ 7 weeks wall-clock with A+B through M8 and all four
+streams from M9.
 
 ## 13. Agent Execution Plan (for the executing agent teams)
 
@@ -1013,13 +1092,43 @@ with three streams running in parallel after M8.
 | Stream | Owns | Key files (create/modify) |
 |---|---|---|
 | A — Canvas & data | MapCanvas, layers, camera, FlushLoop, telemetry store, normalizers, worker script | `components/canvas/MapCanvas.tsx`, `map/{layers,camera}.ts`, `components/canvas/FlushLoop.tsx`, `scripts/copy-maplibre-worker.mjs`, `state/telemetry-store.ts`, `lib/normalize.ts` |
-| B — Widgets & overlays | zone furniture + `OperationsCanvas.tsx` (layout only) + all overlay panels + notification stack; builds against `state/app-store.mock.ts` until C ships the real store | `components/canvas/OperationsCanvas.tsx`, `components/canvas/{strip,rail,column,bar,overlays,notify}/*`, `state/app-store.mock.ts` |
+| B — Widgets & overlays | zone furniture + `OperationsCanvas.tsx` (layout only) + all overlay panels + notification stack; builds against the real `state/app-store.ts` (ships with the M8 skeleton interfaces — §13.1; a mock serves unit tests only) | `components/canvas/OperationsCanvas.tsx`, `components/canvas/{strip,rail,column,bar,overlays,notify}/*`, `state/app-store.ts` (+ `app-store.mock.ts` in tests) |
 | C — Interactions | context menus, keymap, guards, command bus, goto flow, hold-to-confirm | `components/canvas/map/context-menu.tsx`, `state/{app-store,command-bus}.ts`, `components/canvas/ShortcutsProvider.tsx` |
 | D — Gates & docs | harnesses G-14..G-21, browser-gate helper (swiftshader flags), DOX updates | `console/tests/run_g1[4-9]*.sh`, `run_g2[01]*.sh`, `console/tests/lib/browser_common.sh`, `docs/VERIFICATION.md` |
 
-Dependencies: M8 = stream A alone (B/C/D start on the M8 skeleton interfaces:
-zone grid, store API, command-bus signature). C depends on A's hit-testing + B's
-widgets existing from M9 onward. D writes gates alongside each milestone.
+Dependencies (v1.2 — corrected): **M8 = streams A + B in parallel** (T-B1 zone
+furniture is an M8 deliverable — G-14 asserts zones A–G; §12's M8 row has
+always included them; the earlier "stream A alone" wording was wrong). T-A1 is
+the serial head — nothing builds until deps + worker copy land (day 1); T-A2,
+T-A3, and T-B1 then run concurrently on the skeleton interfaces below. C joins
+at M9 (keymap needs B's widgets + A's hit-testing); D writes G-14 alongside M8
+and each gate thereafter.
+
+**M8 skeleton interfaces (binding — written down so B never waits on A's prose,
+v1.2):**
+
+1. `app/canvas/page.tsx` + `CanvasLoader.tsx` — stream A (§4.1 route mechanism).
+2. `state/app-store.ts` ships **real** at M8 — the §9.3 `useSyncExternalStore`
+   module store (`{activeVehicle, multiSelect, mapMode, overlays, follow,
+   gotoPending, notifications}`), ~100 lines, no command wiring; C adds command
+   dispatch at M9. `app-store.mock.ts` exists only for B's unit tests; import
+   paths never flip (no double implementation).
+3. `state/telemetry-store.ts` module API (A implements, B/C consume):
+   `subscribe(fn) → unsub` · `getSnapshot() → {vehicles: VehicleView[],
+   lastFrameAt, planes: {fleet, sim, catalog}, simSockets}` ·
+   `getTrack(i) → [lon,lat][]` · `getStrip(i, key) → Sample[]`; `commit()` is
+   internal to the normalizer path. The `window.__rsimTelemetry` /
+   `window.__rsimCommits` counters (§9.2) are part of the contract — gates read
+   them.
+4. **HUD ref registry** (the A↔B seam): widgets register flush targets via a
+   `useHudRef(id)` hook backed by a module-level `Map<string, HTMLElement>` in
+   `FlushLoop.tsx`; the loop iterates the registry each rAF pass and writes
+   `textContent` / `style.transform`. No per-frame DOM queries, no React
+coupling, no prop drilling.
+5. `state/command-bus.ts` **signature** at M8 (implementation M9):
+   `command(name, vehicle?, payload?) → Promise<{ok} | {error:{code,message}}>`
+   + busy registry — B renders busy/error surfaces against the signature; C
+   implements.
 
 ### 13.2 Task cards (each task: files → DoD → verify command)
 
@@ -1027,15 +1136,23 @@ widgets existing from M9 onward. D writes gates alongside each milestone.
    `@radix-ui/react-dropdown-menu`, `@radix-ui/react-dialog`), copy script, `pre*`
    scripts. DoD: `npm run build` clean, `public/maplibre/*` in standalone. Verify:
    `ls console/.next/standalone/public/maplibre/` + G-14 build assertions.
-2. **T-A2 canvas + ladder + offline**: MapCanvas with style ladder, graticule L13,
-   attribution. DoD: G-14 map-load + offline assertions.
-3. **T-A3 telemetry store + rAF**: fleet/sim sockets, normalizers (P8), ring
-   buffers, flush loop. DoD: G-14 telemetry-diff + `window.__rsimCommits` ≤ 5 Hz
-   over a 60 s soak (§9.2 — replaces the DevTools-profiler idea, which agents
-   cannot automate).
+2. **T-A2 canvas + ladder + L1/L2 + offline**: MapCanvas with style ladder,
+   graticule L13, attribution, the `__rsimMapDebug` hook (§9.2), and the M8 data
+   layers — L1 `vehicles` (halo/body/label) + L2 `tracks` wired to the telemetry
+   store (G-14 pixel-asserts them; layer catalog §6.4). DoD: G-14 map-load +
+   offline + layer assertions.
+3. **T-A3 telemetry store + rAF**: fleet/sim sockets, normalizers (P8 —
+   `lib/normalize.ts` reads `attitude_q_wxyz` from day 1, with
+   `normalize.test.ts` as the field-name regression; the P5 HUD wiring itself
+   is M9), ring buffers, flush loop + HUD ref registry, the
+   `__rsimTelemetry`/`__rsimCommits` counters. DoD: G-14 telemetry-diff +
+   commits ≤ 5 Hz over a 60 s soak + `normalize.test.ts` green (§9.2 — replaces
+   the DevTools-profiler idea, which agents cannot automate).
 4. **T-B1 zone furniture**: strip/rail/column/bar skeletons per §8 contracts
-   against `state/app-store.mock.ts`. DoD: G-14 layout assertions (zones A–G
-   present, map ≥ 60 %, NO-GL fallback renders).
+   against the real `state/app-store.ts`, E-STOP and verb controls rendered
+   **disabled** (command bus lands M9 — G-14 asserts presence, not enablement).
+   DoD: G-14 layout assertions (zones A–G present via `data-rsim-zone`, map
+   ≥ 60 %, NO-GL fallback renders).
 5. **T-C1 keymap + cheat sheet**: ShortcutsProvider, registry, guards, `?` dialog.
    DoD: G-15 guard assertions.
 6. **T-C2 command bus + verbs**: state gating, hold-to-confirm, estop, goto flow,
@@ -1046,7 +1163,14 @@ widgets existing from M9 onward. D writes gates alongside each milestone.
 8. **T-C3 context menus**: M1..M5 trees, state-filtered items, undo for deletes.
    DoD: G-16/G-17 menu assertions.
 9. **T-D1..D8 gates**: one task per G-14..G-21 harness following the v1 harness
-   conventions (§12 rules). DoD: gate green + `docs/VERIFICATION.md` row appended.
+   conventions (§12 rules). **T-D1 opens with the M8 WebGL spike: prove
+   headless WebGL2 renders via `console/tests/lib/browser_common.sh` — a
+   self-launched chromium with `--enable-unsafe-swiftshader` + agent-browser
+   `--cdp <port>` attach, screenshot → PIL pixel-diff — BEFORE G-14 is
+   authored** (agent-browser 0.35.0 exposes no launch-args flag on `open`; the
+   CDP path is the mechanism of record, §12). T-D1 also updates
+   `console/AGENTS.md` (new deps + tree) and adds `public/maplibre/` to
+   `.gitignore`. DoD: gate green + `docs/VERIFICATION.md` row appended.
 10. **T-X1 cleanup (M14)**: delete `tabs/`, Leaflet, ThemeToggle; type pass with
     `ignoreBuildErrors:false`. DoD: G-20.
 11. **T-M15 polish (M15)**: stream A — NED inset + measure tool; stream B — undo
@@ -1082,12 +1206,12 @@ widgets existing from M9 onward. D writes gates alongside each milestone.
 | # | Risk | Mitigation |
 |---|---|---|
 | R-1 | MapLibre worker misconfig → map mounts, no tiles (Turbopack + webpack both affected) | officially documented recipe (MapLibre Next.js/Turbopack notes, both bundler modes): §6.2 pre-scripts copy BOTH sibling files; G-14 asserts tiles/pixels, not just `load` |
-| R-2 | Headless browser gates: Chrome no longer auto-falls-back to SwiftShader → WebGL unavailable | gate launcher passes `--enable-unsafe-swiftshader`; assertions are pixel-presence, never fps; local re-verified at M8 (G-14 includes a headless render check) |
+| R-2 | Headless browser gates: Chrome no longer auto-falls-back to SwiftShader → WebGL unavailable | T-D1 M8 spike proves the path first — agent-browser `--cdp <port>` attach to a self-launched chromium with `--enable-unsafe-swiftshader` (agent-browser 0.35.0 exposes no launch-args flag on `open`; CDP attach is the mechanism of record) + screenshot → PIL pixel-diff via `browser_common.sh`; assertions are pixel-presence, never fps |
 | R-3 | 2-vCPU sandbox perf: WS + map + React churn | §9.2 pipeline (no React state for numerics), pollers pause when panels closed, ring-buffer caps; G-20 soak gate |
 | R-4 | Sandbox disk exhaustion from fleet ULogs during long gate sessions | §13.3 discipline: fresh fleet per gate, stop-fleet teardown; stack_up pruning already keeps newest run only |
 | R-5 | Tile/basemap licensing drift (CARTO key terms, OSMF policy) | keyless-first ladder (OpenFreeMap primary); **CARTO keyless deprecated 2026-08-26** — Plan B: free CARTO key or self-hosted Protomaps PMTiles in `public/`; attribution gate G-14; N key cycles ladder for operator fallback |
-| R-6 | Regression of v1 gate ladder during migration | legacy route `/?legacy=1` keeps old surfaces mountable until M14; every milestone re-runs the full ladder |
-| R-7 | react-map-gl abstraction friction with layer catalog | engine-neutral layer contracts (§6.4) + vanilla fallback (§6.1); decision point at M8 with a 1-day spike |
+| R-6 | Regression of v1 gate ladder during migration | backend gates G-0..G-13 contain zero browser driving (verified 2026-09-10: they assert the planes directly) — route changes cannot break them; `/legacy` keeps the old surfaces mountable until M14, and the three v1 browser scripts re-pointed at the M9 swap then run unmodified = the regression proof; every milestone re-runs the full ladder |
+| R-7 | react-map-gl abstraction friction with layer catalog | engine-neutral layer contracts (§6.4) + vanilla fallback (§6.1); 1-day spike at M8 start — if any §6.4/§7.2 pattern (controlled DropdownMenu virtual anchor, `queryRenderedFeatures`, `setData` cadence) fights the wrapper, **vanilla `useEffect`+`useRef` is the default of record**; the stream-A agent records the call in the M8 commit message + worklog; G-14 asserts behavior, not the binding |
 | R-8 | Keyboard conflicts (inputs, Radix menus, MapLibre handler) | §7.3.2 capture-phase guards + open-state registry + WCAG 2.1.4 disable toggle (§7.3.4); G-15 asserts the param-search guard and the toggle |
 | R-9 | Notification/event flood during fleet ops (auction + safety ladder) | queue caps (§8.6), state-chip vs event split, `events_tail` reconcile 30 s |
 | R-10 | Scope creep toward a full dockable/floating window system | D4 fixed: edge furniture only; two-overlay cap (§4.2); spec amendments required for more |
