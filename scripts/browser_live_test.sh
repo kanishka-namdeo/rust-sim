@@ -117,6 +117,14 @@ agent-browser open http://127.0.0.1:81/ >/dev/null 2>&1 || fail "browser could n
 agent-browser wait --load networkidle >/dev/null 2>&1
 agent-browser wait 6000 >/dev/null 2>&1  # WS + first telemetry frames
 
+# GCS v1 mounts 7 tabs and defaults to Plan; non-active tabpanels are
+# CSS-hidden, so the Sim Console LIVE badge never shows in the initial
+# snapshot. Click the tab first (same pattern as the Fleet C2 section).
+SIM_REF=$(agent-browser snapshot -i 2>/dev/null | grep -i "Sim Console" | head -1 | rg -o 'ref=e[0-9]+' | head -1 | sed 's/ref=/@/')
+[ -n "$SIM_REF" ] || { agent-browser snapshot > "$OUT/sim_snapshot_0.txt" 2>&1; head -40 "$OUT/sim_snapshot_0.txt" >> "$LOG"; fail "Sim Console tab not found"; }
+agent-browser click "$SIM_REF" >/dev/null 2>&1 || fail "could not click Sim Console tab"
+agent-browser wait 4000 >/dev/null 2>&1  # tab panel render + first telemetry frames
+
 S1=$OUT/sim_snapshot_1.txt
 S2=$OUT/sim_snapshot_2.txt
 agent-browser snapshot > "$S1" 2>&1

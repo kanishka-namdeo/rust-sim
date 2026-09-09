@@ -263,3 +263,39 @@ this run — they require a fresh PX4-Autopilot build per step 6.
 
 Artifacts from this run live under each harness's `tests/*_artifacts/`;
 screenshots under `docs/images/`.
+
+### Revalidation 2026-09-09 (full stack incl. fresh PX4 build)
+
+Full top-to-bottom run on a fresh Z.AI sandbox, this time including the
+PX4-Autopilot v1.16.2 clone + build (step 6). One environment deviation
+from 2026-09-08: the sandbox now ships a system Caddy (PID 1-adjacent,
+`/app/Caddyfile`) already listening on `:81` with the same
+default→`:3000` + `?XTransformPort=<port>` routing as
+`console/Caddyfile.example` — running a second Caddy is unnecessary;
+the harness precondition ":81 answers 502" is satisfied by the system
+gateway. Background processes still do not survive between agent tool
+invocations (verified again); a classic double-fork daemon does survive
+and is the pattern for a persistent operator stack.
+
+One harness fix landed this run: `scripts/browser_live_test.sh` still
+assumed the pre-GCS-v1 console default view (Sim Console) for its first
+LIVE-badge assertion, but GCS v1 defaults to the Plan tab and CSS-hides
+non-active tabpanels (a11y snapshots only carry the active panel). The
+harness now clicks the Sim Console tab before asserting (same pattern
+its Fleet C2 section already used).
+
+| Gate | Result |
+|---|---|
+| `rustup` install of Rust stable (1.98.1) | PASS |
+| `sim` `cargo build --workspace` (43 s) | PASS |
+| `fleet` `cargo build --workspace` (2m 48s, 1 documented warning) | PASS |
+| `console` `npm install` + `npm run build` (standalone out) | PASS |
+| PX4-Autopilot v1.16.2 clone (1.6 GB, 25 submodules) + NuttX tag fetch + `make px4_sitl_default` (1068/1068) | PASS |
+| I-1 boot gate (rcS + EKF2 + loop closed + ULog) | PASS |
+| I-2 physical flight (arm → offboard → z −1.77 m → land → disarm) | PASS |
+| F-1 bring-up + estop → ABORTED(2) + clean teardown | PASS |
+| F-2 two-vehicle auctioned mission, real dynamics, from replay truth | PASS |
+| Browser live test (gateway :81, Sim Console LIVE, Fleet C2 LIVE, telemetry moving, screenshots) | PASS |
+
+Artifacts from this run live under each harness's `tests/*_artifacts/`;
+screenshots under `docs/images/`.

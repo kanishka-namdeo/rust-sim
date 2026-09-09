@@ -2,15 +2,30 @@
   - banner
     - heading "PX4 Operator Console" [level=1, ref=e2]
     - paragraph
-      - StaticText "rustsitsim · mavfleet — sandbox gateway plane"
+      - StaticText "rustsitsim · mavfleet · fleet-catalog — sandbox gateway plane"
     - navigation "Console mode" [ref=e3]
       - tablist [ref=e6] focusable [tabindex]
-        - tab "Sim Console rustsitsim HIL simulator" [ref=e11]
+        - tab "Plan mission editor with map, geofence drawing, validate, save, upload" [ref=e15]
+          - StaticText "Plan"
+          - StaticText "mission editor with map, geofence drawing, validate, save, upload"
+        - tab "Fly live map, attitude HUD, instruments, pre-arm checks, action bar" [ref=e16]
+          - StaticText "Fly"
+          - StaticText "live map, attitude HUD, instruments, pre-arm checks, action bar"
+        - tab "Sim Console rustsitsim HIL simulator" [ref=e17]
           - StaticText "Sim Console"
           - StaticText "rustsitsim HIL simulator"
-        - tab "Fleet C2 mavfleet fleet manager" [selected, ref=e12]
+        - tab "Fleet C2 mavfleet fleet manager" [selected, ref=e18]
           - StaticText "Fleet C2"
           - StaticText "mavfleet fleet manager"
+        - tab "Operator Map geo map with direct SITL control" [ref=e19]
+          - StaticText "Operator Map"
+          - StaticText "geo map with direct SITL control"
+        - tab "Vehicle Setup QGC-style vehicle configuration" [ref=e20]
+          - StaticText "Vehicle Setup"
+          - StaticText "QGC-style vehicle configuration"
+        - tab "Analyze replay / ULog browser, scrub timeline, plot topics, overlay live vehicle" [ref=e21]
+          - StaticText "Analyze"
+          - StaticText "replay / ULog browser, scrub timeline, plot topics, overlay live vehicle"
     - button "Switch to light mode" [ref=e4]
   - main
     - tabpanel [ref=e5] focusable [tabindex]
@@ -22,7 +37,13 @@
         - StaticText "LIVE"
       - paragraph
         - StaticText "10 Hz telemetry stream · WS /?XTransformPort=8400 · REST /api/status"
-      - button "FLEET E-STOP" [expanded=false, ref=e7]
+      - button "Open swarming-pattern library" [expanded=false, ref=e7]
+        - StaticText "Patterns"
+        - StaticText "available patterns: "
+        - StaticText "follow-the-leader, search-grid, parallel-patrol"
+      - button "Start fleet — orchestrate all bound missions" [expanded=false, ref=e8]
+        - StaticText "Start Fleet"
+      - button "FLEET E-STOP" [expanded=false, ref=e9]
       - StaticText "FLEET PHASE"
       - StaticText "RUNNING"
       - StaticText "VEHICLES"
@@ -35,7 +56,7 @@
       - StaticText "4"
       - StaticText "0 done"
       - StaticText "GEOFENCE"
-      - StaticText "±45 m"
+      - StaticText "±110 m"
       - StaticText "ceiling 60 m · floor 0 m"
       - StaticText "Fleet map — NED north-up"
       - StaticText "geofence polygon · vehicles colored by FSM · 2 s breadcrumbs · task markers with assignment lines"
@@ -50,12 +71,12 @@
       - StaticText " pending"
       - StaticText "0"
       - StaticText " done"
-      - heading "TASK BOARD" [level=4, ref=e8]
+      - heading "TASK BOARD" [level=4, ref=e10]
       - LayoutTable
         - list
           - listitem [level=1]
             - StaticText "wp_n"
-            - StaticText "active"
+            - StaticText "complete"
             - StaticText "unassigned"
             - StaticText " · r"
             - StaticText "0"
@@ -71,7 +92,7 @@
             - StaticText "s"
           - listitem [level=1]
             - StaticText "wp_e"
-            - StaticText "active"
+            - StaticText "complete"
             - StaticText "unassigned"
             - StaticText " · r"
             - StaticText "0"
@@ -87,7 +108,7 @@
             - StaticText "s"
           - listitem [level=1]
             - StaticText "wp_s"
-            - StaticText "queued"
+            - StaticText "active"
             - StaticText "unassigned"
             - StaticText " · r"
             - StaticText "0"
@@ -103,7 +124,7 @@
             - StaticText "s"
           - listitem [level=1]
             - StaticText "wp_w"
-            - StaticText "queued"
+            - StaticText "active"
             - StaticText "unassigned"
             - StaticText " · r"
             - StaticText "0"
@@ -117,66 +138,111 @@
             - StaticText " "
             - StaticText "0"
             - StaticText "s"
-      - heading "ALLOCATION LOG contract-net rounds" [level=4, ref=e9]
+      - heading "ALLOCATION LOG contract-net rounds" [level=4, ref=e11]
         - StaticText "ALLOCATION LOG"
         - StaticText "contract-net rounds"
       - LayoutTable
         - list
           - listitem [level=1]
             - StaticText "No allocation rounds yet"
-      - StaticText "Fleet table"
-      - StaticText "click a row to track a vehicle · heartbeat ages refresh at 5 Hz"
+      - StaticText "Mission Bindings"
+      - StaticText "0"
+      - StaticText "/"
+      - StaticText "2"
+      - StaticText " assigned · "
+      - StaticText "0"
+      - StaticText " uploaded"
+      - StaticText "per-vehicle mission binding (§5.4 AC-5.4.1) · Upload all → POST /api/fleet/mission-bindings?XTransformPort=8400"
+      - button "Refresh saved missions" [ref=e12]
+      - button "Upload all bound missions to their vehicles" [disabled, ref=e13]
+        - StaticText "Upload all"
       - table
         - rowgroup
           - row
-            - columnheader "Vehicle" [ref=e39]
-            - columnheader "Sysid" [ref=e40]
-            - columnheader "Mode" [ref=e41]
-            - columnheader "FSM" [ref=e42]
-            - columnheader "Battery" [ref=e43]
-            - columnheader "Position NED (m)" [ref=e44]
-            - columnheader "HB age" [ref=e45]
-            - columnheader "Task" [ref=e46]
-            - columnheader "Health" [ref=e47]
-        - row [ref=e19] clickable [cursor:pointer, onclick]
-          - cell "V1" [ref=e21]
-          - cell "1" [ref=e22]
-          - cell "OFFBOARD" [ref=e23]
-          - cell "ACTIVE" [ref=e24]
-          - cell "55.0%" [ref=e25]
+            - columnheader "Vehicle" [ref=e56]
+            - columnheader "Mission" [ref=e57]
+            - columnheader "Binding state" [ref=e58]
+            - columnheader "Actions" [ref=e59]
+        - row
+          - cell "V1 sysid 1 · OFFBOARD" [ref=e30]
+            - StaticText "V1"
+            - StaticText "sysid "
+            - StaticText "1"
+            - StaticText " · "
+            - StaticText "OFFBOARD"
+          - cell "—" [ref=e31]
+          - cell "unassigned" [ref=e32]
+          - cell "Assign … Clear mission binding for V1" [ref=e33]
+            - combobox "Assign mission to V1" [expanded=false, ref=e60]: Assign …
+              - StaticText "Assign …"
+            - button "Clear mission binding for V1" [disabled, ref=e61]
+        - row
+          - cell "V2 sysid 2 · OFFBOARD" [ref=e34]
+            - StaticText "V2"
+            - StaticText "sysid "
+            - StaticText "2"
+            - StaticText " · "
+            - StaticText "OFFBOARD"
+          - cell "—" [ref=e35]
+          - cell "unassigned" [ref=e36]
+          - cell "Assign … Clear mission binding for V2" [ref=e37]
+            - combobox "Assign mission to V2" [expanded=false, ref=e62]: Assign …
+              - StaticText "Assign …"
+            - button "Clear mission binding for V2" [disabled, ref=e63]
+      - StaticText "Fleet table"
+      - StaticText "click a row to track a vehicle · heartbeat ages refresh at 10 Hz"
+      - table
+        - rowgroup
+          - row
+            - columnheader "Vehicle" [ref=e64]
+            - columnheader "Sysid" [ref=e65]
+            - columnheader "Mode" [ref=e66]
+            - columnheader "FSM" [ref=e67]
+            - columnheader "Battery" [ref=e68]
+            - columnheader "Position NED (m)" [ref=e69]
+            - columnheader "HB age" [ref=e70]
+            - columnheader "Task" [ref=e71]
+            - columnheader "Health" [ref=e72]
+        - row [ref=e28] clickable [cursor:pointer, onclick]
+          - cell "V1" [ref=e38]
+          - cell "1" [ref=e39]
+          - cell "OFFBOARD" [ref=e40]
+          - cell "ACTIVE" [ref=e41]
+          - cell "51.0%" [ref=e42]
             - progressbar
-            - StaticText "55.0"
+            - StaticText "51.0"
             - StaticText "%"
-          - cell "-0.1 / +50.3 / -10.1" [ref=e26]
-            - StaticText "-0.1 / +50.3 / -10.1"
-          - cell "0.00 s" [ref=e27]
+          - cell "+50.2 / +9.9 / -9.7" [ref=e43]
+            - StaticText "+50.2 / +9.9 / -9.7"
+          - cell "0.00 s" [ref=e44]
             - StaticText "0.00 s"
-          - cell "wp_e" [ref=e28]
-          - cell "ok" [ref=e29]
-        - row [ref=e20] clickable [cursor:pointer, onclick]
-          - cell "V2" [ref=e30]
-          - cell "2" [ref=e31]
-          - cell "OFFBOARD" [ref=e32]
-          - cell "ACTIVE" [ref=e33]
-          - cell "57.0%" [ref=e34]
+          - cell "wp_s" [ref=e45]
+          - cell "GEOFENCE_WARN" [ref=e46]
+            - StaticText "GEOFENCE_WARN"
+        - row [ref=e29] clickable [cursor:pointer, onclick]
+          - cell "V2" [ref=e47]
+          - cell "2" [ref=e48]
+          - cell "OFFBOARD" [ref=e49]
+          - cell "ACTIVE" [ref=e50]
+          - cell "51.0%" [ref=e51]
             - progressbar
-            - StaticText "57.0"
+            - StaticText "51.0"
             - StaticText "%"
-          - cell "-50.3 / -0.1 / -15.0" [ref=e35]
-            - StaticText "-50.3 / -0.1 / -15.0"
-          - cell "0.00 s" [ref=e36]
+          - cell "-9.8 / -50.2 / -14.6" [ref=e52]
+            - StaticText "-9.8 / -50.2 / -14.6"
+          - cell "0.00 s" [ref=e53]
             - StaticText "0.00 s"
-          - cell "wp_n" [ref=e37]
-          - cell "ok" [ref=e38]
+          - cell "wp_w" [ref=e54]
+          - cell "ok" [ref=e55]
       - StaticText "Safety & event log"
       - StaticText "the operator's flight recorder — rising-edge decisions only (§5.2)"
       - group "Event log filter"
-        - button "All" [ref=e13]
-        - button "Safety" [ref=e14]
-        - button "Allocation" [ref=e15]
-        - button "Link" [ref=e16]
-        - button "FSM" [ref=e17]
-        - button "Run" [ref=e18]
+        - button "All" [ref=e22]
+        - button "Safety" [ref=e23]
+        - button "Allocation" [ref=e24]
+        - button "Link" [ref=e25]
+        - button "FSM" [ref=e26]
+        - button "Run" [ref=e27]
         - StaticText "200"
         - StaticText " events"
       - LayoutTable
@@ -184,15 +250,47 @@
           - listitem [level=1]
             - paragraph
               - StaticText "health flag raised: GEOFENCE_WARN"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
             - StaticText "HEALTH_FLAG"
           - listitem [level=1]
             - paragraph
+              - StaticText "task 'wp_w' start"
+            - StaticText "09:28:57"
+            - StaticText "t+"
+            - StaticText "0.0"
+            - StaticText "s"
+            - StaticText "TASK_EVENT"
+          - listitem [level=1]
+            - paragraph
+              - StaticText "task 'wp_n' complete (hover_observed=false)"
+            - StaticText "09:28:57"
+            - StaticText "t+"
+            - StaticText "0.0"
+            - StaticText "s"
+            - StaticText "TASK_EVENT"
+          - listitem [level=1]
+            - paragraph
+              - StaticText "task 'wp_s' start"
+            - StaticText "09:28:57"
+            - StaticText "t+"
+            - StaticText "0.0"
+            - StaticText "s"
+            - StaticText "TASK_EVENT"
+          - listitem [level=1]
+            - paragraph
+              - StaticText "task 'wp_e' complete (hover_observed=false)"
+            - StaticText "09:28:57"
+            - StaticText "t+"
+            - StaticText "0.0"
+            - StaticText "s"
+            - StaticText "TASK_EVENT"
+          - listitem [level=1]
+            - paragraph
               - StaticText "health flag raised: GEOFENCE_WARN"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -200,7 +298,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "offboard engaged (mode echo OFFBOARD); profile start"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -208,7 +306,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "heartbeat mode echo: OFFBOARD (custom_mode=0x00060000) — V-11 empirical confirmation"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -216,7 +314,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "DO_SET_MODE(OFFBOARD, 0x00060000) ACKed (MAV_RESULT_ACCEPTED)"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -224,7 +322,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "NAV_DLL_ACT=0 write unconfirmed (no PARAM_VALUE echo): PX4 GCS-connection arming gate may block flight"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -232,7 +330,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "COMPONENT_ARM_DISARM(arm) ACKed (MAV_RESULT_ACCEPTED)"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -240,7 +338,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "offboard engaged (mode echo OFFBOARD); profile start"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -248,7 +346,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "heartbeat mode echo: OFFBOARD (custom_mode=0x00060000) — V-11 empirical confirmation"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -256,15 +354,15 @@
           - listitem [level=1]
             - paragraph
               - StaticText "DO_SET_MODE(OFFBOARD, 0x00060000) ACKed (MAV_RESULT_ACCEPTED)"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
             - StaticText "SUPERVISOR_ACTION"
           - listitem [level=1]
             - paragraph
-              - StaticText "policy note: separation violation with vehicle 1: 0.0 m horiz / 0.2 m vert"
-            - StaticText "18:55:09"
+              - StaticText "policy note: separation violation with vehicle 1: 0.0 m horiz / 0.1 m vert"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -272,7 +370,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "COMPONENT_ARM_DISARM(arm) rejected: result=1 (TEMPORARILY_REJECTED)"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -280,7 +378,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "COMPONENT_ARM_DISARM(arm) ACKed (MAV_RESULT_ACCEPTED)"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -288,7 +386,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "task 'wp_n' start"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -296,7 +394,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "READY->ACTIVE cause=task_accepted"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -304,7 +402,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "task 'wp_e' start"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -312,7 +410,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "READY->ACTIVE cause=task_accepted"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -320,7 +418,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "allocation round: 4 task(s) awarded (v0:[\"wp_e\", \"wp_s\"], v1:[\"wp_n\", \"wp_w\"])"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -328,7 +426,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "task 'wp_w' awarded to vehicle 1 (bid 15.9s)"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -336,7 +434,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "task 'wp_n' awarded to vehicle 1 (bid 15.6s)"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -344,7 +442,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "task 'wp_s' awarded to vehicle 0 (bid 15.9s)"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -352,7 +450,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "task 'wp_e' awarded to vehicle 0 (bid 15.6s)"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -360,7 +458,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "task pool armed for the sequential auction (§6.3); longest leg 51 m ≈ 13 s at cruise 4 m/s ≈ 254 pump steps at 20 Hz"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -368,7 +466,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "auction: 4 tasks x 2 bidders; realized travel 71s vs hungarian static optimum 63s (gap 12.9%, queue effects excluded per §6.4/ADR-0007)"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -376,7 +474,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "mission start: 4 tasks, 2/2 vehicles READY"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -384,7 +482,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "BOOTING->READY cause=telemetry_valid"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -392,7 +490,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "NAV_DLL_ACT=0 write unconfirmed (no PARAM_VALUE echo): PX4 GCS-connection arming gate may block flight"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -400,7 +498,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "health flag raised: GEOFENCE_WARN"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -408,7 +506,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "health flag raised: GEOFENCE_WARN"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -416,7 +514,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "BOOTING->READY cause=telemetry_valid"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -424,7 +522,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "SPAWNING->BOOTING cause=px4_launched"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -432,7 +530,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "INIT->SPAWNING cause=spawn"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -440,7 +538,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "SPAWNING->BOOTING cause=px4_launched"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -448,7 +546,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "INIT->SPAWNING cause=spawn"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -456,7 +554,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "run started: scenario /home/z/my-project/rust-sim/fleet/tests/demo_live.toml, 2 vehicles, 4 tasks, geofence 4 vertices / ceiling 60 m"
-            - StaticText "18:55:09"
+            - StaticText "09:28:57"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -464,7 +562,47 @@
           - listitem [level=1]
             - paragraph
               - StaticText "health flag raised: GEOFENCE_WARN"
-            - StaticText "18:55:05"
+            - StaticText "09:28:53"
+            - StaticText "t+"
+            - StaticText "0.0"
+            - StaticText "s"
+            - StaticText "HEALTH_FLAG"
+          - listitem [level=1]
+            - paragraph
+              - StaticText "task 'wp_w' start"
+            - StaticText "09:28:53"
+            - StaticText "t+"
+            - StaticText "0.0"
+            - StaticText "s"
+            - StaticText "TASK_EVENT"
+          - listitem [level=1]
+            - paragraph
+              - StaticText "task 'wp_n' complete (hover_observed=false)"
+            - StaticText "09:28:53"
+            - StaticText "t+"
+            - StaticText "0.0"
+            - StaticText "s"
+            - StaticText "TASK_EVENT"
+          - listitem [level=1]
+            - paragraph
+              - StaticText "task 'wp_s' start"
+            - StaticText "09:28:53"
+            - StaticText "t+"
+            - StaticText "0.0"
+            - StaticText "s"
+            - StaticText "TASK_EVENT"
+          - listitem [level=1]
+            - paragraph
+              - StaticText "task 'wp_e' complete (hover_observed=false)"
+            - StaticText "09:28:53"
+            - StaticText "t+"
+            - StaticText "0.0"
+            - StaticText "s"
+            - StaticText "TASK_EVENT"
+          - listitem [level=1]
+            - paragraph
+              - StaticText "health flag raised: GEOFENCE_WARN"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -472,7 +610,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "offboard engaged (mode echo OFFBOARD); profile start"
-            - StaticText "18:55:05"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -480,7 +618,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "heartbeat mode echo: OFFBOARD (custom_mode=0x00060000) — V-11 empirical confirmation"
-            - StaticText "18:55:05"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -488,7 +626,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "DO_SET_MODE(OFFBOARD, 0x00060000) ACKed (MAV_RESULT_ACCEPTED)"
-            - StaticText "18:55:05"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -496,7 +634,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "NAV_DLL_ACT=0 write unconfirmed (no PARAM_VALUE echo): PX4 GCS-connection arming gate may block flight"
-            - StaticText "18:55:05"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -504,7 +642,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "COMPONENT_ARM_DISARM(arm) ACKed (MAV_RESULT_ACCEPTED)"
-            - StaticText "18:55:05"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -512,7 +650,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "offboard engaged (mode echo OFFBOARD); profile start"
-            - StaticText "18:55:05"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -520,7 +658,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "heartbeat mode echo: OFFBOARD (custom_mode=0x00060000) — V-11 empirical confirmation"
-            - StaticText "18:55:05"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -528,15 +666,15 @@
           - listitem [level=1]
             - paragraph
               - StaticText "DO_SET_MODE(OFFBOARD, 0x00060000) ACKed (MAV_RESULT_ACCEPTED)"
-            - StaticText "18:55:05"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
             - StaticText "SUPERVISOR_ACTION"
           - listitem [level=1]
             - paragraph
-              - StaticText "policy note: separation violation with vehicle 1: 0.0 m horiz / 0.2 m vert"
-            - StaticText "18:55:05"
+              - StaticText "policy note: separation violation with vehicle 1: 0.0 m horiz / 0.1 m vert"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -544,7 +682,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "COMPONENT_ARM_DISARM(arm) rejected: result=1 (TEMPORARILY_REJECTED)"
-            - StaticText "18:55:05"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -552,7 +690,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "COMPONENT_ARM_DISARM(arm) ACKed (MAV_RESULT_ACCEPTED)"
-            - StaticText "18:55:05"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -560,7 +698,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "task 'wp_n' start"
-            - StaticText "18:55:05"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -568,7 +706,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "READY->ACTIVE cause=task_accepted"
-            - StaticText "18:55:05"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -576,7 +714,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "task 'wp_e' start"
-            - StaticText "18:55:05"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -584,7 +722,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "READY->ACTIVE cause=task_accepted"
-            - StaticText "18:55:05"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -592,7 +730,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "allocation round: 4 task(s) awarded (v0:[\"wp_e\", \"wp_s\"], v1:[\"wp_n\", \"wp_w\"])"
-            - StaticText "18:55:05"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -600,7 +738,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "task 'wp_w' awarded to vehicle 1 (bid 15.9s)"
-            - StaticText "18:55:05"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -608,7 +746,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "task 'wp_n' awarded to vehicle 1 (bid 15.6s)"
-            - StaticText "18:55:05"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -616,7 +754,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "task 'wp_s' awarded to vehicle 0 (bid 15.9s)"
-            - StaticText "18:55:05"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -624,7 +762,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "task 'wp_e' awarded to vehicle 0 (bid 15.6s)"
-            - StaticText "18:55:05"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -632,7 +770,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "task pool armed for the sequential auction (§6.3); longest leg 51 m ≈ 13 s at cruise 4 m/s ≈ 254 pump steps at 20 Hz"
-            - StaticText "18:55:05"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -640,7 +778,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "auction: 4 tasks x 2 bidders; realized travel 71s vs hungarian static optimum 63s (gap 12.9%, queue effects excluded per §6.4/ADR-0007)"
-            - StaticText "18:55:05"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -648,7 +786,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "mission start: 4 tasks, 2/2 vehicles READY"
-            - StaticText "18:55:05"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -656,7 +794,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "BOOTING->READY cause=telemetry_valid"
-            - StaticText "18:55:05"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -664,7 +802,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "NAV_DLL_ACT=0 write unconfirmed (no PARAM_VALUE echo): PX4 GCS-connection arming gate may block flight"
-            - StaticText "18:55:05"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -672,7 +810,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "health flag raised: GEOFENCE_WARN"
-            - StaticText "18:55:05"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -680,7 +818,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "health flag raised: GEOFENCE_WARN"
-            - StaticText "18:55:05"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -688,7 +826,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "BOOTING->READY cause=telemetry_valid"
-            - StaticText "18:55:05"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -696,7 +834,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "SPAWNING->BOOTING cause=px4_launched"
-            - StaticText "18:55:05"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -704,7 +842,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "INIT->SPAWNING cause=spawn"
-            - StaticText "18:55:05"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -712,7 +850,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "SPAWNING->BOOTING cause=px4_launched"
-            - StaticText "18:55:05"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -720,7 +858,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "INIT->SPAWNING cause=spawn"
-            - StaticText "18:55:05"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -728,7 +866,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "run started: scenario /home/z/my-project/rust-sim/fleet/tests/demo_live.toml, 2 vehicles, 4 tasks, geofence 4 vertices / ceiling 60 m"
-            - StaticText "18:55:05"
+            - StaticText "09:28:53"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -736,7 +874,47 @@
           - listitem [level=1]
             - paragraph
               - StaticText "health flag raised: GEOFENCE_WARN"
-            - StaticText "18:55:01"
+            - StaticText "09:28:49"
+            - StaticText "t+"
+            - StaticText "0.0"
+            - StaticText "s"
+            - StaticText "HEALTH_FLAG"
+          - listitem [level=1]
+            - paragraph
+              - StaticText "task 'wp_w' start"
+            - StaticText "09:28:49"
+            - StaticText "t+"
+            - StaticText "0.0"
+            - StaticText "s"
+            - StaticText "TASK_EVENT"
+          - listitem [level=1]
+            - paragraph
+              - StaticText "task 'wp_n' complete (hover_observed=false)"
+            - StaticText "09:28:49"
+            - StaticText "t+"
+            - StaticText "0.0"
+            - StaticText "s"
+            - StaticText "TASK_EVENT"
+          - listitem [level=1]
+            - paragraph
+              - StaticText "task 'wp_s' start"
+            - StaticText "09:28:49"
+            - StaticText "t+"
+            - StaticText "0.0"
+            - StaticText "s"
+            - StaticText "TASK_EVENT"
+          - listitem [level=1]
+            - paragraph
+              - StaticText "task 'wp_e' complete (hover_observed=false)"
+            - StaticText "09:28:49"
+            - StaticText "t+"
+            - StaticText "0.0"
+            - StaticText "s"
+            - StaticText "TASK_EVENT"
+          - listitem [level=1]
+            - paragraph
+              - StaticText "health flag raised: GEOFENCE_WARN"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -744,7 +922,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "offboard engaged (mode echo OFFBOARD); profile start"
-            - StaticText "18:55:01"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -752,7 +930,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "heartbeat mode echo: OFFBOARD (custom_mode=0x00060000) — V-11 empirical confirmation"
-            - StaticText "18:55:01"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -760,7 +938,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "DO_SET_MODE(OFFBOARD, 0x00060000) ACKed (MAV_RESULT_ACCEPTED)"
-            - StaticText "18:55:01"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -768,7 +946,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "NAV_DLL_ACT=0 write unconfirmed (no PARAM_VALUE echo): PX4 GCS-connection arming gate may block flight"
-            - StaticText "18:55:01"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -776,7 +954,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "COMPONENT_ARM_DISARM(arm) ACKed (MAV_RESULT_ACCEPTED)"
-            - StaticText "18:55:01"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -784,7 +962,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "offboard engaged (mode echo OFFBOARD); profile start"
-            - StaticText "18:55:01"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -792,7 +970,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "heartbeat mode echo: OFFBOARD (custom_mode=0x00060000) — V-11 empirical confirmation"
-            - StaticText "18:55:01"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -800,15 +978,15 @@
           - listitem [level=1]
             - paragraph
               - StaticText "DO_SET_MODE(OFFBOARD, 0x00060000) ACKed (MAV_RESULT_ACCEPTED)"
-            - StaticText "18:55:01"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
             - StaticText "SUPERVISOR_ACTION"
           - listitem [level=1]
             - paragraph
-              - StaticText "policy note: separation violation with vehicle 1: 0.0 m horiz / 0.2 m vert"
-            - StaticText "18:55:01"
+              - StaticText "policy note: separation violation with vehicle 1: 0.0 m horiz / 0.1 m vert"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -816,7 +994,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "COMPONENT_ARM_DISARM(arm) rejected: result=1 (TEMPORARILY_REJECTED)"
-            - StaticText "18:55:01"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -824,7 +1002,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "COMPONENT_ARM_DISARM(arm) ACKed (MAV_RESULT_ACCEPTED)"
-            - StaticText "18:55:01"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -832,7 +1010,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "task 'wp_n' start"
-            - StaticText "18:55:01"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -840,7 +1018,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "READY->ACTIVE cause=task_accepted"
-            - StaticText "18:55:01"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -848,7 +1026,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "task 'wp_e' start"
-            - StaticText "18:55:01"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -856,7 +1034,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "READY->ACTIVE cause=task_accepted"
-            - StaticText "18:55:01"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -864,7 +1042,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "allocation round: 4 task(s) awarded (v0:[\"wp_e\", \"wp_s\"], v1:[\"wp_n\", \"wp_w\"])"
-            - StaticText "18:55:01"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -872,7 +1050,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "task 'wp_w' awarded to vehicle 1 (bid 15.9s)"
-            - StaticText "18:55:01"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -880,7 +1058,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "task 'wp_n' awarded to vehicle 1 (bid 15.6s)"
-            - StaticText "18:55:01"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -888,7 +1066,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "task 'wp_s' awarded to vehicle 0 (bid 15.9s)"
-            - StaticText "18:55:01"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -896,7 +1074,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "task 'wp_e' awarded to vehicle 0 (bid 15.6s)"
-            - StaticText "18:55:01"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -904,7 +1082,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "task pool armed for the sequential auction (§6.3); longest leg 51 m ≈ 13 s at cruise 4 m/s ≈ 254 pump steps at 20 Hz"
-            - StaticText "18:55:01"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -912,7 +1090,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "auction: 4 tasks x 2 bidders; realized travel 71s vs hungarian static optimum 63s (gap 12.9%, queue effects excluded per §6.4/ADR-0007)"
-            - StaticText "18:55:01"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -920,7 +1098,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "mission start: 4 tasks, 2/2 vehicles READY"
-            - StaticText "18:55:01"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -928,7 +1106,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "BOOTING->READY cause=telemetry_valid"
-            - StaticText "18:55:01"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -936,7 +1114,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "NAV_DLL_ACT=0 write unconfirmed (no PARAM_VALUE echo): PX4 GCS-connection arming gate may block flight"
-            - StaticText "18:55:01"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -944,7 +1122,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "health flag raised: GEOFENCE_WARN"
-            - StaticText "18:55:01"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -952,7 +1130,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "health flag raised: GEOFENCE_WARN"
-            - StaticText "18:55:01"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -960,7 +1138,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "BOOTING->READY cause=telemetry_valid"
-            - StaticText "18:55:01"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -968,7 +1146,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "SPAWNING->BOOTING cause=px4_launched"
-            - StaticText "18:55:01"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -976,7 +1154,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "INIT->SPAWNING cause=spawn"
-            - StaticText "18:55:01"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -984,7 +1162,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "SPAWNING->BOOTING cause=px4_launched"
-            - StaticText "18:55:01"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -992,7 +1170,7 @@
           - listitem [level=1]
             - paragraph
               - StaticText "INIT->SPAWNING cause=spawn"
-            - StaticText "18:55:01"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
@@ -1000,150 +1178,38 @@
           - listitem [level=1]
             - paragraph
               - StaticText "run started: scenario /home/z/my-project/rust-sim/fleet/tests/demo_live.toml, 2 vehicles, 4 tasks, geofence 4 vertices / ceiling 60 m"
-            - StaticText "18:55:01"
+            - StaticText "09:28:49"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
             - StaticText "RUN_BOUNDARY"
           - listitem [level=1]
             - paragraph
-              - StaticText "offboard engaged (mode echo OFFBOARD); profile start"
-            - StaticText "18:54:57"
+              - StaticText "task 'wp_w' start"
+            - StaticText "09:28:45"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
             - StaticText "TASK_EVENT"
           - listitem [level=1]
             - paragraph
-              - StaticText "heartbeat mode echo: OFFBOARD (custom_mode=0x00060000) — V-11 empirical confirmation"
-            - StaticText "18:54:57"
+              - StaticText "task 'wp_n' complete (hover_observed=false)"
+            - StaticText "09:28:45"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
             - StaticText "TASK_EVENT"
           - listitem [level=1]
             - paragraph
-              - StaticText "DO_SET_MODE(OFFBOARD, 0x00060000) ACKed (MAV_RESULT_ACCEPTED)"
-            - StaticText "18:54:57"
-            - StaticText "t+"
-            - StaticText "0.0"
-            - StaticText "s"
-            - StaticText "SUPERVISOR_ACTION"
-          - listitem [level=1]
-            - paragraph
-              - StaticText "NAV_DLL_ACT=0 write unconfirmed (no PARAM_VALUE echo): PX4 GCS-connection arming gate may block flight"
-            - StaticText "18:54:57"
-            - StaticText "t+"
-            - StaticText "0.0"
-            - StaticText "s"
-            - StaticText "LINK_ESCALATION"
-          - listitem [level=1]
-            - paragraph
-              - StaticText "COMPONENT_ARM_DISARM(arm) ACKed (MAV_RESULT_ACCEPTED)"
-            - StaticText "18:54:57"
-            - StaticText "t+"
-            - StaticText "0.0"
-            - StaticText "s"
-            - StaticText "SUPERVISOR_ACTION"
-          - listitem [level=1]
-            - paragraph
-              - StaticText "offboard engaged (mode echo OFFBOARD); profile start"
-            - StaticText "18:54:57"
+              - StaticText "task 'wp_s' start"
+            - StaticText "09:28:45"
             - StaticText "t+"
             - StaticText "0.0"
             - StaticText "s"
             - StaticText "TASK_EVENT"
-          - listitem [level=1]
-            - paragraph
-              - StaticText "heartbeat mode echo: OFFBOARD (custom_mode=0x00060000) — V-11 empirical confirmation"
-            - StaticText "18:54:57"
-            - StaticText "t+"
-            - StaticText "0.0"
-            - StaticText "s"
-            - StaticText "TASK_EVENT"
-          - listitem [level=1]
-            - paragraph
-              - StaticText "DO_SET_MODE(OFFBOARD, 0x00060000) ACKed (MAV_RESULT_ACCEPTED)"
-            - StaticText "18:54:57"
-            - StaticText "t+"
-            - StaticText "0.0"
-            - StaticText "s"
-            - StaticText "SUPERVISOR_ACTION"
-          - listitem [level=1]
-            - paragraph
-              - StaticText "policy note: separation violation with vehicle 1: 0.0 m horiz / 0.2 m vert"
-            - StaticText "18:54:57"
-            - StaticText "t+"
-            - StaticText "0.0"
-            - StaticText "s"
-            - StaticText "SUPERVISOR_ACTION"
-          - listitem [level=1]
-            - paragraph
-              - StaticText "COMPONENT_ARM_DISARM(arm) rejected: result=1 (TEMPORARILY_REJECTED)"
-            - StaticText "18:54:57"
-            - StaticText "t+"
-            - StaticText "0.0"
-            - StaticText "s"
-            - StaticText "LINK_ESCALATION"
-          - listitem [level=1]
-            - paragraph
-              - StaticText "COMPONENT_ARM_DISARM(arm) ACKed (MAV_RESULT_ACCEPTED)"
-            - StaticText "18:54:57"
-            - StaticText "t+"
-            - StaticText "0.0"
-            - StaticText "s"
-            - StaticText "SUPERVISOR_ACTION"
-          - listitem [level=1]
-            - paragraph
-              - StaticText "task 'wp_n' start"
-            - StaticText "18:54:57"
-            - StaticText "t+"
-            - StaticText "0.0"
-            - StaticText "s"
-            - StaticText "TASK_EVENT"
-          - listitem [level=1]
-            - paragraph
-              - StaticText "READY->ACTIVE cause=task_accepted"
-            - StaticText "18:54:57"
-            - StaticText "t+"
-            - StaticText "0.0"
-            - StaticText "s"
-            - StaticText "FSM_TRANSITION"
-          - listitem [level=1]
-            - paragraph
-              - StaticText "task 'wp_e' start"
-            - StaticText "18:54:57"
-            - StaticText "t+"
-            - StaticText "0.0"
-            - StaticText "s"
-            - StaticText "TASK_EVENT"
-          - listitem [level=1]
-            - paragraph
-              - StaticText "READY->ACTIVE cause=task_accepted"
-            - StaticText "18:54:57"
-            - StaticText "t+"
-            - StaticText "0.0"
-            - StaticText "s"
-            - StaticText "FSM_TRANSITION"
-          - listitem [level=1]
-            - paragraph
-              - StaticText "allocation round: 4 task(s) awarded (v0:[\"wp_e\", \"wp_s\"], v1:[\"wp_n\", \"wp_w\"])"
-            - StaticText "18:54:57"
-            - StaticText "t+"
-            - StaticText "0.0"
-            - StaticText "s"
-            - StaticText "RUN_BOUNDARY"
-          - listitem [level=1]
-            - paragraph
-              - StaticText "task 'wp_w' awarded to vehicle 1 (bid 15.9s)"
-            - StaticText "18:54:57"
-            - StaticText "t+"
-            - StaticText "0.0"
-            - StaticText "s"
-            - StaticText "TASK_AWARD"
       - StaticText "Safety supervisor"
       - StaticText "ordered policy ladder, first hit short-circuits (§8.1)"
-      - heading "SAFETY LADDER (§8.1)" [level=4, ref=e10]
+      - heading "SAFETY LADDER (§8.1)" [level=4, ref=e14]
       - list
         - listitem [level=1]
           - StaticText "1"
@@ -1154,7 +1220,7 @@
         - listitem [level=1]
           - StaticText "2"
           - paragraph
-            - StaticText "Geofence breach"
+            - StaticText "Geofence breachTRIGGERED"
           - paragraph
             - StaticText "outside polygon / above ceiling → RTL · LAND if >10 m out"
         - listitem [level=1]
@@ -1195,9 +1261,9 @@
             - StaticText "3 consecutive failures → RTL · FAULT if path dead"
   - contentinfo
     - paragraph
-      - StaticText "rustsitsim :8200 · mavfleet :8400 — relative-path fetch + XTransformPort gateway routing"
+      - StaticText "rustsitsim :8200 · catalog :8300 · mavfleet :8400 — relative-path fetch + XTransformPort gateway routing"
     - paragraph
-      - StaticText "10 Hz sim frames · 5 Hz fleet frames · canvas 2D"
+      - StaticText "Plan View (GCS_SPEC §5.1/§8.1) · Fly View (GCS_SPEC §5.2/§8.2) · 10 Hz sim/fleet · setup per ADR-0016 · op-map per ADR-0017 · catalog per ADR-0019/0020/0026 · analyze per GCS_SPEC §5.5/§8.5"
   - region "Notifications (F8)" [ref=e1]
     - list
   - alert

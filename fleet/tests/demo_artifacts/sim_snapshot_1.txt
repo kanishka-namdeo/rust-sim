@@ -2,15 +2,30 @@
   - banner
     - heading "PX4 Operator Console" [level=1, ref=e2]
     - paragraph
-      - StaticText "rustsitsim · mavfleet — sandbox gateway plane"
+      - StaticText "rustsitsim · mavfleet · fleet-catalog — sandbox gateway plane"
     - navigation "Console mode" [ref=e3]
       - tablist [ref=e6] focusable [tabindex]
-        - tab "Sim Console rustsitsim HIL simulator" [selected, ref=e14]
+        - tab "Plan mission editor with map, geofence drawing, validate, save, upload" [ref=e14]
+          - StaticText "Plan"
+          - StaticText "mission editor with map, geofence drawing, validate, save, upload"
+        - tab "Fly live map, attitude HUD, instruments, pre-arm checks, action bar" [ref=e15]
+          - StaticText "Fly"
+          - StaticText "live map, attitude HUD, instruments, pre-arm checks, action bar"
+        - tab "Sim Console rustsitsim HIL simulator" [selected, ref=e16]
           - StaticText "Sim Console"
           - StaticText "rustsitsim HIL simulator"
-        - tab "Fleet C2 mavfleet fleet manager" [ref=e15]
+        - tab "Fleet C2 mavfleet fleet manager" [ref=e17]
           - StaticText "Fleet C2"
           - StaticText "mavfleet fleet manager"
+        - tab "Operator Map geo map with direct SITL control" [ref=e18]
+          - StaticText "Operator Map"
+          - StaticText "geo map with direct SITL control"
+        - tab "Vehicle Setup QGC-style vehicle configuration" [ref=e19]
+          - StaticText "Vehicle Setup"
+          - StaticText "QGC-style vehicle configuration"
+        - tab "Analyze replay / ULog browser, scrub timeline, plot topics, overlay live vehicle" [ref=e20]
+          - StaticText "Analyze"
+          - StaticText "replay / ULog browser, scrub timeline, plot topics, overlay live vehicle"
     - button "Switch to light mode" [ref=e4]
   - main
     - tabpanel [ref=e5] focusable [tabindex]
@@ -24,7 +39,7 @@
         - StaticText "10 Hz telemetry stream · WS /?XTransformPort=8200 · REST /api/status"
       - button "E-STOP" [expanded=false, ref=e7]
       - StaticText "VIRTUAL TIME"
-      - StaticText "00:14.8"
+      - StaticText "00:44.3"
       - StaticText "mm:ss.s"
       - StaticText "PX4 LINK"
       - StaticText "CONNECTED"
@@ -33,7 +48,7 @@
       - StaticText "CLOSED"
       - StaticText "HIL sensor ⇄ actuator"
       - StaticText "TICK P95"
-      - StaticText "54"
+      - StaticText "63"
       - StaticText "µs"
       - StaticText "sim-loop latency"
       - StaticText "RATE"
@@ -46,24 +61,24 @@
       - StaticText "nominal"
       - StaticText "Trajectory — NED top-down (north up)"
       - generic
-        - StaticText "position history · 68 samples · decimated to 300 points on draw"
+        - StaticText "position history · 376 samples · decimated to 300 points on draw"
       - image "Top-down NED trajectory of the simulated vehicle"
       - StaticText "Telemetry — ground truth"
       - StaticText "state block of the §4.2 WS frame"
       - StaticText "POSITION NED"
-      - StaticText "1.21 / 21.57 / -7.49"
+      - StaticText "12.10 / 38.53 / -7.09"
       - StaticText "m"
       - StaticText "VELOCITY NED"
-      - StaticText "0.19 / 3.96 / 0.31"
+      - StaticText "3.46 / -3.05 / -0.55"
       - StaticText "m/s"
       - StaticText "ROLL"
-      - StaticText "+45.1"
+      - StaticText "-34.6"
       - StaticText "°"
       - StaticText "PITCH"
-      - StaticText "+2.9"
+      - StaticText "-33.3"
       - StaticText "°"
       - StaticText "YAW (Ψ)"
-      - StaticText "355.3"
+      - StaticText "10.3"
       - StaticText "°"
       - StaticText "from q_wxyz (ZYX)"
       - StaticText "BATTERY"
@@ -77,16 +92,16 @@
         - StaticText "MOTOR OUTPUTS (NORMALIZED)"
       - StaticText "M"
       - StaticText "0"
-      - StaticText "0.70"
+      - StaticText "0.80"
       - StaticText "M"
       - StaticText "1"
-      - StaticText "0.71"
+      - StaticText "0.80"
       - StaticText "M"
       - StaticText "2"
-      - StaticText "0.70"
+      - StaticText "0.80"
       - StaticText "M"
       - StaticText "3"
-      - StaticText "0.70"
+      - StaticText "0.80"
       - StaticText "Strip charts — 60 s spooling window"
       - StaticText "altitude, attitude angles, motor commands · 10 Hz"
       - paragraph
@@ -101,13 +116,13 @@
       - StaticText "Sensors — last emitted"
       - StaticText "noisy values seen by PX4 (SPEC §4.2)"
       - StaticText "ACCEL BODY"
-      - StaticText "0.38 / -6.98 / -7.06"
+      - StaticText "-5.62 / 4.98 / -7.39"
       - StaticText "m/s²"
       - StaticText "GYRO BODY"
-      - StaticText "-0.031 / 0.020 / 0.046"
+      - StaticText "0.012 / 0.004 / -0.008"
       - StaticText "rad/s"
       - StaticText "BARO ALTITUDE"
-      - StaticText "7.5"
+      - StaticText "7.1"
       - StaticText "m"
       - StaticText "GPS"
       - StaticText "3D"
@@ -127,13 +142,13 @@
       - LabelText
         - StaticText "Type (§7.1 catalog)"
       - combobox "Fault type" [expanded=false, ref=e10]: F-01 Motor efficiency
-        - generic [ref=e16] clickable [onclick]
+        - generic [ref=e21] clickable [onclick]
           - StaticText "F-01"
           - StaticText "Motor efficiency"
       - LabelText
         - StaticText "Motor"
       - combobox "Motor" [expanded=false, ref=e11]: Motor 0
-        - generic [ref=e17] clickable [onclick]
+        - generic [ref=e22] clickable [onclick]
           - StaticText "Motor 0"
       - LabelText
         - StaticText "Factor"
@@ -145,9 +160,9 @@
         - StaticText "Inject F-01"
   - contentinfo
     - paragraph
-      - StaticText "rustsitsim :8200 · mavfleet :8400 — relative-path fetch + XTransformPort gateway routing"
+      - StaticText "rustsitsim :8200 · catalog :8300 · mavfleet :8400 — relative-path fetch + XTransformPort gateway routing"
     - paragraph
-      - StaticText "10 Hz sim frames · 5 Hz fleet frames · canvas 2D"
+      - StaticText "Plan View (GCS_SPEC §5.1/§8.1) · Fly View (GCS_SPEC §5.2/§8.2) · 10 Hz sim/fleet · setup per ADR-0016 · op-map per ADR-0017 · catalog per ADR-0019/0020/0026 · analyze per GCS_SPEC §5.5/§8.5"
   - region "Notifications (F8)" [ref=e1]
     - list
   - alert
