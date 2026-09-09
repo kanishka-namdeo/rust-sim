@@ -28,7 +28,7 @@ import 'leaflet/dist/leaflet.css'
 import type { LatLng } from '@/lib/geo'
 import type { PlanGeofence, PlanWaypoint } from '@/lib/plan-types'
 
-export type PlanMapMode = 'idle' | 'waypoint' | 'fence'
+export type PlanMapMode = 'idle' | 'waypoint' | 'fence' | 'corridor'
 
 export interface PlanMapProps {
   /** Center latitude (defaults to PX4 test field). */
@@ -47,6 +47,10 @@ export interface PlanMapProps {
   mode: PlanMapMode
   /** True while drawing a fence polygon (cursor + tooltip hint). */
   fenceDrawing: boolean
+  /** Corridor polyline vertices [lat, lon] (drawn while corridor drawing is active). */
+  corridorLine?: [number, number][]
+  /** True while drawing a corridor polyline (cursor + tooltip hint). */
+  corridorDrawing?: boolean
   /** Waypoint click → select (in any mode). */
   onSelectWaypoint?: (seq: number) => void
   /** Map click in 'waypoint' mode → add a waypoint. */
@@ -59,6 +63,10 @@ export interface PlanMapProps {
   onAddFenceVertex?: (lat: number, lng: number) => void
   /** Map dbl-click in 'fence' mode → close polygon. */
   onCloseFence?: () => void
+  /** Map click in 'corridor' mode → add polyline vertex. */
+  onAddCorridorVertex?: (lat: number, lng: number) => void
+  /** Map dbl-click in 'corridor' mode → finish polyline. */
+  onFinishCorridor?: () => void
   /** Map click in 'idle' mode → recenter + select nothing. */
   onMapClickIdle?: (lat: number, lng: number) => void
   className?: string
@@ -72,6 +80,7 @@ const WAYPOINT_COLOR = '#0ea5e9' // sky-500 — QGC blue
 const WAYPOINT_ERR_COLOR = '#dc2626' // red-600
 const PATH_COLOR = '#0ea5e9'
 const FENCE_COLOR = '#10b981' // emerald-500 — QGC green
+const CORRIDOR_COLOR = '#a855f7' // purple-500 — distinct from fence + waypoint
 
 export function PlanMap(props: PlanMapProps) {
   const holderRef = useRef<HTMLDivElement | null>(null)
@@ -85,6 +94,8 @@ export function PlanMap(props: PlanMapProps) {
   const fenceRef = useRef<LeafletNS.Polygon | null>(null)
   const fenceVertsRef = useRef<Map<number, LeafletNS.Marker>>(new Map())
   const fenceTempLineRef = useRef<LeafletNS.Polyline | null>(null)
+  const corridorLineRef = useRef<LeafletNS.Polyline | null>(null)
+  const corridorVertsRef = useRef<Map<number, LeafletNS.Marker>>(new Map())
   const propsRef = useRef(props)
   useEffect(() => {
     propsRef.current = props
@@ -149,6 +160,7 @@ export function PlanMap(props: PlanMapProps) {
         const p = propsRef.current
         if (p.mode === 'waypoint') p.onAddWaypoint?.(e.latlng.lat, e.latlng.lng)
         else if (p.mode === 'fence') p.onAddFenceVertex?.(e.latlng.lat, e.latlng.lng)
+        else if (p.mode === 'corridor') p.onAddCorridorVertex?.(e.latlng.lat, e.latlng.lng)
         else p.onMapClickIdle?.(e.latlng.lat, e.latlng.lng)
       })
       map.on('dblclick', (e: LeafletNS.LeafletMouseEvent) => {
@@ -158,6 +170,9 @@ export function PlanMap(props: PlanMapProps) {
           // vertex that may have been added by that click — the closeFence
           // handler is responsible for keeping the polygon well-formed
           p.onCloseFence?.()
+          L.DomEvent.stopPropagation(e)
+        } else if (p.mode === 'corridor') {
+          p.onFinishCorridor?.()
           L.DomEvent.stopPropagation(e)
         }
       })
@@ -179,10 +194,12 @@ export function PlanMap(props: PlanMapProps) {
       mapRef.current = null
       wpMarkers.current.clear()
       fenceVertsRef.current.clear()
+      corridorVertsRef.current.clear()
       homeRef.current = null
       planPathRef.current = null
       fenceRef.current = null
       fenceTempLineRef.current = null
+      corridorLineRef.current = null
     }
   }, [])
 
@@ -394,12 +411,85 @@ export function PlanMap(props: PlanMapProps) {
     }
   }, [props.geofence, props.mode, props.fenceDrawing])
 
-  // cursor: crosshair in waypoint mode, cell in fence mode
+  // --------------------------------------------------------- corridor polyline
+  // Render the in-progress corridor polyline as a purple open polyline +
+  // numbered vertex markers. dblclick finishes drawing and the parent opens
+  // the parameters modal.
+  useEffect(() => {
+    const L = LRef.current
+    const map = mapRef.current
+    if (!L || !map) return
+    const line = props.corridorLine ?? []
+    const pts: LatLng[] = line.map(([lat, lon]) => ({ lat, lng: lon }))
+
+    if (pts.length >= 2) {
+      if (!corridorLineRef.current) {
+        corridorLineRef.current = L.polyline(pts, {
+          color: CORRIDOR_COLOR,
+          weight: 2,
+          opacity: 0.85,
+          dashArray: '8 6',
+        }).addTo(map)
+      } else {
+        corridorLineRef.current.setLatLngs(pts)
+      }
+    } else if (corridorLineRef.current) {
+      corridorLineRef.current.remove()
+      corridorLineRef.current = null
+    }
+
+    // Vertex markers (always shown, even with a single vertex)
+    const seen = new Set<number>()
+    line.forEach(([lat, lon], i) => {
+      seen.add(i)
+      const html = `<div class="rsim-fvert" style="--vc:${CORRIDOR_COLOR}">${i + 1}</div>`
+      const icon = L.divIcon({
+        html,
+        className: 'rsim-fvert-icon',
+        iconSize: [22, 22],
+        iconAnchor: [11, 11],
+      })
+      let m = corridorVertsRef.current.get(i)
+      if (!m) {
+        m = L.marker([lat, lon], {
+          icon,
+          draggable: props.mode === 'corridor',
+          zIndexOffset: 200,
+          keyboard: false,
+        }).addTo(map)
+        m.bindTooltip(`corridor vertex ${i + 1}`, { direction: 'top' })
+        corridorVertsRef.current.set(i, m)
+      } else {
+        m.setLatLng([lat, lon])
+        m.setIcon(icon)
+        if (m.dragging) {
+          if (props.mode === 'corridor') m.dragging.enable()
+          else m.dragging.disable()
+        }
+      }
+    })
+    for (const [i, m] of corridorVertsRef.current) {
+      if (!seen.has(i)) {
+        m.remove()
+        corridorVertsRef.current.delete(i)
+      }
+    }
+    if (corridorVertsRef.current.size !== line.length) {
+      const oldMap = new Map(corridorVertsRef.current)
+      corridorVertsRef.current.clear()
+      line.forEach((_, i) => {
+        const m = oldMap.get(i)
+        if (m) corridorVertsRef.current.set(i, m)
+      })
+    }
+  }, [props.corridorLine, props.mode])
+
+  // cursor: crosshair in waypoint mode, cell in fence/corridor mode
   useEffect(() => {
     const el = holderRef.current
     if (!el) return
     el.classList.toggle('rsim-plan-cursor', props.mode === 'waypoint')
-    el.classList.toggle('rsim-fence-cursor', props.mode === 'fence')
+    el.classList.toggle('rsim-fence-cursor', props.mode === 'fence' || props.mode === 'corridor')
   }, [props.mode])
 
   return (

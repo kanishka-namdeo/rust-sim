@@ -41,6 +41,7 @@ import {
   PlaneTakeoff,
   RefreshCw,
   Save,
+  Shapes,
   Trash2,
   TriangleAlert,
   Upload,
@@ -69,6 +70,18 @@ import { usePlanCatalog } from '@/hooks/usePlanCatalog'
 import { ConnBadge } from './ConnBadge'
 import { PlanMap, type PlanMapMode } from './PlanMap'
 import {
+  DEFAULT_CORRIDOR_OPTS,
+  DEFAULT_PERIMETER_OPTS,
+  DEFAULT_SURVEY_GRID_OPTS,
+  generateCorridor,
+  generatePerimeter,
+  generateSurveyGrid,
+  type CorridorOpts,
+  type PatternName,
+  type PerimeterOpts,
+  type SurveyGridOpts,
+} from '@/lib/patterns'
+import {
   DEFAULT_WP_ACCEPT_M,
   DEFAULT_WP_ALT_M,
   DEFAULT_WP_HOLD_S,
@@ -86,7 +99,7 @@ import {
 const FLEET_PORT = 8400
 
 /** Edit mode (matches §8.1 step-by-step). */
-type EditMode = 'idle' | 'waypoint' | 'fence'
+type EditMode = 'idle' | 'waypoint' | 'fence' | 'corridor'
 
 /** Upload progress (three sub-bars per spec §8.1 step 12 — M2 real progress). */
 interface UploadProgress {
@@ -150,6 +163,18 @@ export function PlanView() {
   const [downloadResult, setDownloadResult] = useState<MissionDownloadResult | null>(null)
   const [compareOpen, setCompareOpen] = useState(false)
   const [downloading, setDownloading] = useState(false)
+
+  // --------------------------------------------------------------- pattern state (M7)
+  // The "Patterns" dropdown opens one of three modals. The corridor pattern
+  // first enters a 'corridor' drawing mode (click to add polyline vertices,
+  // double-click to finish), then opens its parameters modal.
+  const [corridorLine, setCorridorLine] = useState<[number, number][]>([])
+  const [surveyOpen, setSurveyOpen] = useState(false)
+  const [corridorOpen, setCorridorOpen] = useState(false)
+  const [perimeterOpen, setPerimeterOpen] = useState(false)
+  const [surveyOpts, setSurveyOpts] = useState<SurveyGridOpts>(DEFAULT_SURVEY_GRID_OPTS)
+  const [corridorOpts, setCorridorOpts] = useState<CorridorOpts>(DEFAULT_CORRIDOR_OPTS)
+  const [perimeterOpts, setPerimeterOpts] = useState<PerimeterOpts>(DEFAULT_PERIMETER_OPTS)
 
   // Open the Save modal — preset the name input from the current mission
   // (NOT in an effect, to avoid the react-hooks/set-state-in-effect rule).
@@ -300,6 +325,108 @@ export function PlanView() {
     setUploadProgress(null)
     setSelectedWp(null)
   }, [])
+
+  // --------------------------------------------------------------- patterns (M7)
+  // Three client-side generators (ADR-0028). Each opens a parameters modal;
+  // the corridor pattern first enters a 'corridor' drawing mode (click +
+  // double-click). Generated waypoints inherit the mission's default altitude
+  // + accept-radius (the generator's opts) but are editable afterwards like
+  // any manually-placed waypoint.
+  const replaceWaypoints = useCallback((wps: PlanWaypoint[]) => {
+    setFile((f) => ({ ...f, waypoints: wps.map((w, i) => ({ ...w, seq: i })) }))
+    setDirty(true)
+    setValidated(null)
+    setUploadProgress(null)
+    setSelectedWp(null)
+  }, [])
+
+  const onAddCorridorVertex = useCallback((lat: number, lng: number) => {
+    setCorridorLine((prev) => [...prev, [lat, lng]])
+  }, [])
+
+  const onFinishCorridor = useCallback(() => {
+    if (corridorLine.length < 2) {
+      toast({
+        title: 'Cannot finish corridor',
+        description: `need at least 2 vertices, got ${corridorLine.length}`,
+        variant: 'destructive',
+      })
+      return
+    }
+    setMode('idle')
+    setCorridorOpen(true)
+  }, [corridorLine.length, toast])
+
+  const startCorridorDrawing = useCallback(() => {
+    setCorridorLine([])
+    setMode('corridor')
+    toast({
+      title: 'Corridor drawing',
+      description: 'click to add polyline vertices, double-click to finish',
+    })
+  }, [toast])
+
+  const onPickPattern = useCallback(
+    (name: PatternName) => {
+      if (name === 'survey-grid') {
+        if (file.geofence.inclusion.length < 3) {
+          toast({
+            title: 'Need a polygon first',
+            description: 'draw a geofence inclusion polygon with ≥ 3 vertices, then Patterns → Survey Grid',
+            variant: 'destructive',
+          })
+          return
+        }
+        setSurveyOpts(DEFAULT_SURVEY_GRID_OPTS)
+        setSurveyOpen(true)
+      } else if (name === 'corridor') {
+        startCorridorDrawing()
+      } else if (name === 'perimeter') {
+        if (file.geofence.inclusion.length < 3) {
+          toast({
+            title: 'Need a polygon first',
+            description: 'draw a geofence inclusion polygon with ≥ 3 vertices, then Patterns → Perimeter Pattern',
+            variant: 'destructive',
+          })
+          return
+        }
+        setPerimeterOpts(DEFAULT_PERIMETER_OPTS)
+        setPerimeterOpen(true)
+      }
+    },
+    [file.geofence.inclusion.length, toast, startCorridorDrawing],
+  )
+
+  const onGenerateSurvey = useCallback(() => {
+    const wps = generateSurveyGrid(file.geofence.inclusion, surveyOpts)
+    replaceWaypoints(wps)
+    setSurveyOpen(false)
+    toast({
+      title: 'Survey grid generated',
+      description: `${wps.length} waypoints · ${file.geofence.inclusion.length}-vertex polygon · leg spacing ${surveyOpts.legSpacingM} m`,
+    })
+  }, [file.geofence.inclusion, surveyOpts, replaceWaypoints, toast])
+
+  const onGenerateCorridor = useCallback(() => {
+    const wps = generateCorridor(corridorLine, corridorOpts)
+    replaceWaypoints(wps)
+    setCorridorOpen(false)
+    setCorridorLine([])
+    toast({
+      title: 'Corridor pattern generated',
+      description: `${wps.length} waypoints · ${corridorLine.length}-vertex polyline · width ${corridorOpts.corridorWidthM} m`,
+    })
+  }, [corridorLine, corridorOpts, replaceWaypoints, toast])
+
+  const onGeneratePerimeter = useCallback(() => {
+    const wps = generatePerimeter(file.geofence.inclusion, perimeterOpts)
+    replaceWaypoints(wps)
+    setPerimeterOpen(false)
+    toast({
+      title: 'Perimeter pattern generated',
+      description: `${wps.length} waypoints · offset ${perimeterOpts.offsetM} m inside the polygon`,
+    })
+  }, [file.geofence.inclusion, perimeterOpts, replaceWaypoints, toast])
 
   const newMission = useCallback(() => {
     setFile(emptyPlanMission('untitled'))
@@ -517,7 +644,8 @@ export function PlanView() {
     return s
   }, [validated])
 
-  const planMode: PlanMapMode = mode === 'fence' ? 'fence' : mode === 'waypoint' ? 'waypoint' : 'idle'
+  const planMode: PlanMapMode =
+    mode === 'fence' ? 'fence' : mode === 'waypoint' ? 'waypoint' : mode === 'corridor' ? 'corridor' : 'idle'
 
   const savedMissions: SavedMissionRow[] = useMemo(
     () =>
@@ -677,6 +805,33 @@ export function PlanView() {
                 <Hexagon className="size-3.5" aria-hidden="true" />
                 Draw Geofence{mode === 'fence' ? ' ✓' : ''}
               </Button>
+              {/* Patterns dropdown (M7 — ADR-0028, §5.6, §8.6).
+                  Three client-side generators. Selecting one either opens a
+                  parameters modal (survey / perimeter) or enters corridor
+                  drawing mode (corridor). */}
+              <Select
+                value=""
+                onValueChange={(v) => {
+                  if (v) onPickPattern(v as PatternName)
+                }}
+              >
+                <SelectTrigger
+                  size="sm"
+                  className="h-7 gap-1.5 px-2.5 text-xs font-medium data-[size=sm]:h-7"
+                  aria-label="Patterns dropdown"
+                  title="survey / corridor / perimeter pattern generators"
+                >
+                  <Shapes className="size-3.5" aria-hidden="true" />
+                  <span>Patterns</span>
+                  {/* sr-only list so the initial SSR HTML carries the three names (smoke-test friendly) */}
+                  <span className="sr-only">options: Survey Grid, Corridor Pattern, Perimeter Pattern</span>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="survey-grid" className="text-xs">Survey Grid</SelectItem>
+                  <SelectItem value="corridor" className="text-xs">Corridor Pattern</SelectItem>
+                  <SelectItem value="perimeter" className="text-xs">Perimeter Pattern</SelectItem>
+                </SelectContent>
+              </Select>
               <Button
                 size="sm"
                 variant="ghost"
@@ -709,6 +864,12 @@ export function PlanView() {
                 Waypoint mode: click to add a numbered waypoint, drag to move, right-click to remove.
               </CardDescription>
             )}
+            {mode === 'corridor' && (
+              <CardDescription className="text-[11px] text-purple-600 dark:text-purple-400">
+                Corridor drawing: click to add polyline vertices ({corridorLine.length} so far), double-click to finish.
+                Need ≥ 2 to generate.
+              </CardDescription>
+            )}
           </CardHeader>
           <CardContent className="p-2">
             <div className="h-[460px] w-full overflow-hidden rounded-md border border-border">
@@ -721,12 +882,16 @@ export function PlanView() {
                 erroredSeqs={erroredSeqs}
                 mode={planMode}
                 fenceDrawing={mode === 'fence'}
+                corridorLine={corridorLine}
+                corridorDrawing={mode === 'corridor'}
                 onSelectWaypoint={setSelectedWp}
                 onAddWaypoint={addWaypoint}
                 onMoveWaypoint={moveWaypoint}
                 onRemoveWaypoint={removeWaypoint}
                 onAddFenceVertex={addFenceVertex}
                 onCloseFence={closeFence}
+                onAddCorridorVertex={onAddCorridorVertex}
+                onFinishCorridor={onFinishCorridor}
               />
             </div>
           </CardContent>
@@ -1254,6 +1419,200 @@ export function PlanView() {
           <AlertDialogFooter>
             <AlertDialogCancel>Close</AlertDialogCancel>
             <AlertDialogAction onClick={() => setCompareOpen(false)}>Done</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* ----------------------------------- survey grid modal (M7) */}
+      <AlertDialog open={surveyOpen} onOpenChange={setSurveyOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <Shapes className="size-4 text-muted-foreground" aria-hidden="true" />
+              Survey Grid parameters
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Generate a boustrophedon survey grid inside the {file.geofence.inclusion.length}-vertex
+              geofence polygon. Camera-trigger (cmd=200) at each leg start, nav waypoint at each leg exit,
+              closing return-to-start nav at the end. All generated waypoints are inside the polygon
+              and inherit the mission's altitude / accept-radius (editable afterwards like any waypoint).
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="grid grid-cols-2 gap-3 py-1">
+            <Label htmlFor="survey-spacing" className="flex flex-col gap-1 text-xs">
+              Leg spacing (m)
+              <Input
+                id="survey-spacing"
+                type="number"
+                min={1}
+                max={500}
+                step={1}
+                value={surveyOpts.legSpacingM}
+                onChange={(e) => setSurveyOpts((o) => ({ ...o, legSpacingM: Number(e.target.value) || 10 }))}
+                className="text-sm"
+              />
+            </Label>
+            <Label htmlFor="survey-alt" className="flex flex-col gap-1 text-xs">
+              Altitude (m AGL)
+              <Input
+                id="survey-alt"
+                type="number"
+                min={1}
+                max={file.geofence.ceiling_m}
+                step={1}
+                value={surveyOpts.altitudeM}
+                onChange={(e) => setSurveyOpts((o) => ({ ...o, altitudeM: Number(e.target.value) || 30 }))}
+                className="text-sm"
+              />
+            </Label>
+            <Label htmlFor="survey-dir" className="flex flex-col gap-1 text-xs">
+              Leg direction (deg, 0 = N-S)
+              <Input
+                id="survey-dir"
+                type="number"
+                min={0}
+                max={359}
+                step={1}
+                value={surveyOpts.legDirectionDeg}
+                onChange={(e) => setSurveyOpts((o) => ({ ...o, legDirectionDeg: Number(e.target.value) || 0 }))}
+                className="text-sm"
+              />
+            </Label>
+            <Label htmlFor="survey-cam" className="flex flex-col gap-1 text-xs">
+              Camera trigger interval (s)
+              <Input
+                id="survey-cam"
+                type="number"
+                min={0}
+                max={600}
+                step={1}
+                value={surveyOpts.cameraTriggerIntervalS}
+                onChange={(e) => setSurveyOpts((o) => ({ ...o, cameraTriggerIntervalS: Number(e.target.value) || 5 }))}
+                className="text-sm"
+              />
+            </Label>
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={(e) => { e.preventDefault(); onGenerateSurvey() }}>
+              Generate
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* ----------------------------------- corridor modal (M7) */}
+      <AlertDialog open={corridorOpen} onOpenChange={setCorridorOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <Shapes className="size-4 text-muted-foreground" aria-hidden="true" />
+              Corridor Pattern parameters
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Generate a corridor survey along the {corridorLine.length}-vertex polyline. Back-and-forth
+              sweeps perpendicular to the polyline at the chosen corridor width, spaced along the
+              polyline at the chosen leg spacing. Boustrophedon alternating direction per sweep.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="grid grid-cols-3 gap-3 py-1">
+            <Label htmlFor="corridor-width" className="flex flex-col gap-1 text-xs">
+              Corridor width (m)
+              <Input
+                id="corridor-width"
+                type="number"
+                min={2}
+                max={500}
+                step={1}
+                value={corridorOpts.corridorWidthM}
+                onChange={(e) => setCorridorOpts((o) => ({ ...o, corridorWidthM: Number(e.target.value) || 20 }))}
+                className="text-sm"
+              />
+            </Label>
+            <Label htmlFor="corridor-spacing" className="flex flex-col gap-1 text-xs">
+              Leg spacing (m)
+              <Input
+                id="corridor-spacing"
+                type="number"
+                min={1}
+                max={500}
+                step={1}
+                value={corridorOpts.legSpacingM}
+                onChange={(e) => setCorridorOpts((o) => ({ ...o, legSpacingM: Number(e.target.value) || 10 }))}
+                className="text-sm"
+              />
+            </Label>
+            <Label htmlFor="corridor-alt" className="flex flex-col gap-1 text-xs">
+              Altitude (m AGL)
+              <Input
+                id="corridor-alt"
+                type="number"
+                min={1}
+                max={file.geofence.ceiling_m}
+                step={1}
+                value={corridorOpts.altitudeM}
+                onChange={(e) => setCorridorOpts((o) => ({ ...o, altitudeM: Number(e.target.value) || 30 }))}
+                className="text-sm"
+              />
+            </Label>
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={(e) => { e.preventDefault(); onGenerateCorridor() }}>
+              Generate
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* ----------------------------------- perimeter modal (M7) */}
+      <AlertDialog open={perimeterOpen} onOpenChange={setPerimeterOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <Shapes className="size-4 text-muted-foreground" aria-hidden="true" />
+              Perimeter Pattern parameters
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Generate a perimeter patrol loop inset from the {file.geofence.inclusion.length}-vertex
+              geofence polygon. One nav waypoint per inset vertex, connected in a loop (the drone
+              returns implicitly from the last vertex to the first). The inset is computed toward
+              the polygon centroid — exact for convex polygons, approximate for irregular shapes.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="grid grid-cols-2 gap-3 py-1">
+            <Label htmlFor="perim-offset" className="flex flex-col gap-1 text-xs">
+              Offset (m, inside polygon)
+              <Input
+                id="perim-offset"
+                type="number"
+                min={0}
+                max={100}
+                step={1}
+                value={perimeterOpts.offsetM}
+                onChange={(e) => setPerimeterOpts((o) => ({ ...o, offsetM: Number(e.target.value) || 5 }))}
+                className="text-sm"
+              />
+            </Label>
+            <Label htmlFor="perim-alt" className="flex flex-col gap-1 text-xs">
+              Altitude (m AGL)
+              <Input
+                id="perim-alt"
+                type="number"
+                min={1}
+                max={file.geofence.ceiling_m}
+                step={1}
+                value={perimeterOpts.altitudeM}
+                onChange={(e) => setPerimeterOpts((o) => ({ ...o, altitudeM: Number(e.target.value) || 30 }))}
+                className="text-sm"
+              />
+            </Label>
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={(e) => { e.preventDefault(); onGeneratePerimeter() }}>
+              Generate
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
