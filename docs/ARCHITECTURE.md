@@ -1,41 +1,42 @@
 # RustSim Architecture
 
-One repo, three components, one live-verified contract chain:
+One repo, three components + a GCS catalog server, one live-verified contract chain:
 
 ```
                        ┌──────────────────────────────┐
                        │        browser user          │
+                       │  7 tabs: Plan · Fly · Sim ·   │
+                       │  Fleet C2 · OpMap · Setup ·  │
+                       │  Analyze                     │
                        └──────────────┬───────────────┘
                                       │ HTTP/WS (relative paths)
                      ┌────────────────▼─────────────────┐
                      │   Caddy gateway :81 (XTransformPort)   │
-                     └───────┬───────────────────┬──────┘
-                             │ :8200+i           │ :8400
-              ┌──────────────▼─────┐   ┌─────────▼────────────┐
-              │ RustSim Core (sim) │   │ RustSim Fleet (fleet) │
-              │  per vehicle       │   │  mission manager      │
-              │  sitsim-cli        │◄──┤  mavfleet             │
-              │  REST+WS + HIL TCP │   │  REST+WS control plane│
-              └─────────┬──────────┘   └─────────┬────────────┘
-                        │ TCP 4560+i (HIL, lockstep)  │ spawn + UDP links
-              ┌─────────▼──────────┐   ┌─────────▼────────────┐
-              │  PX4 SITL v1.16.2  │   │  PX4 SITL v1.16.2     │
-              │  (unmodified)      │   │  (unmodified, -i)     │
-              └────────────────────┘   └───────────────────────┘
+                     └──┬──────────┬───────────────┬───┘
+                        │ :8200+i  │ :8300         │ :8400
+              ┌─────────▼────┐  ┌──▼──────────┐  ┌─▼──────────────────┐
+              │ RustSim Core │  │ RustSim     │  │ RustSim Fleet      │
+              │ (sim)        │  │ Catalog     │  │ (fleet)             │
+              │ per vehicle  │  │ fleet-     │  │ mission manager     │
+              │ sitsim-cli   │◄─┤ catalog     │  │ mavfleet             │
+              │ REST+WS +HIL │  │ mission CRUD│  │ REST+WS control plane│
+              │ TCP          │  │ replay/ULog │  │                     │
+              └────────┬─────┘  │ presets     │  └─────────┬──────────┘
+                       │        └─────────────┘            │
+              ┌────────▼─────────┐               ┌──────────▼──────────┐
+              │  PX4 SITL v1.16.2 │               │  PX4 SITL v1.16.2    │
+              │  (unmodified)     │               │  (unmodified, -i)    │
+              └───────────────────┘               └──────────────────────┘
 ```
 
-- The **console** talks only to the two Rust control planes (REST for
-  status/commands, WS for telemetry). The `XTransformPort` gateway pattern
-  lets a single origin serve any backend port — the same routing the sandbox
-  preview proxy uses; `console/Caddyfile.example` reproduces it locally.
-- The **fleet manager** spawns one `sitsim-cli` + one `px4 -i <n>` pair per
-  vehicle (the `[sim]` command template in the scenario TOML), drives them
-  over MAVLink UDP, and supervises the mission.
-- Each **sitsim-cli** owns one vehicle's physics: PX4 connects to it as a TCP
-  client on 4560+i and the pair exchanges HIL_SENSOR / HIL_STATE_QUATERNION /
-  HIL_GPS (sim -> PX4) and HIL_ACTUATOR_CONTROLS (PX4 -> sim) in lockstep at
-  200 Hz virtual time. The whole flight stack — EKF2, commander, navigator,
-  offboard — runs in **unmodified PX4**.
+- The **console** (7 tabs) talks to three Rust control planes:
+  - `:8200+i` (sim) — physics telemetry, fault injection (Sim Console, Fly View)
+  - `:8300` (catalog) — mission CRUD, replay/ULog browse, presets (Plan View, Analyze View, Vehicle Setup)
+  - `:8400` (fleet) — vehicle state, arm/disarm, mission upload/download, fleet orchestration (Fly View, Fleet C2, Operator Map, Vehicle Setup)
+  - The `XTransformPort` gateway pattern lets a single origin serve any backend port.
+- The **fleet manager** spawns one `sitsim-cli` + one `px4 -i <n>` pair per vehicle, drives them over MAVLink UDP, and supervises the mission.
+- The **fleet-catalog** server (`:8300`, added in M1) is a separate binary (`fleet-mission` crate) that owns the mission file store (TOML on disk, ADR-0019), validation rules (ADR-0026), PX4 version gate (ADR-0029), replay file streaming, and ULog serving via pyulog (ADR-0021). It is lifecycle-independent from the fleet manager — the catalog stays up while mavfleet is torn down between runs.
+- Each **sitsim-cli** owns one vehicle's physics: PX4 connects to it as a TCP client on 4560+i and the pair exchanges HIL_SENSOR / HIL_STATE_QUATERNION / HIL_GPS (sim -> PX4) and HIL_ACTUATOR_CONTROLS (PX4 -> sim) in lockstep at 200 Hz virtual time.
 
 ## Port map (contract)
 
@@ -43,6 +44,7 @@ One repo, three components, one live-verified contract chain:
 |------|-------|----------|
 | 4560 + i | sitsim-cli (listener) | TCP, MAVLink v2 HIL lockstep; PX4 connects as client |
 | 8200 + i | sitsim-cli control plane | HTTP REST + WS (10 Hz telemetry frames) |
+| 8300 | fleet-catalog (M1) | HTTP REST (mission CRUD, replay/ULog, presets) |
 | 8400 | mavfleet control plane | HTTP REST + WS (10 Hz fleet frames) |
 | 14540 + i | manager's telemetry link | UDP; PX4 streams telemetry here |
 | 14580 + i | PX4 onboard link | UDP; the manager sends commands here |

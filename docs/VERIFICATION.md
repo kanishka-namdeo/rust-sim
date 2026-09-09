@@ -81,3 +81,54 @@ shell call, with CI-classifiable exit codes.
     windows clear of the arming phase (`fleet/docs/adr/0018`).
 
 Re-run any of this yourself: see [OPERATIONS.md](OPERATIONS.md).
+
+## GCS v1 verification ladder (G-0 through G-13)
+
+The G-ladder was added in the GCS v1 spec (`docs/GCS_SPEC.md` §9) and
+extends the existing I/F/S/O/R ladder with 14 new single-invocation
+harnesses under `console/tests/`. All 14 gates are green as of the
+latest run (2026-09-09).
+
+| Gate | Name | Harness | What it asserts | Status |
+|------|------|---------|----------------|--------|
+| **G-0** | PX4 version check | `console/tests/run_g0_version.sh` | `:8300` rejects upload to a vehicle reporting PX4 ≠ v1.16.2 with HTTP 426 + `PX4_VERSION_MISMATCH`; accepts v1.16.2 | **PASS** |
+| **G-1** | Mission validation | `console/tests/run_g1_validation.sh` | Schema + geofence geometry + rally containment; rejects empty/out-of-fence missions; vertex-drag stress test (50+ vertices, no UI freeze) | **PASS** |
+| **G-2** | Mission persistence | `console/tests/run_g2_persistence.sh` | CRUD round-trip (create, list, fetch, update, delete); survives catalog restart; version history retained | **PASS** |
+| **G-3** | Mission upload (3 types) | `console/tests/run_g3_upload.sh` | MAVLink mission protocol: count → items → ack for all three `MAV_MISSION_TYPE` values; all items ack'd by mock PX4; rollback on failure | **PASS** |
+| **G-4** | Mission download (3 types) | `console/tests/run_g4_download.sh` | Download from PX4 after upload; round-trip equality (seq, command, x, y, z) for all three types | **PASS** |
+| **G-5** | Fly View 1-vehicle telemetry | `console/tests/run_g5_flyview.sh` | 10 Hz telemetry moves on map + strip + attitude HUD for 10 s; armed=false; health array present | **PASS** |
+| **G-6** | Multi-vehicle Fly View | `console/tests/run_g6_multivehicle.sh` | 2 vehicles on map simultaneously, distinct sysid (1+2), distinct positions (100 m east offset verified) | **PASS** |
+| **G-7** | Pre-arm + arm/disarm | `console/tests/run_g7_arm.sh` | Pre-arm checks run (5 QGC-style: EKF2/GPS/Mode/Fence/Battery), block arm when failing, pass when fixed, arm→disarm round-trip | **PASS** |
+| **G-8** | Vehicle Setup extensions | `console/tests/run_g8_setup_ext.sh` | Param search filter (ROLLRATE → 3), group filter (MPC → 6), diff-against-defaults (is_changed), preset save/load round-trip | **PASS** |
+| **G-9** | Fleet mission binding | `console/tests/run_g9_binding.sh` | Vehicle 0 → mission A, vehicle 1 → mission B; DELETE clears v0, v1 intact; 9 phases, 25 assertions | **PASS** |
+| **G-10** | Fleet orchestration | `console/tests/run_g10_orchestration.sh` | Parallel mode: 2 vehicles attempted; sequential mode: v0 first, v1 after; both "started" (CRC fix verified) | **PASS** |
+| **G-11** | ULog browse + plot | `console/tests/run_g11_ulog.sh` | List `.ulg` files, list topics, fetch topic data, replay list/meta/topics/data + 3 negative paths (404, 404, 400) | **PASS** |
+| **G-12** | Replay scrub + overlay | `console/tests/run_g12_replay.sh` | Load `.replay`, scrub timeline (first half [0..50], second half [50..100]), monotonicity, q_wxyz identity quaternion | **PASS** |
+| **G-13** | Survey/corridor/perimeter patterns | `console/tests/run_g13_patterns.sh` | Generate each pattern on a known polygon; 19 checks: waypoint count, all-inside-polygon, no gaps > leg spacing, mission editor integration | **PASS** |
+
+### G-ladder notes
+
+- The G-3/G-4/G-9/G-10 harnesses use a Python mock PX4
+  (`mock_px4_fleet.py` / `mock_px4_mission.py`) that speaks the full
+  MAVLink mission protocol — no real PX4 SITL build required for these
+  gates. The G-5/G-6/G-7/G-8 harnesses use a mock that also sends 10 Hz
+  telemetry + responds to arm/disarm + PARAM_REQUEST_LIST.
+- The M5 known issue (mission_upload timeout against concurrent
+  telemetry) was fixed in commit `51ef509`: the root cause was wrong
+  MAVLink CRC extra values for MISSION_REQUEST_INT (51) and
+  MISSION_REQUEST (40). Cross-checked against pymavlink 2.4.49.
+- G-10 now shows both vehicles "started" (was "failed" before the CRC
+  fix). The `try_recv` pre-check in the link task prevents command
+  starvation by the 10 Hz telemetry flood.
+
+### Updated unit test baselines
+
+- `sim/`: 99 tests (unchanged).
+- `fleet/`: **285 tests** (was 169 — +116 from M1-M7: 69 GCS catalog
+  tests + 25 M4 param extension tests + 9 M5 fleet orchestration tests +
+  21 M6 replay/ULog tests + 5 M3 prearm tests + 7 M2 mission upload
+  tests).
+- `console/`: `npm run lint` + `npm run build` clean; 14 G-ladder
+  harnesses all PASS.
+
+Re-run any of this yourself: see [OPERATIONS.md](OPERATIONS.md).
