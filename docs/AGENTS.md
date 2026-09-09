@@ -12,9 +12,9 @@ components in `sim/docs/` and `fleet/docs/`.
 ## Ownership
 
 Owned here: `ARCHITECTURE.md`, `VERIFICATION.md`, `OPERATIONS.md`,
-`DEPLOYMENT.md`, `SANDBOX_SETUP.md`, `GCS_SPEC.md`, `images/`. Not owned
-here: component specs/ADRs (see `../sim/AGENTS.md`, `../fleet/AGENTS.md`,
-`../console/AGENTS.md`).
+`DEPLOYMENT.md`, `SANDBOX_SETUP.md`, `GCS_SPEC.md`, `GCS_V2_SPEC.md`,
+`images/`. Not owned here: component specs/ADRs (see `../sim/AGENTS.md`,
+`../fleet/AGENTS.md`, `../console/AGENTS.md`).
 
 ## Local Contracts
 
@@ -48,6 +48,16 @@ here: component specs/ADRs (see `../sim/AGENTS.md`, `../fleet/AGENTS.md`,
   scope, architecture, the G-ladder, or the market/competitive context
   changes — not for ADR-level decisions (those go in
   `console/docs/adr/`).
+- `GCS_V2_SPEC.md` is the binding engineering spec for the **GCS v2
+  "Operations Canvas"** redesign (single full-bleed MapLibre GL map +
+  edge-HUD widgets + right-click context menus + single-key shortcuts,
+  M8..M15 milestones, G-14..G-21 gates). It supersedes `GCS_SPEC.md`'s
+  presentation-layer contracts (§8 UX flows, UI-facing gate assertions)
+  and guarantees **zero backend changes** (all ADRs 0016–0029 and the
+  G-0..G-13 backend gates carry over). Until M8 lands, the shipped
+  console remains GCS v1; v2 statements describe target state, not
+  shipped state. Update it only via the decision-log/section-amendment
+  pattern it defines (§1.4, §13.3).
 
 ## Work Guidance
 

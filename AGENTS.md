@@ -30,6 +30,14 @@ Operator Map, Vehicle Setup, Analyze). The binding spec is
 `docs/GCS_SPEC.md`; GCS-specific ADRs live in `console/docs/adr/`
 (numbered 0019+ to continue the cross-repo sequence).
 
+The **GCS v2 "Operations Canvas"** redesign — single-screen full-bleed
+MapLibre GL map with edge-HUD widgets, right-click context menus, and
+single-key shortcuts (milestones M8..M15, gates G-14..G-21, zero backend
+changes) — is specified in `docs/GCS_V2_SPEC.md`. It supersedes
+`GCS_SPEC.md`'s presentation-layer contracts. Until M8 lands, the shipped
+console remains GCS v1 (7 tabs, Leaflet); v2 spec statements describe
+target state, not shipped state.
+
 ## RustSim Repository Rules (Local Contracts)
 
 - No credentials in the tree: git auth tokens (session PATs) live only in
