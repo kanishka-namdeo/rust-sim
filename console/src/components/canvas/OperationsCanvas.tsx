@@ -33,6 +33,7 @@ import { ShortcutsProvider } from './ShortcutsProvider'
 import { MissionStrip } from './overlays/MissionStrip'
 import { LibraryPanel } from './overlays/LibraryPanel'
 import { FleetC2Panel } from './overlays/FleetC2Panel'
+import { SetupDrawer } from './overlays/SetupDrawer'
 import { ContextMenu } from './map/context-menu'
 import { useAppStore } from '@/state/app-store'
 import { startTelemetry, stopTelemetry } from '@/state/telemetry-store'
@@ -76,10 +77,11 @@ export function OperationsCanvas() {
       {/* M10 follow-up: right-click context menus (§7.2 M1..M5). */}
       <ContextMenu />
 
-      {/* Zone F overlay panels — MissionStrip + Library + FleetC2 (M10/M11) */}
+      {/* Zone F overlay panels — MissionStrip + Library + FleetC2 + Setup (M10/M11/M12) */}
       {app.overlays.mission && <MissionStrip />}
       {app.overlays.library && <LibraryPanel />}
       {app.overlays.fleet && <FleetC2Panel />}
+      {app.overlays.setup && <SetupDrawer />}
     </div>
   )
 }
