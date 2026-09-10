@@ -69,6 +69,15 @@ import {
 } from './map/camera'
 import { getFleetSnapshot, useTelemetrySnapshot } from '@/state/telemetry-store'
 import { useAppStore, getSnapshot as getAppStoreSnapshot, setGotoPending } from '@/state/app-store'
+import {
+  useMapSettings,
+  getSnapshot as getMapSettingsSnapshot,
+  getBasemap,
+  setBasemap,
+  cycleBasemap,
+  LAYER_GROUP_MAP,
+  type BasemapId,
+} from '@/state/map-settings'
 import { usePlanStore, getSnapshot as getPlanStoreSnapshot, getErroredSeqs, addWaypoint, addFenceVertex, addExclusionVertex, moveFenceVertex, moveWaypoint } from '@/state/plan-store'
 import { DEFAULT_ORIGIN } from '@/lib/geo'
 
@@ -93,47 +102,17 @@ if (typeof window !== 'undefined') {
 }
 
 // ---------------------------------------------------------------------------
-// Basemap ladder (§6.3) — keyless-first, dark, offline-safe.
+// Basemap catalog (§6.3) — keyless-first, offline-safe. The catalog lives in
+// state/map-settings.ts so the Settings panel + the cycle-basemap shortcut
+// share a single source of truth. The Settings panel exposes Street (dark),
+// Street (light), Satellite, Hybrid, Terrain, Offline — the QGC/MP-class
+// basemap options.
 // ---------------------------------------------------------------------------
 
-const BASEMAP_LADDER = [
-  {
-    name: 'OpenFreeMap dark',
-    style: 'https://tiles.openfreemap.org/styles/dark',
-    attribution: '© OpenFreeMap © OpenMapTiles · Data from OpenStreetMap',
-  },
-  {
-    name: 'CARTO dark-matter',
-    style: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
-    attribution: '© OpenStreetMap contributors © CARTO',
-    // CARTO keyless deprecated 2026-08-26 — transient fallback only.
-    deprecated: true as const,
-  },
-  {
-    // OSM raster — built inline below as a raster source style.
-    name: 'OSM raster',
-    style: {
-      version: 8,
-      sources: {
-        osm: {
-          type: 'raster' as const,
-          tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
-          tileSize: 256,
-          attribution: '© OpenStreetMap contributors',
-        },
-      },
-      layers: [
-        { id: 'osm-tiles', type: 'raster' as const, source: 'osm' },
-      ],
-    },
-    attribution: '© OpenStreetMap contributors',
-  },
-  {
-    name: 'Offline',
-    style: { version: 8, sources: {}, layers: [] },
-    attribution: 'Offline — overlays only',
-  },
-] as const
+// Helper — returns the active basemap spec from the settings store.
+function activeBasemap(): ReturnType<typeof getBasemap> {
+  return getBasemap(getMapSettingsSnapshot().basemap)
+}
 
 // ---------------------------------------------------------------------------
 // __rsimMapDebug gate instrument (§9.2 binding). Always-on; negligible cost.
@@ -180,15 +159,20 @@ export function MapCanvas(): JSX.Element {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
   const cameraRef = useRef<CameraState>(initialCameraState())
-  const basemapIdxRef = useRef(0)
   const basemapRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const noGlRef = useRef(false)
   const offlineRef = useRef(false)
+  /** Last basemap id we applied to the map — used to detect Settings changes. */
+  const appliedBasemapRef = useRef<BasemapId | null>(null)
+  /** Applied layer-visibility mask — used to detect Settings changes. */
+  const appliedLayersRef = useRef<Record<string, boolean>>({})
 
-  // Subscribe to telemetry + app store — the snapshot is what we draw.
+  // Subscribe to telemetry + app store + map settings + plan store — the
+  // snapshot is what we draw.
   const snap = useTelemetrySnapshot()
   const app = useAppStore()
   const plan = usePlanStore()
+  const mapSettings = useMapSettings()
 
   // ---------------------------------------------------------------------------
   // 1. Map init — vanilla maplibre (the spec's R-7 fallback is the default).
@@ -207,7 +191,7 @@ export function MapCanvas(): JSX.Element {
         pitch: 0,
         bearing: 0,
         maxPitch: 60,
-        style: BASEMAP_LADDER[0].style as maplibregl.StyleSpecification | string,
+        style: activeBasemap().style as maplibregl.StyleSpecification | string,
         attributionControl: { compact: true },
         canvasContextAttributes: { antialias: true, powerPreference: 'high-performance' },
       })
@@ -229,7 +213,8 @@ export function MapCanvas(): JSX.Element {
 
     map.on('load', () => {
       mapDebug.loadedAtMs = performance.now()
-      mapDebug.styleName = BASEMAP_LADDER[basemapIdxRef.current].name
+      mapDebug.styleName = activeBasemap().label
+      appliedBasemapRef.current = getMapSettingsSnapshot().basemap
 
       // Add M8 layers (L1, L2, L13).
       addLayers({
@@ -255,17 +240,28 @@ export function MapCanvas(): JSX.Element {
       flushData()
     })
 
-    // Style load error → next basemap in the ladder.
+    // Style load error → fall to next basemap (the offline-safe ladder).
     map.on('styleimagemissing', () => {
       // no-op — handled by error event
     })
     map.on('error', (e) => {
       // MapLibre emits 'error' for tile/style-load failures. The error has
-      // an `error` field with a `source` hint; we advance the basemap ladder
-      // when a style-source load fails.
+      // an `error` field with a `source` hint; we advance to the next
+      // basemap when a style-source load fails (e.g. provider down).
       const source = (e as { sourceId?: string; source?: unknown }).sourceId
       if (source && !e.error?.message?.includes('404')) return // ignore per-tile 404s
-      advanceBasemap()
+      // Pick the next keyless basemap that isn't the one we just tried.
+      const current = getMapSettingsSnapshot().basemap
+      const order: BasemapId[] = ['street-dark', 'street-light', 'satellite', 'hybrid', 'terrain', 'offline']
+      const idx = order.indexOf(current)
+      // Try the next 4 basemaps in the ladder; if all fail we land on 'offline'.
+      for (let i = 1; i <= order.length; i++) {
+        const next = order[(idx + i) % order.length]
+        if (next !== current) {
+          setBasemap(next)
+          break
+        }
+      }
     })
 
     // __rsimMapDebug: pitch/bearing updated on moveend.
@@ -466,9 +462,16 @@ export function MapCanvas(): JSX.Element {
       cameraRef.current = resetCamera(cameraRef.current)
     }
     const onPitchGlance = (): void => {
+      // X toggles pitch 0 ↔ 55 ("3D glance"). Mirror into the projection
+      // setting so the Settings panel reflects the current state.
       const next = cameraRef.current.pitch === 0 ? 55 : 0
       map.easeTo({ pitch: next })
       cameraRef.current = togglePitchGlance(cameraRef.current)
+      // Sync the projection setting (3d-pitch ↔ 2d) — fire-and-forget.
+      void import('@/state/map-settings').then(({ getSnapshot, setProjection }) => {
+        const want = next === 0 ? '2d' : '3d-pitch'
+        if (getSnapshot().projection !== want) setProjection(want)
+      })
     }
     const onRecenter = (): void => {
       const fleetSnap = getFleetSnapshot()
@@ -477,7 +480,7 @@ export function MapCanvas(): JSX.Element {
         map.easeTo({ center: [active.lon, active.lat], zoom: 16 })
       }
     }
-    const onCycleBasemap = (): void => { advanceBasemap() }
+    const onCycleBasemap = (): void => { cycleBasemap() }
     window.addEventListener('rsim:camera-reset', onCameraReset)
     window.addEventListener('rsim:camera-pitch-glance', onPitchGlance)
     window.addEventListener('rsim:camera-recenter', onRecenter)
@@ -501,31 +504,91 @@ export function MapCanvas(): JSX.Element {
   }, [])
 
   // ---------------------------------------------------------------------------
-  // 2. Advance the basemap ladder on style-load error (§6.3).
+  // 2. Apply map-settings changes (basemap / orientation / projection /
+  //    layer visibility). Subscribes to the map-settings store; on change,
+  //    re-styles the map + re-applies overlay layers + sets visibility.
   // ---------------------------------------------------------------------------
-  function advanceBasemap(): void {
+  useEffect(() => {
     const map = mapRef.current
     if (!map) return
-    const next = (basemapIdxRef.current + 1) % BASEMAP_LADDER.length
-    basemapIdxRef.current = next
-    const entry = BASEMAP_LADDER[next]
-    mapDebug.styleName = entry.name
-    offlineRef.current = entry.name === 'Offline'
-    // setStyle returns `this` (sync); the new style loads async, so we
-    // listen for `style.load` once to re-add our overlay layers.
-    map.setStyle(entry.style as maplibregl.StyleSpecification | string, { diff: false })
-    map.once('style.load', () => {
-      addLayers({
-        addSource: (id, spec) => map.addSource(id, spec as maplibregl.SourceSpecification),
-        addLayer: (spec) => map.addLayer(spec as maplibregl.LayerSpecification),
-        colorToken: (name, fallback) => readColorToken(name, fallback),
+    const settings = getMapSettingsSnapshot()
+    const spec = getBasemap(settings.basemap)
+    // Basemap change — re-style + re-add overlays.
+    if (appliedBasemapRef.current !== settings.basemap) {
+      mapDebug.styleName = spec.label
+      offlineRef.current = settings.basemap === 'offline'
+      appliedBasemapRef.current = settings.basemap
+      // setStyle returns `this` (sync); the new style loads async, so we
+      // listen for `style.load` once to re-add our overlay layers.
+      map.setStyle(spec.style as maplibregl.StyleSpecification | string, { diff: false })
+      map.once('style.load', () => {
+        addLayers({
+          addSource: (id, s) => map.addSource(id, s as maplibregl.SourceSpecification),
+          addLayer: (l) => map.addLayer(l as maplibregl.LayerSpecification),
+          colorToken: (name, fallback) => readColorToken(name, fallback),
+        })
+        if (offlineRef.current) {
+          // Show the graticule as the offline fallback grid + schedule a
+          // 60s retry back to the operator's chosen basemap.
+          try { map.setLayoutProperty('graticule-line', 'visibility', 'visible') } catch { /* style not loaded */ }
+          if (basemapRetryTimerRef.current) clearTimeout(basemapRetryTimerRef.current)
+          basemapRetryTimerRef.current = setTimeout(() => {
+            // After 60s offline, retry the operator's originally-selected
+            // basemap (the one they picked in Settings).
+            const current = getMapSettingsSnapshot().basemap
+            if (current === 'offline') {
+              setBasemap('street-dark')
+            }
+          }, 60000)
+        }
+        // Re-apply layer visibility (the layers were just re-added —
+        // default visibility is 'visible'; we need to hide disabled ones).
+        applyLayerVisibility(map, settings)
+        flushData()
       })
-      if (offlineRef.current) {
-        map.setLayoutProperty('graticule-line', 'visibility', 'visible')
-        basemapRetryTimerRef.current = setTimeout(advanceBasemap, 60000) // 60s
+      return
+    }
+    // Orientation + projection — apply via easeTo (no re-style needed).
+    if (settings.projection === '3d-pitch') {
+      if (cameraRef.current.pitch === 0) {
+        map.easeTo({ pitch: 55 })
+        cameraRef.current = { ...cameraRef.current, pitch: 55 }
       }
-      flushData()
-    })
+    } else if (settings.projection === '2d') {
+      if (cameraRef.current.pitch !== 0) {
+        map.easeTo({ pitch: 0 })
+        cameraRef.current = { ...cameraRef.current, pitch: 0 }
+      }
+    }
+    // Track-up — the bearing follow happens in flushData (we read the
+    // active vehicle's heading and easeTo that bearing on each follow
+    // cadence). North-up — reset bearing to 0 once, then flushData keeps
+    // it at 0.
+    if (settings.orientation === 'north-up' && cameraRef.current.bearing !== 0) {
+      map.easeTo({ bearing: 0 })
+      cameraRef.current = { ...cameraRef.current, bearing: 0 }
+    }
+    // Layer visibility — apply immediately (no re-style needed).
+    applyLayerVisibility(map, settings)
+  }, [mapSettings])
+
+  // Apply per-layer visibility from the settings store.
+  function applyLayerVisibility(map: maplibregl.Map, settings: ReturnType<typeof getMapSettingsSnapshot>): void {
+    for (const group of Object.keys(settings.layers) as (keyof typeof settings.layers)[]) {
+      const visible = settings.layers[group]
+      const layerIds = LAYER_GROUP_MAP[group]
+      for (const layerId of layerIds) {
+        const before = appliedLayersRef.current[layerId]
+        if (before === visible) continue
+        try {
+          map.setLayoutProperty(layerId, 'visibility', visible ? 'visible' : 'none')
+          appliedLayersRef.current[layerId] = visible
+        } catch {
+          // Layer not in the style yet (e.g. mid-basemap-swap) — skip; will
+          // retry on the next settings change or the next flushData.
+        }
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -607,8 +670,19 @@ export function MapCanvas(): JSX.Element {
       const active = fleetSnap.vehicles.find((v) => v.index === app.activeVehicle) ?? fleetSnap.vehicles[0]
       if (shouldFollowEase(cameraRef.current, active ?? null, now)) {
         const target = followEaseTarget(active, cameraRef.current)
+        // Track-up: rotate the bearing to follow the active vehicle's
+        // heading (yaw_deg). The map's `bearing` is the rotation from
+        // north; we negate the vehicle heading so the vehicle's nose
+        // points up. Only applied when the operator chose 'track-up' in
+        // the Settings panel.
+        const settings = getMapSettingsSnapshot()
+        if (settings.orientation === 'track-up' && active && typeof active.yaw_deg === 'number' && !Number.isNaN(active.yaw_deg)) {
+          const desiredBearing = (active.yaw_deg + 360) % 360
+          target.bearing = desiredBearing
+          cameraRef.current = { ...cameraRef.current, bearing: desiredBearing }
+        }
         map.easeTo({ ...target, duration: 800 })
-        cameraRef.current = markFollowEase(cameraRef.current, active.id, now)
+        cameraRef.current = markFollowEase(cameraRef.current, active!.id, now)
       }
     }
   }

@@ -507,10 +507,14 @@ const CHEAT_GROUPS: { title: string; rows: CheatRow[] }[] = [
     ],
   },
   {
-    title: 'Replay',
+    title: 'Map',
     rows: [
-      { key: 'Space', verb: 'play/pause replay (Analyze open)', endpoint: '—' },
-      { key: '←/→', verb: 'scrub ∓/±2s (Analyze + canvas unfocused)', endpoint: '—' },
+      { key: 'N', verb: 'cycle basemap (Street → Satellite → Hybrid → Terrain → Offline)', endpoint: '—' },
+      { key: 'X', verb: 'toggle 2D ↔ 3D Pitch (mirror of Settings → Map → Projection)', endpoint: '—' },
+      { key: 'Z', verb: 'reset camera (north-up, pitch 0, re-fit fence)', endpoint: '—' },
+      { key: 'C', verb: 're-center on active vehicle', endpoint: '—' },
+      { key: 'F', verb: 'toggle follow camera', endpoint: '—' },
+      { key: 'V', verb: 'toggle NED inset view', endpoint: '—' },
     ],
   },
 ]

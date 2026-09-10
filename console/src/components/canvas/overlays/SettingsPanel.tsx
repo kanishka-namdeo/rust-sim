@@ -5,14 +5,35 @@
  *
  * Spec: docs/GCS_V2_SPEC.md §8.5 Settings + §7.3.4 (WCAG 2.1.4 toggle).
  *
- * Units (metric default: m, m/s; imperial opt-in), coordinates (6-dp decimal
- * default; DMS opt-in), clock (UTC default; local opt-in), keyboard shortcuts
- * on/off (§7.3.4 compliance path), Reset layout (§2.2 F). Persisted in
- * localStorage (rsim.settings.v1).
+ * Sections:
+ *   - Map — basemap provider (Street dark/light, Satellite, Hybrid, Terrain,
+ *     Offline), orientation (North Up / Track Up), projection (2D / 3D Pitch),
+ *     per-layer visibility (vehicles, tracks, waypoints, geofence, rally,
+ *     mission, graticule). The QGC/MP-class map view options.
+ *   - Units (metric default: m, m/s; imperial opt-in)
+ *   - Coordinates (6-dp decimal default; DMS opt-in)
+ *   - Clock (UTC default; local opt-in)
+ *   - Keyboard shortcuts on/off (§7.3.4 compliance path)
+ *   - Reset layout (§2.2 F)
+ *
+ * Persisted to localStorage (rsim.settings.v1 for units/coords/clock/shortcuts,
+ * rsim.map.v1 for the Map section — kept in state/map-settings.ts).
  */
 
 import { useState, type JSX } from 'react'
 import { toggleOverlay } from '@/state/app-store'
+import {
+  useMapSettings,
+  setBasemap,
+  setOrientation,
+  setProjection,
+  setLayerVisibility,
+  BASEMAPS,
+  type BasemapId,
+  type MapOrientation,
+  type MapProjection,
+  type LayerGroup,
+} from '@/state/map-settings'
 
 const STORAGE_KEY = 'rsim.settings.v1'
 
@@ -51,8 +72,23 @@ export function setShortcutsEnabled(on: boolean): void {
   saveSettings(s)
 }
 
+// ---------------------------------------------------------------------------
+// Map section — the layer-group → label mapping.
+// ---------------------------------------------------------------------------
+
+const LAYER_GROUP_LABELS: { id: LayerGroup; label: string; hint: string }[] = [
+  { id: 'vehicles', label: 'Vehicles', hint: 'L1 — live vehicle markers + labels' },
+  { id: 'tracks', label: 'Tracks', hint: 'L2 — vehicle trajectory polylines' },
+  { id: 'waypoints', label: 'Waypoints', hint: 'L4 — planned mission waypoints + path' },
+  { id: 'geofence', label: 'Geofence', hint: 'L3 — inclusion + exclusion polygons + vertices' },
+  { id: 'rally', label: 'Rally points', hint: 'L7 — fallback landing points' },
+  { id: 'mission', label: 'Mission polyline', hint: 'L5 — active mission path overlay' },
+  { id: 'graticule', label: 'Graticule', hint: 'L13 — offline reference grid' },
+]
+
 export function SettingsPanel(): JSX.Element {
   const [settings, setSettings] = useState<Settings>(loadSettings)
+  const mapSettings = useMapSettings()
 
   const update = (partial: Partial<Settings>): void => {
     const next = { ...settings, ...partial }
@@ -61,8 +97,6 @@ export function SettingsPanel(): JSX.Element {
   }
 
   const resetLayout = (): void => {
-    // Clear the rsim.layout.v1 localStorage key (§2.2 F overlay panel
-    // positions + the map center/zoom persisted there).
     try { localStorage.removeItem('rsim.layout.v1') } catch { /* non-fatal */ }
   }
 
@@ -73,6 +107,48 @@ export function SettingsPanel(): JSX.Element {
         <button type="button" onClick={() => toggleOverlay('settings', { force: false })} style={{ background: 'transparent', border: '1px solid var(--rsim-border)', borderRadius: 'var(--rsim-radius-control)', color: 'var(--rsim-text-dim)', cursor: 'pointer', padding: '4px 8px', fontSize: 11 }}>×</button>
       </div>
       <div style={{ flex: 1, overflow: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {/* Map — basemap + orientation + projection + layers */}
+        <Section title="Map — Basemap">
+          {BASEMAPS.map((b) => (
+            <Toggle
+              key={b.id}
+              label={b.label}
+              checked={mapSettings.basemap === b.id}
+              onChange={() => setBasemap(b.id as BasemapId)}
+            />
+          ))}
+          <div style={{ fontSize: 10, color: 'var(--rsim-text-dim)', marginTop: 4 }}>
+            Keyless providers (OpenFreeMap, Esri, OpenTopoMap). Falls to the next on tile/style-load failure. <kbd style={kbdStyle}>N</kbd> cycles through them.
+          </div>
+        </Section>
+
+        <Section title="Map — Orientation">
+          <Toggle label="North Up (bearing = 0)" checked={mapSettings.orientation === 'north-up'} onChange={() => setOrientation('north-up' as MapOrientation)} />
+          <Toggle label="Track Up (follows active vehicle heading)" checked={mapSettings.orientation === 'track-up'} onChange={() => setOrientation('track-up' as MapOrientation)} />
+        </Section>
+
+        <Section title="Map — Projection">
+          <Toggle label="2D (pitch = 0)" checked={mapSettings.projection === '2d'} onChange={() => setProjection('2d' as MapProjection)} />
+          <Toggle label="3D Pitch (pitch = 55°)" checked={mapSettings.projection === '3d-pitch'} onChange={() => setProjection('3d-pitch' as MapProjection)} />
+          <div style={{ fontSize: 10, color: 'var(--rsim-text-dim)', marginTop: 4 }}>
+            <kbd style={kbdStyle}>X</kbd> toggles between 2D and 3D Pitch (the keyboard glance).
+          </div>
+        </Section>
+
+        <Section title="Map — Layers">
+          {LAYER_GROUP_LABELS.map((g) => (
+            <Toggle
+              key={g.id}
+              label={g.label}
+              checked={mapSettings.layers[g.id]}
+              onChange={(v) => setLayerVisibility(g.id, v)}
+            />
+          ))}
+          <div style={{ fontSize: 10, color: 'var(--rsim-text-dim)', marginTop: 4 }}>
+            Toggle individual overlays on/off. Waypoints + Geofence respect the Plan/Fence map modes regardless (they auto-show when the mode is active).
+          </div>
+        </Section>
+
         {/* Units */}
         <Section title="Units">
           <Toggle label="Metric (m, m/s)" checked={settings.units === 'metric'} onChange={() => update({ units: 'metric' })} />
@@ -126,3 +202,14 @@ function Toggle({ label, checked, onChange }: { label: string; checked: boolean;
 }
 
 const btnStyle: React.CSSProperties = { background: 'rgba(17, 22, 29, 0.6)', border: '1px solid var(--rsim-border)', borderRadius: 'var(--rsim-radius-control)', color: 'var(--rsim-text)', fontSize: 11, padding: '4px 10px', cursor: 'pointer', fontFamily: 'var(--rsim-font-mono)' }
+
+const kbdStyle: React.CSSProperties = {
+  display: 'inline-block',
+  padding: '1px 5px',
+  border: '1px solid var(--rsim-border)',
+  borderRadius: 'var(--rsim-radius-chip)',
+  background: 'rgba(17, 22, 29, 0.6)',
+  color: 'var(--rsim-text)',
+  fontFamily: 'var(--rsim-font-mono)',
+  fontSize: 10,
+}
