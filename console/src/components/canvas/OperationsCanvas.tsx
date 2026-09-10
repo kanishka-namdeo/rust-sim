@@ -32,6 +32,7 @@ import { FlushLoop } from './FlushLoop'
 import { ShortcutsProvider } from './ShortcutsProvider'
 import { MissionStrip } from './overlays/MissionStrip'
 import { LibraryPanel } from './overlays/LibraryPanel'
+import { ContextMenu } from './map/context-menu'
 import { useAppStore } from '@/state/app-store'
 import { startTelemetry, stopTelemetry } from '@/state/telemetry-store'
 
@@ -70,6 +71,9 @@ export function OperationsCanvas() {
 
       {/* M9: global key handler + cheat-sheet dialog (§7.3 + §7.3.3). */}
       <ShortcutsProvider />
+
+      {/* M10 follow-up: right-click context menus (§7.2 M1..M5). */}
+      <ContextMenu />
 
       {/* Zone F overlay panels — MissionStrip + Library (M10) */}
       {app.overlays.mission && <MissionStrip />}

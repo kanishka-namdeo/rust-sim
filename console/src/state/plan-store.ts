@@ -315,6 +315,33 @@ export function insertFenceVertex(polyId: number, afterVtxId: number, lat: numbe
   }
 }
 
+/** M10 follow-up: move a fence vertex to a new position (drag interaction). */
+export function moveFenceVertex(polyId: number, vtxId: number, lat: number, lng: number): void {
+  pushUndo()
+  if (polyId === 0) {
+    const inclusion = state.file.geofence.inclusion.map((v, i) =>
+      i === vtxId ? [lat, lng] as [number, number] : v,
+    )
+    setState({
+      file: { ...state.file, geofence: { ...state.file.geofence, inclusion } },
+      dirty: true,
+      validated: null,
+      uploadProgress: null,
+    })
+  } else {
+    const exclusion = state.file.geofence.exclusion.map((poly, i) => {
+      if (i !== polyId - 1) return poly
+      return poly.map((v, vi) => (vi === vtxId ? [lat, lng] as [number, number] : v))
+    })
+    setState({
+      file: { ...state.file, geofence: { ...state.file.geofence, exclusion } },
+      dirty: true,
+      validated: null,
+      uploadProgress: null,
+    })
+  }
+}
+
 export function setFenceCeilingFloor(ceiling_m: number, floor_m: number): void {
   pushUndo()
   setState({

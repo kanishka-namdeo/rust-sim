@@ -68,7 +68,7 @@ import {
 } from './map/camera'
 import { getFleetSnapshot, useTelemetrySnapshot } from '@/state/telemetry-store'
 import { useAppStore, getSnapshot as getAppStoreSnapshot, setGotoPending } from '@/state/app-store'
-import { usePlanStore, getSnapshot as getPlanStoreSnapshot, getErroredSeqs, addWaypoint, addFenceVertex, addExclusionVertex } from '@/state/plan-store'
+import { usePlanStore, getSnapshot as getPlanStoreSnapshot, getErroredSeqs, addWaypoint, addFenceVertex, addExclusionVertex, moveFenceVertex, moveWaypoint } from '@/state/plan-store'
 import { DEFAULT_ORIGIN } from '@/lib/geo'
 
 // Worker URL — set once at module load (§6.2).
@@ -340,6 +340,113 @@ export function MapCanvas(): JSX.Element {
         // Closing is conceptual — the L3 polygon layer renders when ≥ 3 vertices.
       }
     })
+
+    // M10 follow-up: context menu (§7.2) — right-click on any map target.
+    // §7.2: `map.on('contextmenu', e => { e.preventDefault(); const f =
+    // map.queryRenderedFeatures(e.point, {layers:[…]}); openMenu(e.point, f) })`.
+    // Close on user camera gestures (dragstart, wheel, canvas mousedown
+    // outside menu); programmatic easeTo (follow) never closes a menu.
+    map.on('contextmenu', (e) => {
+      e.preventDefault()
+      const point = e.point
+      const lng = e.lngLat.lng
+      const lat = e.lngLat.lat
+      // Query the rendered layers for a hit — vehicles, waypoints, fence
+      // vertices, rally, mission line.
+      const layers = ['vehicles-halo', 'vehicles-body', 'wp-body', 'fence-vertices', 'rally-body', 'mission-line']
+      const features = map.queryRenderedFeatures(point, { layers })
+      const hit = features[0]
+      if (!hit) {
+        // M1 — empty map
+        void import('./map/context-menu').then(({ openMenu }) => openMenu({
+          x: point.x, y: point.y, kind: 'empty', lng, lat,
+        }))
+        return
+      }
+      const props = hit.properties as Record<string, unknown>
+      // Determine the menu kind from the layer id + props.
+      if (hit.layer?.id === 'vehicles-halo' || hit.layer?.id === 'vehicles-body') {
+        void import('./map/context-menu').then(({ openMenu }) => openMenu({
+          x: point.x, y: point.y, kind: 'vehicle',
+          props: { vehicleIndex: typeof props.index === 'number' ? props.index : undefined, vehicleId: typeof props.id === 'string' ? props.id : undefined },
+          lng, lat,
+        }))
+      } else if (hit.layer?.id === 'wp-body') {
+        void import('./map/context-menu').then(({ openMenu }) => openMenu({
+          x: point.x, y: point.y, kind: 'waypoint',
+          props: { seq: typeof props.seq === 'number' ? props.seq : undefined },
+          lng, lat,
+        }))
+      } else if (hit.layer?.id === 'fence-vertices') {
+        void import('./map/context-menu').then(({ openMenu }) => openMenu({
+          x: point.x, y: point.y, kind: 'fence-vertex',
+          props: {
+            polyId: typeof props.poly_id === 'number' ? props.poly_id : undefined,
+            vtxId: typeof props.vtx_id === 'number' ? props.vtx_id : undefined,
+          },
+          lng, lat,
+        }))
+      } else if (hit.layer?.id === 'rally-body') {
+        void import('./map/context-menu').then(({ openMenu }) => openMenu({
+          x: point.x, y: point.y, kind: 'rally',
+          props: { seq: typeof props.seq === 'number' ? props.seq : undefined, alt: typeof props.alt === 'number' ? props.alt : undefined },
+          lng, lat,
+        }))
+      } else if (hit.layer?.id === 'mission-line') {
+        void import('./map/context-menu').then(({ openMenu }) => openMenu({
+          x: point.x, y: point.y, kind: 'mission-leg', lng, lat,
+        }))
+      } else {
+        void import('./map/context-menu').then(({ openMenu }) => openMenu({
+          x: point.x, y: point.y, kind: 'empty', lng, lat,
+        }))
+      }
+    })
+
+    // Close the context menu on user camera gestures (§7.2 v1.1 close semantics).
+    map.on('dragstart', () => { void import('./map/context-menu').then(({ closeMenu }) => closeMenu()) })
+    map.on('wheel', () => { void import('./map/context-menu').then(({ closeMenu }) => closeMenu()) })
+
+    // M10 follow-up: fence vertex + waypoint drag interaction (§7.1 — drag to
+    // move; validation re-runs debounced 300ms). MapLibre v6 has no built-in
+    // feature drag; we implement with mousedown on the layer + mousemove +
+    // mouseup on the map canvas. The drag updates the plan store, which
+    // triggers flushData to re-set the source.
+    let dragTarget: { kind: 'waypoint' | 'fence-vertex'; seq?: number; polyId?: number; vtxId?: number } | null = null
+    map.on('mousedown', 'wp-body', (e) => {
+      const props = e.features?.[0]?.properties as Record<string, unknown> | undefined
+      if (props && typeof props.seq === 'number') {
+        dragTarget = { kind: 'waypoint', seq: props.seq }
+        map.getCanvas().style.cursor = 'grabbing'
+        e.preventDefault()
+      }
+    })
+    map.on('mousedown', 'fence-vertices', (e) => {
+      const props = e.features?.[0]?.properties as Record<string, unknown> | undefined
+      if (props && typeof props.poly_id === 'number' && typeof props.vtx_id === 'number') {
+        dragTarget = { kind: 'fence-vertex', polyId: props.poly_id, vtxId: props.vtx_id }
+        map.getCanvas().style.cursor = 'grabbing'
+        e.preventDefault()
+      }
+    })
+    map.on('mousemove', (e) => {
+      if (!dragTarget) return
+      const lng = e.lngLat.lng
+      const lat = e.lngLat.lat
+      if (dragTarget.kind === 'waypoint' && dragTarget.seq != null) {
+        moveWaypoint(dragTarget.seq, lat, lng)
+      } else if (dragTarget.kind === 'fence-vertex' && dragTarget.polyId != null && dragTarget.vtxId != null) {
+        moveFenceVertex(dragTarget.polyId, dragTarget.vtxId, lat, lng)
+      }
+    })
+    const endDrag = (): void => {
+      if (dragTarget) {
+        dragTarget = null
+        map.getCanvas().style.cursor = ''
+      }
+    }
+    map.on('mouseup', endDrag)
+    map.on('dragend', endDrag)
 
     // NOTE: the `sourcedata` handler was removed — the layer feature counts
     // are kept by `layers.ts:bumpLayerCount` on each `setData` (the spec
