@@ -10,10 +10,22 @@ mode**: PX4 advances virtual time only when the simulator delivers sensor data, 
 scenarios are deterministic, reproducible, and run faster or slower than wall clock
 without destabilizing the flight stack.
 
+> **Role post-2026-09-10 cleanup.** The sim stays as PX4's HIL physics
+> engine. The GCS UI (`../console/`) no longer consumes the sim's
+> internal data plane — the per-vehicle sim socket ladder
+> (`__rsimTelemetry.simSockets`), the Sim Console overlay, the
+> `useSimConsole` hook, the `SimFrame` / `ActiveFault` / `FAULT_CATALOG`
+> types, the `mock-sim.ts` mock, and the G-19 (analyze sim) harness were
+> all removed from `console/` in the 2026-09-10 cleanup. The sim's
+> REST+WS plane on `:8200+i` still exists; only PX4 (over the HIL TCP
+> link on `4560+i`) and the `fleet-supervisor`'s `mavfleet` process
+> (over the sim's REST fault plane, when applicable) talk to it.
+
 ```
                       +-----------------------+
- Next.js dashboard <--|   rustsitsim process  |<-- TCP 4560 (listen)
- scripts / CI / REST  |   dynamics + sensors  |--> PX4 simulator_mavlink (client)
+ mavfleet (per-vehicle link task) <-- TCP 4560 (listen)
+ scripts / CI / REST  |   rustsitsim process  |--> PX4 simulator_mavlink (client)
+                      |   dynamics + sensors  |
                       +-----------------------+
 ```
 
@@ -112,7 +124,8 @@ curl http://127.0.0.1:8200/api/replay --output run.replay
 ```
 
 `/ws/telemetry` pushes a 10 Hz JSON frame with state, sensors, active faults, and tick
-statistics — the dashboard and CI subscribe to this.
+statistics — CI subscribes to this (the GCS UI's dashboard subscription was removed
+2026-09-10; the sim's data plane is no longer consumed by `../console/`).
 
 ## Repository layout
 
@@ -127,9 +140,9 @@ crates/
   sitsim-sdk         config/scenario, engine assembly, replay, hash
   sitsim-cli         binary + REST/WS control plane
 tests/               sitsim-integration: end-to-end harness + run_i1.sh
-docs/                SPEC.md (engineering spec), PROTOCOL.md (public ICD),
-                     adr/, examples/ (scenario TOMLs)
-dashboard/           Next.js operator console (see spec §12)
+docs/                SPEC.md (engineering spec — see the post-2026-09-10 banner at
+                     the top; the GCS UI no longer consumes the sim's data plane),
+                     PROTOCOL.md (public ICD), adr/, examples/ (scenario TOMLs)
 ```
 
 ## Documentation

@@ -14,8 +14,10 @@ that environment lives there and is not needed on a normal machine.
 
 ```
 your machine ("the host")
-  px4 + sitsim-cli   per vehicle (spawned by the manager, localhost only)
-  mavfleet           fleet manager + REST/WS control plane  127.0.0.1:8400
+  px4 + sitsim-cli   per vehicle (spawned by the manager, localhost only; on-demand)
+  mavfleet           fleet manager + REST/WS control plane   127.0.0.1:8400  (on-demand)
+  fleet-supervisor   SITL lifecycle manager (start/stop mavfleet)  127.0.0.1:8500
+  fleet-catalog      mission + ULog + preset REST server  127.0.0.1:8300
   console            Next.js standalone server              127.0.0.1:3000
   caddy              the gateway (the ONLY network-facing listener)  :81
 ```
@@ -24,6 +26,13 @@ Everything except the Caddy gateway binds **localhost only** — the Rust
 control planes and the console are not directly network-exposed by design.
 The gateway is the single entry point, exactly like the preview proxy this
 repo was built against.
+
+**SITL is operator-driven (QGC/MP pattern, ADR-0030).** The catalog
+(:8300), supervisor (:8500), and console (:3000) start together
+(`scripts/stack_up.sh start`); the fleet manager (:8400 + N PX4 SITL pairs)
+starts on demand when the operator clicks *Start SITL* in the GCS UI or
+runs `scripts/stack_up.sh start-fleet`. Closing the GCS does not have to
+mean killing the fleet, and vice versa.
 
 ## 1. Prerequisites (once)
 
@@ -73,23 +82,41 @@ Console output is a standalone server: `console/.next/standalone/server.js`
 ## 4. Run the stack (one host, browser on the same host)
 
 ```bash
-# terminal 1 — the fleet manager (spawns sims + PX4, serves :8400)
-cd fleet && ./target/debug/mavfleet run --fleet tests/operator_bench.toml --api-port 8400
+# terminal 1 — the persistent operator stack (catalog + supervisor + console, NO fleet)
+bash scripts/stack_up.sh start
+# starts catalog :8300 + supervisor :8500 + console :3000.
+# The GCS is cold: browse it, configure it, but no vehicles are live.
 
-# terminal 2 — the console
-cd console && node .next/standalone/server.js          # :3000
-
-# terminal 3 — the gateway
-caddy run --config console/Caddyfile.example           # :81
+# terminal 2 (or the GCS UI) — start SITL on demand
+bash scripts/stack_up.sh start-fleet
+# hits the supervisor's POST /api/sitl/start → spawns mavfleet on :8400
+# + N PX4 SITL pairs. Equivalent: open the GCS in a browser, click
+# "Start SITL" in the SITL Manager overlay panel (hold-to-confirm).
 ```
 
-Open `http://localhost:81` — the Operator Map, Fleet C2, Sim Console and
-Vehicle Setup tabs all talk through the gateway. `operator_bench.toml` is
-the recommended first scenario: it holds the fleet READY and disarmed for
-configuration work, and the Operator Map flies it on demand.
+Open `http://localhost:81` — the Operations Canvas + overlay panels
+(Mission, Library, Fleet C2, SITL, Setup, Analyze, PreFlight, Settings,
+Cheat) all talk through the gateway. `operator_session.toml` is the
+default scenario (a `hold_for_setup` bench that keeps the fleet READY
+and disarmed for configuration work); pick a different one from the
+SITL Manager's scenario dropdown if you want to fly.
 
-Smoke check: `curl http://127.0.0.1:8400/api/fleet` returns the fleet frame
-(a JSON index of every endpoint on `GET /`).
+Smoke checks:
+```bash
+curl http://127.0.0.1:8500/api/sitl/status    # {"ok":true,"data":{"running":true,"vehicle_count":2,...}}
+curl http://127.0.0.1:8400/api/fleet          # the live fleet frame (when SITL is running)
+curl http://127.0.0.1:8300/api/missions       # the mission catalog
+```
+
+To stop SITL (keeps catalog + supervisor + console up):
+```bash
+bash scripts/stack_up.sh stop-fleet          # hits POST /api/sitl/stop on :8500
+```
+
+To bring the whole stack down:
+```bash
+bash scripts/stack_up.sh stop                 # all four planes, ports verified
+```
 
 ## 5. Browser on a different machine (the normal setup)
 
@@ -119,9 +146,10 @@ directly; use the SSH tunnel below.
 The console's `direct` mode points at `127.0.0.1`, which tunnels perfectly:
 
 ```bash
-# on your laptop — forward the console + both control planes
+# on your laptop — forward the console + the catalog + the supervisor
 ssh -N -L 3000:127.0.0.1:3000 \
-       -L 8200:127.0.0.1:8200 \
+       -L 8300:127.0.0.1:8300 \
+       -L 8500:127.0.0.1:8500 \
        -L 8400:127.0.0.1:8400 user@host
 ```
 
@@ -134,7 +162,9 @@ node .next/standalone/server.js     # browse http://localhost:3000
 
 (`direct` is a **build-time** env — it bakes absolute localhost URLs into
 the bundle. The default gateway mode works through the tunnel too, if you
-also forward :81 and browse `http://localhost:81`.)
+also forward :81 and browse `http://localhost:81`. :8500 is only needed
+if you want to drive the SITL supervisor from your laptop; :8400 is only
+needed while SITL is running.)
 
 ## 6. Port map on the host
 
@@ -142,64 +172,90 @@ also forward :81 and browse `http://localhost:81`.)
 |------|-------|---------|
 | 81 | all interfaces | Caddy gateway — the entry point for browsers |
 | 3000 | localhost | console (Next.js standalone) |
-| 8400 | localhost | mavfleet control plane (REST + WS) |
-| 8200 + i | localhost | per-vehicle sitsim-cli control plane (REST + WS) |
+| 8500 | localhost | **fleet-supervisor** — SITL lifecycle manager (ADR-0030) |
+| 8300 | localhost | fleet-catalog — mission + ULog + preset REST server |
+| 8400 | localhost | mavfleet control plane (on-demand, spawned by :8500) — REST + WS |
+| 8200 + i | localhost | per-vehicle sitsim-cli control plane (REST + WS; UI no longer consumes) |
 | 4560 + i | localhost | HIL TCP (PX4 connects in, lockstep) |
 | 14540 + i / 14580 + i | localhost | per-vehicle MAVLink UDP (telemetry / onboard) |
 
 Only 81 needs to be reachable from other machines (or none, with a tunnel).
+The supervisor (:8500) is the only SITL lifecycle entry point — the GCS
+UI and `start-fleet` both go through it.
 
 ## 7. Running scenarios other than the bench
 
-Any scenario TOML works as the `--fleet` argument; `mavfleet check <file>`
-validates one without running. The scenario reference (fleet, geofence,
-tasks, timeline events incl. live-injected faults, success criteria) is
-[fleet/docs/SCENARIOS.md](../fleet/docs/SCENARIOS.md). You can also swap
-scenarios **without restarting the process**:
+Any scenario TOML works as the `--fleet` argument to `mavfleet run`
+(the supervisor passes the same argument when the operator picks the
+scenario in the GCS UI's SITL Manager panel). The scenario reference
+(fleet, geofence, tasks, env) is
+[fleet/docs/SCENARIOS.md](../fleet/docs/SCENARIOS.md). The catalog +
+supervisor + console stack stays up while you swap scenarios — stop
+SITL (`stack_up.sh stop-fleet` or the GCS UI's Stop button), start SITL
+again with a different scenario:
 
 ```bash
-curl -X PUT http://127.0.0.1:8400/api/fleet \
-  -d '{"scenario_toml": "<contents of the TOML>"}'
+# pick a scenario from the supervisor's list
+curl http://127.0.0.1:8500/api/sitl/scenarios
+# stop the current fleet (if running)
+bash scripts/stack_up.sh stop-fleet
+# start SITL with a different scenario (CLI)
+curl -X POST http://127.0.0.1:8500/api/sitl/start \
+  -H 'Content-Type: application/json' \
+  -d '{"scenario":"demo_live.toml"}'
 ```
 
-(ADR-0018: validated first — 422 on a bad file; 409 while a mission is
-flying; the fleet restarts on the same port within seconds and the frame's
-`scenario` field names the new source.)
+> **Note (2026-09-10 cleanup).** The `mavfleet check` subcommand, the
+> scenario DSL `[[event]] kind=fault` timeline, the runtime hot-swap
+> (`PUT /api/fleet`), runtime task append (`POST /api/tasks`), and the
+> fault proxy (`POST /api/vehicles/{i}/faults`) were removed end-to-end
+> in the lean cleanup. The scenario TOML's `[[tasks]]` / `[[event]]` /
+> `[success]` blocks are accepted for forward-compat but silently ignored
+> by the lean manager. See ADR-0030 + the worklog.
 
 ## 8. Keeping it running
 
-- The manager is one process per fleet run: it exits with a CI-classifiable
-  code (0 COMPLETE, 2 ABORTED, 3 infrastructure) when the run ends — wrap it
-  in a loop or a systemd unit if you want it always-on:
+- The persistent operator stack (`scripts/stack_up.sh start`) is the
+  always-on shape: catalog (:8300) + supervisor (:8500) + console (:3000).
+  None of them spawn PX4 SITL pairs; idle CPU/RAM is near-zero. Wrap
+  `stack_up.sh start` in a systemd unit if you want it always-on at boot:
 
   ```ini
-  # /etc/systemd/system/rustsim.service (sketch)
+  # /etc/systemd/system/rustsim-stack.service (sketch)
   [Service]
-  WorkingDirectory=/opt/rust-sim/fleet
-  ExecStart=/opt/rust-sim/fleet/target/debug/mavfleet run --fleet tests/operator_bench.toml
+  WorkingDirectory=/opt/rust-sim
+  ExecStart=/opt/rust-sim/scripts/stack_up.sh start
+  ExecStop=/opt/rust-sim/scripts/stack_up.sh stop
   Restart=on-failure
   ```
 
-- Run artifacts (report + events + per-vehicle logs) land in
-  `fleet-runs/fleet-run-<unix_s>/` (or `--run-dir`); each hot-swap run gets
-  a `-hot-N` sibling.
-- Teardown is verified automatically: a run's exit leaves no px4/sim
-  processes and all ports free. If a hard kill ever leaves squatters, the
+- The fleet manager is a child of the supervisor; it spawns on demand
+  (`POST /api/sitl/start`) and exits when the operator stops SITL or the
+  mission ends. Run artifacts (events + per-vehicle logs) land in
+  `<fleet>/scratch/fleet-run-<unix_s>/`.
+- Teardown is verified automatically: a `stop-fleet` (or
+  `POST /api/sitl/stop`) leaves no px4/sim processes and frees :8400 +
+  the per-vehicle ports. If a hard kill ever leaves squatters, the
   browser harnesses' cleanup pattern is: `pkill -f run_sitsim_vehicle.sh;
   pkill -x px4`.
 
 ## 9. Verification on your machine
 
-The whole claim chain re-runs anywhere PX4 builds:
+The whole claim chain re-runs anywhere PX4 builds (single-invocation
+harnesses — they invoke the `mavfleet` CLI directly, no persistent
+stack required):
 
 ```bash
 (cd sim   && bash tests/run_i1.sh)             # PX4 boot gate
 (cd sim   && bash tests/run_i2_flight.sh)      # one real flight
 (cd fleet && bash tests/run_f1.sh)             # bring-up + e-stop
-(cd fleet && FLEET_SIM_CFG_DIR=$PWD/scratch/vsims bash tests/run_f2.sh)
-(cd fleet && bash tests/live_test_operator.sh)   # O-1, the map plane
-(cd fleet && bash tests/live_test_runtime.sh)    # R-1, the runtime plane
-bash scripts/browser_map_test.sh                  # O-2, end-to-end in a browser
+(cd fleet && bash tests/live_test_setup.sh)    # S-1, vehicle setup plane
+(cd fleet && bash tests/live_test_operator.sh) # O-1, the map plane
+bash scripts/browser_map_test.sh               # O-2, end-to-end in a browser
 ```
+
+> **Note (2026-09-10 cleanup).** `fleet/tests/run_f2.sh` (F-2 auctioned
+> mission) and `fleet/tests/live_test_runtime.sh` (R-1 runtime plane) were
+> deleted — see ADR-0030 + the worklog.
 
 The recorded results live in [VERIFICATION.md](VERIFICATION.md).

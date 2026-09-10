@@ -39,8 +39,10 @@ The decision matters because the format is sticky: once missions are
 saved on disk in one format, migrating to another is a one-way conversion
 that loses comments, ordering, and any format-specific features. The
 catalog server (`:8300`) and every consumer (Plan View editor, Analyze
-View replay overlay, fleet-mission binding, swarming-pattern generator)
-will all read and write this format for the lifetime of v1.
+View ULog overlay, fleet-mission binding) will all read and write this
+format for the lifetime of v1. (The Analyze `.replay` scrub tab and the
+swarming-pattern generator were removed in the 2026-09-10 cleanup;
+both were MissionFile consumers in the v0.1 design record.)
 
 ## Decision
 

@@ -54,14 +54,38 @@ single-key shortcuts.
   G-14 to drop the `simSockets` assertion. Trimmed G-20 to expect 6
   overlay panels (was 7). Trimmed G-21's gate-harness list.
 
-The console ships 6 overlay panels (Mission Strip + Library + Fleet C2
-cards/bindings/events + Setup Drawer + Analyze ULog-only + Pre-Flight +
-Settings + Cheat Sheet). The fleet catalog (`:8300`) serves mission
-CRUD + ULog browse + param presets. The fleet manager (`:8400`) serves
-telemetry WS + arm/land/rtl/hold/goto + mission upload/download + prearm
-checks + QGC-style Vehicle Setup + fleet mission bindings + e-stop. The
-sim/ workspace stays as PX4's HIL physics engine (TCP 4560+i), but its
+The console now ships 7 overlay panels (Mission Strip + Library +
+Fleet C2 cards/bindings/events + SITL Manager + Setup Drawer +
+Analyze ULog-only + Pre-Flight + Settings + Cheat Sheet — the SITL
+Manager panel was added 2026-09-10 as part of the operator-driven SITL
+lifecycle change, see ADR-0030). The fleet catalog (`:8300`) serves
+mission CRUD + ULog browse + param presets. The **fleet-supervisor
+(`:8500`)** is the SITL lifecycle manager — it owns the `mavfleet`
+child process and exposes `POST /api/sitl/start`, `POST /api/sitl/stop`,
+`GET /api/sitl/status`, `GET /api/sitl/scenarios`. The fleet manager
+(`:8400`, spawned on-demand by the supervisor) serves telemetry WS +
+arm/land/rtl/hold/goto + mission upload/download + prearm checks +
+QGC-style Vehicle Setup + fleet mission bindings + e-stop. The sim/
+workspace stays as PX4's HIL physics engine (TCP 4560+i), but its
 internal data is no longer consumed by the GCS UI.
+
+**SITL lifecycle is now operator-driven (QGC/MP pattern, ADR-0030,
+2026-09-10).** QGC and Mission Planner do NOT auto-spawn SITL when
+the GCS launches — the operator starts SITL on demand.
+`scripts/stack_up.sh start` now starts only catalog (:8300) +
+supervisor (:8500) + console (:3000) — NO fleet. The operator starts
+SITL either from the GCS UI's "SITL Manager" overlay panel, or via
+`scripts/stack_up.sh start-fleet` for CLI users. The supervisor is
+the single owner of the mavfleet process tree; `stack_up.sh stop`
+calls `POST /api/sitl/stop` before tearing itself down.
+
+**Map view options feature (2026-09-10).** The Settings panel now
+has Map sections for basemap (6 providers: street-dark / street-light
+/ satellite / hybrid / terrain / offline), orientation (North-up /
+Track-up), projection (2D / 3D-pitch), and 7 layer-visibility toggles
+(vehicles / tracks / waypoints / geofence / rally / mission /
+graticule). The state lives in `console/src/state/map-settings.ts`,
+persisted to `localStorage` under `rsim.map.v1`.
 
 ## RustSim Repository Rules (Local Contracts)
 
@@ -79,7 +103,10 @@ internal data is no longer consumed by the GCS UI.
   `scripts/browser_map_test.sh`.
 - Sandbox / lean-container bring-up follows `docs/SANDBOX_SETUP.md`
   top-to-bottom; every deviation recorded there was hit live. Do not
-  improvise around it.
+  improvise around it. The persistent operator stack is launched by
+  `scripts/stack_up.sh` (catalog + supervisor + console on `start`;
+  fleet on `start-fleet`); it is the operator-facing counterpart of
+  the single-invocation harnesses (ADR-0030).
 - Claims discipline: docs record only what a harness proved (`docs/
   VERIFICATION.md`); a spec table lists implemented routes and names
   planned-but-unbuilt ones explicitly.
@@ -91,9 +118,13 @@ internal data is no longer consumed by the GCS UI.
   process), `fleet/` 285 unit tests (was 169 before GCS v1 added the
   `fleet-mission` GCS modules + tests), `console/` `npm run lint` +
   `npm run build` clean.
-- GCS v1 verification ladder: 14 gates G-0..G-13 under
+- GCS v1 verification ladder: G-0..G-13 under
   `console/tests/run_g*.sh` (single-invocation: start → assert →
-  teardown, see `docs/GCS_SPEC.md` §9). All 14 are green as of M7.
+  teardown, see `docs/GCS_SPEC.md` §9). The 2026-09-10 cleanup
+  deleted G-10 (orchestration), G-12 (replay scrub), and G-19
+  (analyze sim); the surviving 11 gates are green as of M7 /
+  post-cleanup re-run. The SITL supervisor (ADR-0030) is the new
+  SITL lifecycle entry point.
 - Before changing FSM/policy/allocation/wire behavior, read the owning SPEC
   section and ADRs; ADRs override older spec text where they conflict.
 - Time budgets in harnesses are measured against real dynamics — do not
@@ -189,14 +220,18 @@ When the user requests a durable behavior change, record it here or in the relev
 - Live harness ladder recorded with evidence in `docs/VERIFICATION.md`:
   I-1/I-2 (single vehicle, real PX4), F-1/F-2 (fleet, real dynamics),
   S-1/S-2 (vehicle-setup plane), O-1/O-2 (operator map control),
-  R-1 (runtime control plane: fault proxy, task append, hot scenarios
-  load), browser-live (console end-to-end through the gateway).
-- GCS v1 ladder: G-0..G-13 under `console/tests/run_g*.sh` — 14 gates
-  spanning mission version-check, validation, persistence, MAVLink
-  upload + download, Fly View telemetry, multi-vehicle select, pre-arm
-  + arm, Vehicle Setup param extensions, fleet mission binding +
-  orchestration, ULog + replay analyze, and survey/corridor/perimeter
-  patterns (GCS_SPEC.md §9). All 14 are green as of M7.
+  browser-live (console end-to-end through the gateway). The R-1
+  runtime control plane and the G-10/G-12/G-19 GCS gates were removed
+  in the 2026-09-10 cleanup; the **SITL supervisor (`:8500`) is the new
+  SITL lifecycle entry point** (ADR-0030) — operator-driven start/stop,
+  no auto-spawn on `stack_up.sh start`.
+- GCS v1 ladder: G-0..G-13 under `console/tests/run_g*.sh` — the
+  surviving gates (G-10/G-12/G-19 deleted) span mission version-check,
+  validation, persistence, MAVLink upload + download, Fly View
+  telemetry, multi-vehicle select, pre-arm + arm, Vehicle Setup param
+  extensions, fleet mission binding, ULog analyze, and
+  survey/corridor/perimeter patterns (GCS_SPEC.md §9). All surviving
+  gates are green as of M7 / post-cleanup re-run.
 
 ## Compatibility and Security Limits
 
@@ -210,8 +245,8 @@ When the user requests a durable behavior change, record it here or in the relev
 | Child | Scope |
 |-------|-------|
 | `sim/AGENTS.md` | RustSim Core workspace: physics, sensors, MAVLink HIL codec, replay, fault engine, control plane |
-| `fleet/AGENTS.md` | RustSim Fleet workspace: mission manager, links, allocator, safety policies, fleet control plane, `fleet-mission` GCS catalog (`:8300`) |
-| `console/AGENTS.md` | Operator console: 7 mounted tabs (Plan, Fly, Sim Console, Fleet C2, Operator Map, Vehicle Setup, Analyze), gateway/direct API routing incl. `:8300`, build & run |
+| `fleet/AGENTS.md` | RustSim Fleet workspace: mission manager, links, allocator, safety policies, fleet control plane, `fleet-mission` GCS catalog (`:8300`), `fleet-supervisor` SITL lifecycle manager (`:8500`, ADR-0030) |
+| `console/AGENTS.md` | Operator console: 7 overlay panels (post-2026-09-10: mission, library, fleet, sitl, setup, analyze, preflight, settings, cheat), gateway/direct API routing incl. `:8300` and `:8500`, build & run |
 | `docs/AGENTS.md` | Cross-repo documentation: architecture, GCS_SPEC.md, verification evidence, operations runbook, sandbox setup sequence |
-| `scripts/AGENTS.md` | Shared cross-repo scripts: the three browser live tests, golden-vector generator |
-| `console/docs/adr/` | GCS-specific ADRs numbered 0019+ (child of `console/AGENTS.md` — listed there with the accepted/proposed split) |
+| `scripts/AGENTS.md` | Shared cross-repo scripts: the three browser live tests, golden-vector generator, `stack_up.sh` persistent-stack launcher (catalog + supervisor + console on `start`, fleet on `start-fleet` — ADR-0030) |
+| `console/docs/adr/` | GCS-specific ADRs numbered 0019+ (child of `console/AGENTS.md` — listed there with the accepted/proposed split). Latest accepted: 0030 (SITL supervisor — operator-driven SITL lifecycle) |

@@ -1,6 +1,20 @@
 # ADR-0017: Operator map control plane — geo map view with direct SITL control
 
-**Status**: Accepted (v0.2)
+**Status**: Accepted (v0.2). **Note (2026-09-10 cleanup)**: the
+operator mission + guided command endpoints (`POST /api/mission{,
+/start,/clear}`, `POST /api/vehicles/{i}/{arm,takeoff,land,rtl,hold,
+goto}`) are still current and live on `:8400`. The console's Operator
+Map is now the full-bleed MapLibre canvas on the Operations Canvas
+(post-2026-09-10 the GCS uses overlay panels, not tabs; see
+`../console/AGENTS.md`). However, the **auction allocator**, the
+**per-vehicle mission runner**, the **20 Hz offboard setpoint pump**,
+the **hover observation + safety ladder** referenced below were all
+removed end-to-end in the 2026-09-10 cleanup. Operator-uploaded
+missions are no longer flown autonomously by the auction — the
+operator drives them via `POST /api/fleet/start` (parallel or
+sequential) or via `POST /api/vehicles/{i}/goto` per vehicle. The
+geo→NED conversion, the fence-validated upload, the `op*` id namespace,
+and the `geo_origin` block on FleetFrame are all still current.
 
 **Context**
 

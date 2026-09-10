@@ -28,6 +28,7 @@ export type OverlayId =
   | 'mission'
   | 'library'
   | 'fleet'
+  | 'sitl'
   | 'setup'
   | 'analyze'
   | 'preflight'
@@ -74,6 +75,7 @@ const INITIAL: AppStoreState = {
     mission: false,
     library: false,
     fleet: false,
+    sitl: false,
     setup: false,
     analyze: false,
     preflight: false,

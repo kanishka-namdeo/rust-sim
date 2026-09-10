@@ -1,10 +1,26 @@
 # ADR-0018: Runtime control plane — fault proxy, task append, hot scenario load
 
-- Status: accepted (implemented, live-verified R-1)
-- Date: 2026-09-08
-- Supersedes: the "designed, deferred" endpoint note in SPEC §3.4 (which this
-  ADR resolves); the scenario `fault` event placeholder of ADR-0001's interim
-  era ("NOT injected: the interim simulator has no fault plane")
+- Status: **SUPERSEDED / HISTORICAL (2026-09-10 cleanup)** — the entire
+  runtime control plane described in this ADR (the `PUT /api/fleet`
+  hot scenario load, `POST /api/tasks` runtime task append,
+  `POST /api/vehicles/{i}/faults` fault proxy, the `simproxy.rs`
+  module, the `OperatorTask` / `HotLoadAck` state structs, the
+  `OperatorCmd::Append` / `OperatorCmd::HotLoad` variants, the
+  `fire_timeline` fault-event firer, the `mavfleet check` parse+compile
+  gate, the R-1 live harness, the 14 router/simproxy unit tests) was
+  removed end-to-end in the 2026-09-10 cleanup (Tasks 7a/7b/7c-finish).
+  The spec text below is kept as the v0.1 design record.
+- Date: 2026-09-08 (accepted); 2026-09-10 (superseded by the cleanup)
+- Replaced by: ADR-0030 (operator-driven SITL lifecycle — the
+  supervisor on `:8500` owns the mavfleet process; the
+  `POST /api/sitl/start` / `POST /api/sitl/stop` verbs replace the
+  hot-swap + task-append + fault-proxy verbs). See
+  `../console/docs/adr/0030-sitl-supervisor.md`.
+- Original supersedes note: the "designed, deferred" endpoint note in
+  SPEC §3.4 (which this ADR originally resolved); the scenario `fault`
+  event placeholder of ADR-0001's interim era ("NOT injected: the
+  interim simulator has no fault plane"). Both are now moot — the
+  scenario DSL is removed and the fault proxy is removed.
 
 ## Context
 

@@ -12,9 +12,12 @@ the persistent operator-stack launcher.
 Owned here: `browser_live_test.sh` (browser-live), `browser_setup_test.sh`
 (S-2, vehicle setup), `browser_map_test.sh` (O-2, operator map),
 `gen_golden93.py`, `stack_up.sh` (start/stop/status for the daemonized
-operator stack: catalog :8300 + fleet :8400 + console :3000, fleet on
-`tests/operator_session.toml` — double-fork daemons survive agent-shell
-process reaping; see SANDBOX_SETUP.md reval 2026-09-09). Component-owned
+operator stack: catalog :8300 + supervisor :8500 + console :3000 on
+`start`; fleet :8400 + PX4 SITL spawned on-demand by the supervisor
+via `start-fleet` (CLI) or `POST /api/sitl/start` (GCS UI SITL Manager
+panel) — ADR-0030. The GCS does NOT auto-spawn SITL on launch. Double-
+fork daemons survive agent-shell process reaping; see SANDBOX_SETUP.md
+reval 2026-09-09 + the 2026-09-10 SITL-supervisor note). Component-owned
 harnesses stay in their components (`../sim/tests/`, `../fleet/tests/`,
 `../fleet/scripts/`).
 

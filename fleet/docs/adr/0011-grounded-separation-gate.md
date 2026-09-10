@@ -1,6 +1,18 @@
 # ADR 0011: Separation AltitudeDiverge must not fire for grounded vehicles
 
-**Status**: Accepted (2026-09-07, discovered during the live F-2 bring-up)
+**Status**: Accepted (2026-09-07, discovered during the live F-2 bring-up).
+**Note (2026-09-10 cleanup)**: Policy 7 (separation, rank 7) and the
+whole 8-policy safety ladder were removed end-to-end in the 2026-09-10
+cleanup (Tasks 7a/7b/7c-finish). `fleet-safety` is now geofence-only
+(passive `GEOFENCE_WARN` flag). The F-2 harness was removed with the
+auction-flown mission. The transit altitude layering advisory
+(`10 + 5k m` AGL) is kept in the docs as the deconfliction hint, but
+there is no longer a runtime AltitudeDiverge override enforcing it.
+This ADR is kept as the historical record of the bug + its fix; the
+fix's regression test (`grounded_colocated_spawn_gets_no_altitude_override`)
+was removed with the policy module. The NED dz convention
+(climb = negative) documentation is still useful for the operator
+reading FleetFrame telemetry.
 **Context**: F-2 (mavfleet driving per-vehicle rustsitsim instances) initially produced a
 fleet that armed, echoed OFFBOARD, and never left the ground: motor outputs pinned at
 armed-idle, task goals never advanced horizontally, and PX4 auto-disarmed after 10 s

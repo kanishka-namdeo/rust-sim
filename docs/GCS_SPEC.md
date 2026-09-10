@@ -1,10 +1,42 @@
 # RustSim GCS v1 — Engineering Specification (SITL-only)
 
-**Status:** Draft v0.2.1 — 2026-09-09 (M1-blocking ADRs accepted; spec ready for M1 implementation)
+**Status:** Draft v0.2.1 — 2026-09-09 (M1-blocking ADRs accepted; spec ready for M1 implementation). **Historical:** records the v1 *design intent*; the shipped console is now GCS v2 (Operations Canvas — see `GCS_V2_SPEC.md`).
 **Owners:** RustSim core team
 **Scope:** `console/` (primary), `fleet/` (extensions), `sim/` (read-only consumer)
 **Supersedes:** v0.1 (2026-09-09)
-**Related:** `docs/ARCHITECTURE.md`, `docs/VERIFICATION.md`, `console/AGENTS.md`, `fleet/docs/adr/0016-vehicle-setup-control-plane.md`, `fleet/docs/adr/0017-operator-map-control-plane.md`, `fleet/docs/adr/0018-runtime-control-plane.md`
+**Related:** `docs/ARCHITECTURE.md`, `docs/VERIFICATION.md`, `console/AGENTS.md`, `fleet/docs/adr/0016-vehicle-setup-control-plane.md`, `fleet/docs/adr/0017-operator-map-control-plane.md`, `fleet/docs/adr/0018-runtime-control-plane.md`, `console/docs/adr/0030-sitl-supervisor.md`
+
+> **Post-2026-09-10 cleanup banner.** This spec was the v1 *design
+> contract*. The shipped console has since moved to the GCS v2 Operations
+> Canvas (single full-bleed MapLibre GL map + 7 overlay panels — see
+> `GCS_V2_SPEC.md`). The 2026-09-10 lean cleanup removed end-to-end:
+> - **UI**: Sim Console overlay (physics telemetry + fault console +
+>   SIM E-STOP), Fleet C2 swarming patterns panel, Analyze `.replay` tab
+>   (ULog stays), fault/swarm command verbs, the SimFrame/ActiveFault/
+>   FAULT_CATALOG/SwarmPattern/Replay* types, the per-vehicle sim socket
+>   ladder.
+> - **Backend**: `fleet-alloc` (auction + Hungarian), `fleet-safety/policy`
+>   (8-policy ladder), `fleet-mission` scenario DSL/compiler/runner/report,
+>   `fleet-cli/simproxy` (fault proxy), `fleet-cli/report` (run-report),
+>   routes `PUT /api/fleet` (hot-swap), `POST /api/tasks` (append),
+>   `POST /api/vehicles/{i}/faults` (fault proxy), `GET/POST /api/fleet/
+>   patterns*` (swarming), `GET /api/replays*` (custom sim format),
+>   `mavfleet check` subcommand.
+> - **Tests**: deleted G-10 (orchestration), G-12 (replay scrub), G-19
+>   (analyze sim); trimmed G-11 to ULog-only, G-14 (simSockets assertion),
+>   G-20 (overlay count), G-21 (gate-harness list).
+> - **SITL lifecycle**: now operator-driven (QGC/MP pattern, ADR-0030) —
+>   `stack_up.sh start` no longer auto-starts the fleet; the
+>   fleet-supervisor on `:8500` owns the mavfleet process lifecycle.
+>   The GCS UI has a "SITL Manager" overlay panel (7 overlays total).
+>
+> Where this spec mentions the Sim Console tab, swarming patterns, the
+> auction allocator, the 8-policy ladder, the scenario DSL runner,
+> run-report.json, the runtime control plane (ADR-0018), or
+> auto-spawn-on-start, those features were removed or reshaped — see
+> `VERIFICATION.md` (G-10/G-12/G-19 deletions, F-2 deletion, R-1
+> deletion, SITL supervisor added) and the new ADR-0030 for the current
+> state. The spec text below is kept as the v1 design record.
 
 > This spec defines what it takes to turn the existing RustSim console into a
 > QGroundControl / Mission Planner-class ground control station **for PX4 SITL

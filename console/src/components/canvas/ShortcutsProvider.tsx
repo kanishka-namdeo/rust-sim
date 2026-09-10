@@ -174,7 +174,7 @@ export function ShortcutsProvider(): JSX.Element | null {
           setGotoPending(false)
         } else {
           // Close top-most overlay (reverse priority order).
-          const overlayOrder: OverlayId[] = ['cheat', 'settings', 'preflight', 'analyze', 'setup', 'fleet', 'library']
+          const overlayOrder: OverlayId[] = ['cheat', 'settings', 'preflight', 'analyze', 'setup', 'fleet', 'sitl', 'library']
           for (const id of overlayOrder) {
             if (app.overlays[id]) {
               toggleOverlay(id, { force: false })

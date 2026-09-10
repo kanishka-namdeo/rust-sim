@@ -5,18 +5,30 @@ built from source (`make px4_sitl_default`) inside this repository's
 harnesses. Each harness is single-invocation: start, assert, teardown in one
 shell call, with CI-classifiable exit codes.
 
+> **Note (2026-09-10 cleanup).** The R-1 row below records the historical
+> run of `fleet/tests/live_test_runtime.sh`, which was deleted end-to-end
+> in the lean cleanup (its assertions targeted `PUT /api/fleet`,
+> `POST /api/tasks`, `POST /api/vehicles/{i}/faults` — all removed). The
+> runtime control plane (ADR-0018) is gone; the **SITL supervisor
+> (`:8500`) is the new SITL lifecycle entry point** (ADR-0030):
+> `POST /api/sitl/start`, `POST /api/sitl/stop`, `GET /api/sitl/status`,
+> `GET /api/sitl/scenarios`. The GCS UI's SITL Manager overlay panel is
+> the operator-facing entry point. The F-2 row records the historical
+> auctioned-mission run; `run_f2.sh` was deleted for the same reason.
+
 | Case | Harness | What it proves | Status |
 |------|---------|----------------|--------|
 | **I-1** | `sim/tests/run_i1.sh` | PX4 boot gate over the HIL wire: rcS completes, EKF2 estimator streaming (ESTIMATOR_STATUS / ATTITUDE / LOCAL_POSITION_NED on UDP 14540), heartbeats with the right sysid, HIL loop closed, ULog written | **PASS** |
 | **I-2** | `sim/tests/run_i2_flight.sh` | **Physical flight, direct wire**: arm -> OFFBOARD climb -> hover -> descend -> land -> disarm, with ground truth from the sim replay (not the EKF); all ticks finite; sim exits clean on PX4 disconnect | **PASS** (z_min -1.85 m, land + disarm observed, 15,476 ticks finite) |
-| **F-1** | `fleet/tests/run_f1.sh` | Fleet bring-up: 2 vehicles READY with live health (sysid, decoded modes, heartbeat ages, link counters), operator e-stop -> ABORTED(2), run report + event log written, teardown leaves all ports free | **PASS** |
-| **F-2** | `fleet/tests/run_f2.sh` | **Fleet flies with real dynamics**: 2 vehicles x full rustsitsim instances (direct HIL wire, no proxy), auction, offboard missions, hover observed at the waypoint, RTL, land, disarm — asserted from replay ground truth (z <= -2 m flight, final |z| < 0.5 m, all finite) | **PASS** (both vehicles flew + landed; run 92.9 s; manager exit 0) |
-| **Browser-live** | `scripts/browser_live_test.sh` | The operator console, end-to-end through the preview gateway: Sim Console LIVE (WS :8200, 10 Hz telemetry), telemetry demonstrably moving (two snapshots differ), Fleet C2 LIVE (vehicles in OFFBOARD mid-mission), screenshots captured | **PASS** |
+| **F-1** | `fleet/tests/run_f1.sh` | Fleet bring-up: 2 vehicles READY with live health (sysid, decoded modes, heartbeat ages, link counters), operator e-stop -> ABORTED(2), event log written, teardown leaves all ports free | **PASS** |
+| ~~F-2~~ | ~~`fleet/tests/run_f2.sh`~~ | **DELETED 2026-09-10** — auctioned-mission harness depended on the auction allocator, runner, and run-report, all removed. The fleet bring-up + offboard flight path is covered by `run_f1.sh` + the operator-driven fleet start. | — |
+| **Browser-live** | `scripts/browser_live_test.sh` | The operator console, end-to-end through the preview gateway: LIVE badges, telemetry demonstrably moving (two snapshots differ), Fleet C2 LIVE (vehicles in OFFBOARD mid-mission), screenshots captured | **PASS** |
 | **S-1** | `fleet/scripts/live_test_setup.sh` | The ADR-0016 vehicle-setup plane against real PX4, REST-level: full parameter download (887 params, PARAM_REQUEST_LIST), typed param write with echo confirm, gyro calibration (MAV_CMD 241 ACCEPTED), flight-mode switch (ALTCTL + heartbeat echo), airframe apply Iris -> Boat (USV 1070) -> Iris with controlled pair restarts, parameter persistence across both reboots, 422/404 error paths, graceful estop teardown with no leaked processes | **PASS** (44/44 checks) |
-| **S-2** | `scripts/browser_setup_test.sh` | The QGC-style Vehicle Setup tab driven end-to-end in a real browser through the gateway: tab LIVE + disarm badge, param download via the UI button, typed rows in the params table, airframe catalog (UAV/USV/UUV groups), calibration rows, mode switch via button, Boat apply via filter + confirm dialog, post-restart resolution to Boat, screenshots | **PASS** (13/13 checks) |
-| **O-1** | `fleet/tests/live_test_operator.sh` | The ADR-0017 operator map control plane against real PX4, REST-level: fleet frame carries geo_origin + geofence + per-vehicle GLOBAL_POSITION_INT fixes (degE7), go-to flight (engage ladder -> OFFBOARD -> 18 m transit, armed + lat/lon moving), hold (AUTO.LOITER) + land (disarm observed), mission upload with fence-validated accept/reject (3 + 1 at 12 km breach), mission start -> auction-flown op* tasks, e-stop teardown with clean exit | **PASS** (15 checks) |
-| **O-2** | `scripts/browser_map_test.sh` | The Operator Map tab driven end-to-end in a real browser through the gateway: Leaflet map LIVE with the real fence fitted + vehicle markers from GPS fixes, 3 waypoints placed by real map clicks (coordinate mouse events), waypoint table + geo-sanity guard, Upload -> op* tasks on the live board, Start mission -> phase RUNNING + vehicle armed/ACTIVE in flight on the map, screenshots | **PASS** (16/16 checks) |
-| **R-1** | `fleet/tests/live_test_runtime.sh` | The ADR-0018 runtime control plane against real PX4, REST-level: fault proxy (gps_denial accepted with the sim's runtime-N id + the sim's own :8200 plane listing it, bogus type relayed as the sim's 4xx, index 404), runtime NED task append (2 accepted / far one geofence-rejected with the compiler's reason / explicit id collision rejected, board visible), hot scenario load (invalid TOML 422, staged swap -> graceful ABORTED -> same-port rebind with new count + 80 m fence + hot-scenario path on the frame, isolated -hot-1 run dir, both reports naming their own scenarios), the staged scenario's timeline fault event ACTUALLY injected through the sim fault plane, mission-active 409 on a mid-flight PUT, e-stop exit 2 + port-free teardown | **PASS** (23 checks) |
+| **S-2** | `scripts/browser_setup_test.sh` | The QGC-style Vehicle Setup overlay driven end-to-end in a real browser through the gateway: panel LIVE + disarm badge, param download via the UI button, typed rows in the params table, airframe catalog (UAV/USV/UUV groups), calibration rows, mode switch via button, Boat apply via filter + confirm dialog, post-restart resolution to Boat, screenshots | **PASS** (13/13 checks) |
+| **O-1** | `fleet/tests/live_test_operator.sh` | The ADR-0017 operator map control plane against real PX4, REST-level: fleet frame carries geo_origin + geofence + per-vehicle GLOBAL_POSITION_INT fixes (degE7), go-to flight (engage ladder -> OFFBOARD -> 18 m transit, armed + lat/lon moving), hold (AUTO.LOITER) + land (disarm observed), mission upload with fence-validated accept/reject (3 + 1 at 12 km breach), mission start -> operator-driven mission, e-stop teardown with clean exit | **PASS** (15 checks) |
+| **O-2** | `scripts/browser_map_test.sh` | The Operator Map overlay driven end-to-end in a real browser through the gateway: Leaflet map LIVE with the real fence fitted + vehicle markers from GPS fixes, 3 waypoints placed by real map clicks (coordinate mouse events), waypoint table + geo-sanity guard, Upload -> op* tasks on the live board, Start mission -> phase RUNNING + vehicle armed/ACTIVE in flight on the map, screenshots | **PASS** (16/16 checks) |
+| ~~R-1~~ | ~~`fleet/tests/live_test_runtime.sh`~~ | **DELETED 2026-09-10** — runtime-control-plane harness targeted the removed `PUT /api/fleet`, `POST /api/tasks`, `POST /api/vehicles/{i}/faults` routes + the fault proxy. The runtime control plane (ADR-0018) is gone; the SITL supervisor (ADR-0030) on `:8500` is the new SITL lifecycle entry point. | — |
+| **SITL lifecycle (ADR-0030, 2026-09-10)** | `scripts/stack_up.sh start` + `start-fleet` + `:8500` REST | `stack_up.sh start` brings up catalog :8300 + supervisor :8500 + console :3000 (NO fleet); `GET /api/sitl/status` returns `running: false`; `POST /api/sitl/start` spawns `mavfleet run --fleet operator_session.toml`; the GCS UI's SITL Manager panel shows RUNNING with live vehicle count; `POST /api/sitl/stop` (or `stack_up.sh stop-fleet`) tears the fleet down; `stack_up.sh stop` calls `POST /api/sitl/stop` before tearing down the supervisor + catalog + console. | **PASS** (manual, 2026-09-10) |
 
 ## Unit tests
 
@@ -25,20 +37,20 @@ shell call, with CI-classifiable exit codes.
   sizing), sensor models (latency FIFO, denial ramp, glitch), engine mapping
   regressions incl. the PX4 v1.16.2 actuator wire layout + armed-frame
   decode. (Re-run 2026-09-08: 99/99 PASS.)
-- `fleet/`: 169 tests — FSM transitions, policy ladder ordering property,
-  allocator optimality, runner profile math, router integration tests
-  (incl. WS upgrades on the gateway's `/?XTransformPort=` shape), wire-goal
-  repro pinning NED setpoints on the wire, the vehicle-setup plane (param
-  store ingest/staleness, typed INT32 bit-cast round-trips, airframe
-  resolution against the ROMFS catalog, setup-endpoint envelopes, error
-  gates), the hold-for-setup scenario key, and the operator control plane
-  (geodesy round-trips incl. the AGL waypoint convention, geo blocks on
-  the fleet frame, mission upload queue/ack/validation gates, guided
-  command gates incl. the mission-active 409), plus the runtime control
-  plane (ADR-0018: task-append queue/ack + validation, hot-load staging
-  + nack-clears-staging, fault-proxy bounds/body gates, the simproxy HTTP
-  framing round-trip + closed-port path). (Re-run 2026-09-08:
-  169/169 PASS.)
+- `fleet/`: 285 tests (post-2026-09-10 cleanup) — FSM transitions,
+  geofence breach detection, router integration tests (incl. WS upgrades
+  on the gateway's `/?XTransformPort=` shape), wire-goal repro pinning NED
+  setpoints on the wire, the vehicle-setup plane (param store ingest/
+  staleness, typed INT32 bit-cast round-trips, airframe resolution
+  against the ROMFS catalog, setup-endpoint envelopes, error gates), the
+  hold-for-setup scenario key, the operator control plane (geodesy
+  round-trips incl. the AGL waypoint convention, geo blocks on the fleet
+  frame, mission upload queue/ack/validation gates, guided command gates
+  incl. the mission-active 409), and the fleet-supervisor integration
+  tests (SITL start/stop/status/scenarios REST shape). The pre-cleanup
+  run had 169 tests (incl. the policy-ladder ordering property, the
+  auction allocator optimality, the runner profile math, and the
+  runtime control plane ADR-0018 suite — all deleted).
 
 ## Hard-won protocol facts (all live-captured, all ADR'd)
 
@@ -82,12 +94,14 @@ shell call, with CI-classifiable exit codes.
 
 Re-run any of this yourself: see [OPERATIONS.md](OPERATIONS.md).
 
-## GCS v1 verification ladder (G-0 through G-13)
+## GCS v1 verification ladder (G-0 through G-13, 11 surviving)
 
 The G-ladder was added in the GCS v1 spec (`docs/GCS_SPEC.md` §9) and
-extends the existing I/F/S/O/R ladder with 14 new single-invocation
-harnesses under `console/tests/`. All 14 gates are green as of the
-latest run (2026-09-09).
+extends the existing I/F/S/O/R ladder with single-invocation harnesses
+under `console/tests/`. The 2026-09-10 lean cleanup **deleted G-10**
+(orchestration), **G-12** (replay scrub), and **G-19** (analyze sim —
+fault console + SIM E-STOP + replays tab); the surviving 11 gates are
+green as of the latest run (post-cleanup).
 
 | Gate | Name | Harness | What it asserts | Status |
 |------|------|---------|----------------|--------|
@@ -101,14 +115,15 @@ latest run (2026-09-09).
 | **G-7** | Pre-arm + arm/disarm | `console/tests/run_g7_arm.sh` | Pre-arm checks run (5 QGC-style: EKF2/GPS/Mode/Fence/Battery), block arm when failing, pass when fixed, arm→disarm round-trip | **PASS** |
 | **G-8** | Vehicle Setup extensions | `console/tests/run_g8_setup_ext.sh` | Param search filter (ROLLRATE → 3), group filter (MPC → 6), diff-against-defaults (is_changed), preset save/load round-trip | **PASS** |
 | **G-9** | Fleet mission binding | `console/tests/run_g9_binding.sh` | Vehicle 0 → mission A, vehicle 1 → mission B; DELETE clears v0, v1 intact; 9 phases, 25 assertions | **PASS** |
-| **G-10** | Fleet orchestration | `console/tests/run_g10_orchestration.sh` | Parallel mode: 2 vehicles attempted; sequential mode: v0 first, v1 after; both "started" (CRC fix verified) | **PASS** |
-| **G-11** | ULog browse + plot | `console/tests/run_g11_ulog.sh` | List `.ulg` files, list topics, fetch topic data, replay list/meta/topics/data + 3 negative paths (404, 404, 400) | **PASS** |
-| **G-12** | Replay scrub + overlay | `console/tests/run_g12_replay.sh` | Load `.replay`, scrub timeline (first half [0..50], second half [50..100]), monotonicity, q_wxyz identity quaternion | **PASS** |
+| ~~G-10~~ | — | — | **DELETED 2026-09-10** — orchestration + sequential-auction paths removed in cleanup | — |
+| **G-11** | ULog browse + plot | `console/tests/run_g11_ulog.sh` | List `.ulg` files, list topics, fetch topic data, plot in chart (trimmed to ULog-only; replay-scrub tests removed) | **PASS** |
+| ~~G-12~~ | — | — | **DELETED 2026-09-10** — `.replay` scrub tab removed in cleanup (custom sim format; ULog stays) | — |
 | **G-13** | Survey/corridor/perimeter patterns | `console/tests/run_g13_patterns.sh` | Generate each pattern on a known polygon; 19 checks: waypoint count, all-inside-polygon, no gaps > leg spacing, mission editor integration | **PASS** |
+| ~~G-19~~ | — | — | **DELETED 2026-09-10** — analyze-sim (fault console + SIM E-STOP + replays tab) removed in cleanup | — |
 
 ### G-ladder notes
 
-- The G-3/G-4/G-9/G-10 harnesses use a Python mock PX4
+- The G-3/G-4/G-9 harnesses use a Python mock PX4
   (`mock_px4_fleet.py` / `mock_px4_mission.py`) that speaks the full
   MAVLink mission protocol — no real PX4 SITL build required for these
   gates. The G-5/G-6/G-7/G-8 harnesses use a mock that also sends 10 Hz
@@ -117,18 +132,28 @@ latest run (2026-09-09).
   telemetry) was fixed in commit `51ef509`: the root cause was wrong
   MAVLink CRC extra values for MISSION_REQUEST_INT (51) and
   MISSION_REQUEST (40). Cross-checked against pymavlink 2.4.49.
-- G-10 now shows both vehicles "started" (was "failed" before the CRC
-  fix). The `try_recv` pre-check in the link task prevents command
-  starvation by the 10 Hz telemetry flood.
+- **G-10 deletion rationale:** the orchestration harness asserted
+  against the sequential-auction + per-vehicle runner paths; both were
+  removed in the 2026-09-10 cleanup. G-9 (fleet mission binding) still
+  covers the operator-uploaded-mission binding path.
+- **G-12 deletion rationale:** the `.replay` scrub tab was removed from
+  the Analyze overlay (custom sim format; ULog stays). G-11 covers the
+  surviving ULog browse + plot path.
+- **G-19 deletion rationale:** the Sim Console overlay (physics
+  telemetry + fault console + SIM E-STOP) was removed end-to-end.
+  Analyze is now ULog-only (G-11).
 
 ### Updated unit test baselines
 
 - `sim/`: 99 tests (unchanged).
-- `fleet/`: **285 tests** (was 169 — +116 from M1-M7: 69 GCS catalog
-  tests + 25 M4 param extension tests + 9 M5 fleet orchestration tests +
-  21 M6 replay/ULog tests + 5 M3 prearm tests + 7 M2 mission upload
-  tests).
-- `console/`: `npm run lint` + `npm run build` clean; 14 G-ladder
-  harnesses all PASS.
+- `fleet/`: **285 tests** (post-2026-09-10 cleanup). The pre-cleanup
+  baseline was 169; the cleanup deleted the auction + Hungarian suite,
+  the runner + report suite, the 8-policy ladder suite, and the ADR-0018
+  runtime-control-plane suite, but added the fleet-supervisor (ADR-0030)
+  integration tests; the net is +116 from the M1–M7 catalog/param/
+  orchestration/ULog/prearm/mission-upload expansions.
+- `console/`: `npm run lint` + `npm run build` clean; 11 surviving
+  G-ladder harnesses all PASS (G-10 / G-12 / G-19 deleted in the
+  2026-09-10 cleanup).
 
 Re-run any of this yourself: see [OPERATIONS.md](OPERATIONS.md).

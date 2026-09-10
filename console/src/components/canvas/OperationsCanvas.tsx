@@ -35,6 +35,7 @@ import { LibraryPanel } from './overlays/LibraryPanel'
 import { FleetC2Panel } from './overlays/FleetC2Panel'
 import { SetupDrawer } from './overlays/SetupDrawer'
 import { AnalyzeOverlay } from './overlays/AnalyzeOverlay'
+import { SitlManagerPanel } from './overlays/SitlManagerPanel'
 import { SettingsPanel } from './overlays/SettingsPanel'
 import { PreFlightPanel } from './overlays/PreFlightPanel'
 import { GotoConfirmChip } from './overlays/GotoConfirmChip'
@@ -82,12 +83,13 @@ export function OperationsCanvas() {
       {/* M10 follow-up: right-click context menus (§7.2 M1..M5). */}
       <ContextMenu />
 
-      {/* Zone F overlay panels — all 8 (M10..M15 + competition flows) */}
+      {/* Zone F overlay panels — all 7 (M10..M15 + competition flows + SITL Manager) */}
       {app.overlays.mission && <MissionStrip />}
       {app.overlays.library && <LibraryPanel />}
       {app.overlays.fleet && <FleetC2Panel />}
       {app.overlays.setup && <SetupDrawer />}
       {app.overlays.analyze && <AnalyzeOverlay />}
+      {app.overlays.sitl && <SitlManagerPanel />}
       {app.overlays.settings && <SettingsPanel />}
       {app.overlays.preflight && <PreFlightPanel />}
 

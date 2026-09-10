@@ -97,8 +97,10 @@ protocol gaps blocked the read side entirely:
   (ADR-0001's deferral). The console surfaces this rather than hiding
   it — the repo's LIVE/SIMULATED rule applied to airframes.
 
-**Consequences**: the console gains a Vehicle Setup tab that is a
-thin view over live vehicle state (nothing client-side authored —
+**Consequences**: the console gains a Vehicle Setup overlay (post-2026-09-10
+the GCS uses overlay panels on the Operations Canvas, not tabs; the Setup
+Drawer overlay is the ADR-0016 surface — see `../console/AGENTS.md`) that
+is a thin view over live vehicle state (nothing client-side authored —
 param-derived sections read from the vehicle's own PARAM_VALUE cache,
 so the view is always the truth). The F-2 NAV_DLL_ACT "write
 unconfirmed" escalation disappears (the wire-order fix makes every

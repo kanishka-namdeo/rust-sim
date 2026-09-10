@@ -2,11 +2,19 @@
 # =============================================================================
 # RustSim operator stack launcher — the persistent planes, daemonized.
 #
-#   scripts/stack_up.sh start        catalog :8300 + fleet :8400 + console :3000
-#   scripts/stack_up.sh start-fleet  (re)launch just the fleet plane
+#   scripts/stack_up.sh start        catalog :8300 + supervisor :8500 + console :3000
+#                                   (NO fleet — operator starts SITL on demand
+#                                    via the GCS UI or scripts/stack_up.sh start-fleet)
+#   scripts/stack_up.sh start-fleet  (re)launch just the fleet plane (:8400 + PX4 SITL)
 #   scripts/stack_up.sh stop-fleet   tear the fleet down (manager + sims + px4)
 #   scripts/stack_up.sh stop         everything down, ports verified
 #   scripts/stack_up.sh status       pids, ports, fleet phase
+#
+# Why no auto-fleet: QGC and Mission Planner do NOT auto-spawn SITL when
+# the GCS launches — the operator starts SITL on demand. The GCS UI now
+# has a "SITL Manager" overlay panel that calls the supervisor (:8500) to
+# start/stop the mavfleet process. The `start-fleet` command remains for
+# CLI users who want to skip the UI.
 #
 # Why daemonize: agent sandboxes reap the process tree of every shell
 # invocation, so plain `&`/nohup children die between calls. A classic
@@ -15,11 +23,6 @@
 # 2026-09-09). The integration harnesses stay single-invocation by design —
 # this launcher is the operator-facing counterpart: it puts the stack up and
 # leaves it up while you browse the console through the gateway (:81).
-#
-# The fleet runs tests/operator_session.toml (ADR-0017 bench semantics: 2
-# vehicles hold READY + disarmed; the Operator Map flies them on demand).
-# When your mission completes the manager exits by design — relaunch with
-# `start-fleet`. Catalog + console stay up.
 #
 # Preconditions (docs/SANDBOX_SETUP.md / docs/DEPLOYMENT.md):
 #   - cargo build --workspace in sim/ and fleet/
@@ -64,7 +67,6 @@ wait_http() { # <port> <label> <tries>
 }
 
 # daemonize <pidfile> <logfile> <cmd> [args...] — double-fork, setsid, exec.
-# The exec'd server keeps the PID written to <pidfile>; stdio -> <logfile>.
 daemonize() {
     local pidfile="$1" log="$2"; shift 2
     python3 - "$pidfile" "$log" "$@" <<'PYEOF'
@@ -72,16 +74,16 @@ import os, sys
 pidfile, log = sys.argv[1], sys.argv[2]
 pid = os.fork()
 if pid > 0:
-    sys.exit(0)                    # parent returns to the shell
-os.setsid()                        # detach session/tty
+    sys.exit(0)
+os.setsid()
 pid = os.fork()
 if pid > 0:
-    sys.exit(0)                    # first child exits; grandchild is reparented
+    sys.exit(0)
 fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
 os.dup2(fd, 1); os.dup2(fd, 2); os.close(fd)
 with open(pidfile, "w") as f:
     f.write(str(os.getpid()))
-os.execvp(sys.argv[3], sys.argv[3:])  # replace image: server keeps this PID
+os.execvp(sys.argv[3], sys.argv[3:])
 PYEOF
 }
 
@@ -108,6 +110,17 @@ start_catalog() {
     say "catalog up on :8300 (pid $(cat "$STATE/catalog.pid"), dir $CATALOG_DIR)"
 }
 
+start_supervisor() {
+    port_up 8500 && { say "supervisor already up on :8500"; return 0; }
+    [ -x "$FLEET/target/debug/fleet-supervisor" ] || die "fleet-supervisor binary missing (cargo build --bin fleet-supervisor in fleet/)"
+    daemonize "$STATE/supervisor.pid" "$LOGS/supervisor.log" \
+        env FLEET_PX4_DIR="$FLEET_PX4_DIR" FLEET_SIM_CFG_DIR="$FLEET_SIM_CFG_DIR" \
+        "$FLEET/target/debug/fleet-supervisor" --port 8500 --fleet-dir "$FLEET" \
+        || die "could not daemonize fleet-supervisor"
+    wait_http 8500 "supervisor" 30 || die "supervisor did not come up (see $LOGS/supervisor.log)"
+    say "supervisor up on :8500 (pid $(cat "$STATE/supervisor.pid")) — start SITL from the GCS UI or 'scripts/stack_up.sh start-fleet'"
+}
+
 start_console() {
     port_up 3000 && { say "console already up on :3000"; return 0; }
     [ -n "$CON_SERVER" ] || die "console build missing (npm run build in console/)"
@@ -116,7 +129,7 @@ start_console() {
         node "$CON_SERVER" \
         || die "could not daemonize console server"
     wait_http 3000 "console" 60 || die "console did not come up"
-    say "console up on :3000 (pid $(cat "$STATE/console.pid")) — browse via the :81 gateway"
+    say "console up on :3000 (pid $(cat "$STATE/console.pid")) — browse via the :81 gateway (SITL not started; use the SITL Manager panel)"
 }
 
 start_fleet() {
@@ -153,6 +166,12 @@ except Exception: print(0)" 2>/dev/null || echo 0)
 }
 
 stop_fleet() {
+    # Prefer the supervisor's stop endpoint (cleaner — it owns the mavfleet
+    # child). Fall back to kill_pidfile + pkill for CLI-only environments.
+    if port_up 8500; then
+        curl -s -X POST http://127.0.0.1:8500/api/sitl/stop >/dev/null 2>&1 || true
+        sleep 1
+    fi
     kill_pidfile "$STATE/fleet.pid" "fleet manager"
     # manager teardown normally reaps its px4/sim children; clean squatters
     pkill -f "run_sitsim_vehicle.sh" 2>/dev/null || true
@@ -164,16 +183,17 @@ stop_fleet() {
 
 stop_all() {
     stop_fleet
+    kill_pidfile "$STATE/supervisor.pid" "supervisor"
     kill_pidfile "$STATE/catalog.pid" "catalog"
     kill_pidfile "$STATE/console.pid" "console"
     local busy=0
-    for p in 3000 8300 8400; do port_up "$p" && { say "WARNING: :$p still answering"; busy=1; }; done
+    for p in 3000 8300 8400 8500; do port_up "$p" && { say "WARNING: :$p still answering"; busy=1; }; done
     [ "$busy" = "0" ] && say "all planes down, ports free"
 }
 
 status() {
     echo "RustSim operator stack — $(date '+%F %T')"
-    for spec in "3000:console" "8300:catalog" "8400:fleet"; do
+    for spec in "3000:console" "8300:catalog" "8500:supervisor" "8400:fleet"; do
         p="${spec%%:*}"; name="${spec##*:}"
         if pid_alive "$STATE/$name.pid"; then
             echo "  $name :$p  pid $(cat "$STATE/$name.pid")  http $(port_http "$p")"
@@ -181,6 +201,19 @@ status() {
             echo "  $name :$p  DOWN"
         fi
     done
+    if port_up 8500; then
+        # SITL lifecycle status from the supervisor
+        sitl_status=$(curl -s --max-time 2 http://127.0.0.1:8500/api/sitl/status 2>/dev/null | python3 -c "
+import json,sys
+try:
+    d=json.load(sys.stdin)['data']
+    if d.get('running'):
+        print(f\"SITL RUNNING · {d.get('vehicle_count',0)} vehicles · pid {d.get('pid')} · scenario {d.get('scenario')}\")
+    else:
+        print('SITL STOPPED — start from the GCS UI (SITL Manager panel) or scripts/stack_up.sh start-fleet')
+except Exception: print('?')" 2>/dev/null)
+        echo "  sitl:  $sitl_status"
+    fi
     if port_up 8400; then
         phase=$(curl -s --max-time 2 http://127.0.0.1:8400/api/fleet 2>/dev/null | python3 -c "
 import json,sys
@@ -196,7 +229,7 @@ except Exception: print('?')" 2>/dev/null)
 }
 
 case "${1:-status}" in
-    start)       start_catalog; start_fleet; start_console; status ;;
+    start)       start_catalog; start_supervisor; start_console; status ;;
     start-fleet) stop_fleet; start_fleet ;;
     stop-fleet)  stop_fleet ;;
     stop)        stop_all ;;

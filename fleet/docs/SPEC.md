@@ -2,6 +2,32 @@
 
 **Engineering Specification** | Version 0.1 (draft for implementation) | September 2026
 
+> **HISTORICAL — v0.1 design record.**
+>
+> The 2026-09-10 cleanup (Tasks 7a/7b/7c-finish) removed end-to-end
+> from this crate:
+> - **`fleet-alloc`** crate (auction + Hungarian algorithm + greedy fallback)
+> - **`fleet-safety`'s `policy` module** (the 8-policy safety ladder — heartbeat-loss RTL/LAND, battery reserve, separation AltitudeDiverge)
+> - **`fleet-mission`'s scenario DSL + compiler + per-vehicle runner + run-report** modules (the `scenario.rs` / `compile.rs` / `runner/` / `report.rs` files; `fleet-mission` is now catalog-only — the `gcs/` modules)
+> - **`fleet-cli`'s `simproxy` + `report` modules** + the `mavfleet check` subcommand (validated the removed scenario DSL)
+> - **Runtime control plane routes**: `PUT /api/fleet` (hot scenario load), `POST /api/tasks` (runtime NED task append), `POST /api/vehicles/{i}/faults` (fault proxy), `GET /api/fleet/patterns*` (swarming patterns) — all 404/405 post-cleanup
+> - **The `/api/replays*` routes** in the catalog (the GCS UI's Analyze `.replay` tab was removed with them)
+> - **OperatorTask / HotLoadAck** state structs + **OperatorCmd::Append / HotLoad** variants
+> - **Test buckets**: G-10 (orchestration + sequential auction), G-12 (.replay scrub), G-19 (Sim Console / fault console / SIM E-STOP), R-1 (runtime control plane), F-2 (auction-flown mission) — all deleted
+>
+> Added in the same cleanup:
+> - **`fleet-supervisor` binary** on `:8500` (ADR-0030 — SITL lifecycle is operator-driven, QGC/MP pattern; owns the mavfleet child process; the GCS UI's SITL Manager overlay panel is the operator-facing entry)
+> - **`fleet-core::task::TaskStatus` + `events::unix_now`** (moved from the deleted `fleet-mission::report`)
+> - **`fleet-cli/src/config.rs`** — the lean TOML parser that accepts `[fleet]` / `[env]` / `[sim]` / `[[vehicle_override]]` (and silently ignores the `[[tasks]]` / `[[event]]` / `[success]` blocks in the persistent fixtures)
+> - **Passive geofence**: `fleet-safety/geofence.rs` still raises `GEOFENCE_WARN` on breach; the policy-7 altitude-divergence override is gone
+> - **11 surviving G-ladder harnesses** (was 14; G-10 / G-12 / G-19 deleted)
+>
+> See `../docs/VERIFICATION.md` for the post-cleanup PASS state and
+> deletion rationale; `../console/docs/adr/0030-sitl-supervisor.md` for
+> the new SITL lifecycle. The spec text below is kept as the v0.1
+> design record — every auction / Hungarian / scenario DSL /
+> 8-policy ladder / run-report / fault-proxy reference is historical.
+
 **Reference stack:** rustsitsim v0.1 (this spec's sibling, its Section 3 defines the
 per-vehicle simulator interface) and PX4-Autopilot v1.16.2 (pinned in both repos). Facts
 inherited from the sibling specification are cited as "rustsitsim 3.x" and are already

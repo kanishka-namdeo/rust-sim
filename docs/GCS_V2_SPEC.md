@@ -1,10 +1,10 @@
 # RustSim GCS v2 — Operations Canvas Engineering Specification
 
-**Status:** Draft v1.2 — 2026-09-10 (execution-ready; v1.1 verification pass 2026-09-09 + implementation-readiness review 2026-09-10 — board verdict and amendment log in `docs/GCS_V2_READINESS_REVIEW.md`)
+**Status:** Draft v1.2 — 2026-09-10 (execution-ready; v1.1 verification pass 2026-09-09 + implementation-readiness review 2026-09-10 — board verdict and amendment log in `docs/GCS_V2_READINESS_REVIEW.md`). **Post-2026-09-10 cleanup:** the Sim Console / Analyze `.replay` / Fleet C2 patterns / fault verbs / runtime control plane features planned under M11/M13 (and the G-19 gate) were removed end-to-end — see the cleanup banner at the bottom of this header.
 **Owners:** RustSim core team
 **Scope:** `console/` (primary — full front-end re-architecture); `fleet/`, `sim/`, `fleet-catalog` (read-only consumers, **zero backend changes**, §10)
 **Supersedes:** the UX/presentation layer of `GCS_SPEC.md` v0.2.1 (§8 UX flows and §9 UI-facing gate assertions). All backend contracts of v1 (ADRs 0016–0029, mission persistence, validation V-1..V-13, the `:8300`/`:8400`/`:8200+i` planes, the G-0..G-13 backend-level gates) carry over unchanged.
-**Related:** `docs/GCS_SPEC.md`, `docs/ARCHITECTURE.md`, `docs/VERIFICATION.md`, `console/AGENTS.md`, `console/docs/adr/`, `fleet/docs/adr/`
+**Related:** `docs/GCS_SPEC.md`, `docs/ARCHITECTURE.md`, `docs/VERIFICATION.md`, `console/AGENTS.md`, `console/docs/adr/`, `fleet/docs/adr/`, `console/docs/adr/0030-sitl-supervisor.md`
 **Research base:** competitor UX survey (QGC 4/5, Mission Planner, Auterion Mission Control, UgCS, DJI FlightHub 2 Virtual Cockpit, FlytBase, DroneDeploy, MDPI Future Internet 13(8):188) + MapLibre GL v6 technical survey, 2026-09-09, sources in Appendix F. Re-validated 2026-09-09 against repo source (worklog Tasks 13/15) and the live market (Task 14: QGC 5.1.4, MapLibre 6.9.0, CARTO keyless deprecation, 2025–26 literature).
 
 > This spec is the binding engineering contract for **GCS v2 "Operations Canvas"**: the
@@ -15,6 +15,38 @@
 > for execution by agent teams: §13 breaks the work into file-path-precise tasks,
 > §12 defines the M8..M15 milestone ladder with new gates G-14..G-21, and every
 > interaction contract is specified to the exact key, menu item, and endpoint.
+
+> **Post-2026-09-10 cleanup banner.** The lean cleanup landed AFTER this spec
+> was finalized at v1.2. The cleanup removed end-to-end:
+> - **UI**: the Sim Console overlay (physics telemetry + fault console + SIM
+>   E-STOP) planned under M13 (the SimControl overlay), the Fleet C2 swarming
+>   patterns panel planned under M11, the Analyze `.replay` tab (the ULog
+>   half of the Analyze overlay stays), fault/swarm command verbs in the
+>   command bus, the per-vehicle sim socket ladder, the SimFrame/ActiveFault/
+>   SwarmPattern/Replay* types.
+> - **Backend**: `fleet-alloc` (auction + Hungarian), `fleet-safety/policy`
+>   (8-policy ladder), `fleet-mission` scenario DSL/compiler/runner/report,
+>   `fleet-cli/simproxy` (fault proxy), `fleet-cli/report` (run-report),
+>   routes `PUT /api/fleet` (hot-swap), `POST /api/tasks` (append),
+>   `POST /api/vehicles/{i}/faults` (fault proxy), `GET/POST /api/fleet/
+>   patterns*` (swarming), `GET /api/replays*` (custom sim format),
+>   `mavfleet check` subcommand.
+> - **Gates**: G-10 (orchestration), G-12 (replay scrub), G-19 (analyze sim)
+>   were deleted; G-11/G-14/G-20/G-21 trimmed.
+> - **SITL lifecycle**: now operator-driven (QGC/MP pattern, ADR-0030) —
+>   `stack_up.sh start` no longer auto-starts the fleet; the
+>   fleet-supervisor on `:8500` owns the mavfleet process lifecycle.
+>   The GCS UI's "SITL Manager" overlay panel is the new SITL control
+>   surface (replacing the planned SimControl overlay's SITL role).
+>
+> The spec text below is kept as the v1.2 design record. Where it mentions
+> the SimControl overlay (M13), swarming patterns (M11), `PUT /api/fleet`
+> hot-swap (M13), per-vehicle SIM E-STOP, fault inject via context menu,
+> the auction allocator, the 8-policy safety ladder, or auto-spawn-on-start,
+> those features were removed or reshaped. The shipped Operations Canvas
+> has **7 overlay panels** (mission, library, fleet, **sitl**, setup,
+> analyze, preflight, settings, cheat) — the SITL Manager is the
+> operator-driven SITL lifecycle panel (ADR-0030); Analyze is ULog-only.
 
 **Revision history**
 - v1.0 (2026-09-09): initial execution spec (research Tasks 10–12).

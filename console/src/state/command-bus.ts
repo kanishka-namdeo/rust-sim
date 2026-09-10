@@ -49,6 +49,8 @@ export type CommandName =
   | 'mission_start'
   | 'mission_upload'
   | 'mission_clear'
+  | 'sitl_start'
+  | 'sitl_stop'
   | 'calibrate'
   | 'airframe_apply'
   | 'param_write'
@@ -65,6 +67,7 @@ const HOLD_CONFIRM_COMMANDS: ReadonlySet<CommandName> = new Set([
   'mission_start',
   'fleet_start',
   'airframe_apply',
+  'sitl_start',
 ])
 
 export const HOLD_CONFIRM_MS = 400 // §7.4
@@ -77,6 +80,7 @@ const SAFETY_POSITIVE: ReadonlySet<CommandName> = new Set([
   'hold',
   'estop_fleet',
   'mission_clear',
+  'sitl_stop',
 ])
 
 export function isHoldConfirm(name: CommandName): boolean {
@@ -148,6 +152,12 @@ export interface VerbGuardResult {
 export function guardVerb(name: CommandName, vehicle: number | undefined): VerbGuardResult {
   // E-stop is always enabled (§7.3.1: "always enabled, fires on keyup").
   if (name === 'estop_fleet') {
+    return { enabled: true }
+  }
+  // SITL lifecycle verbs are always enabled (no vehicle required) — the
+  // supervisor owns the mavfleet process; the verbs work whether the fleet
+  // is running or not.
+  if (name === 'sitl_start' || name === 'sitl_stop') {
     return { enabled: true }
   }
 
@@ -271,6 +281,7 @@ export function withDeferredUndo<T>(
 // ---------------------------------------------------------------------------
 
 const FLEET_PORT = 8400
+const SUPERVISOR_PORT = 8500
 
 export async function command(
   name: CommandName,
@@ -381,6 +392,25 @@ async function dispatch(
             body: JSON.stringify(payload),
           }),
         )
+
+      // --- SITL lifecycle verbs (via :8500 supervisor) -------------------
+      case 'sitl_start': {
+        const scenario = typeof payload.scenario === 'string' ? payload.scenario : undefined
+        const res = await fetchGw(gw(SUPERVISOR_PORT, '/api/sitl/start'), {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ scenario: scenario ?? null }),
+        })
+        return await unwrapResult(res)
+      }
+      case 'sitl_stop': {
+        const res = await fetchGw(gw(SUPERVISOR_PORT, '/api/sitl/stop'), {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({}),
+        })
+        return await unwrapResult(res)
+      }
 
       // --- Setup verbs (per-vehicle, via :8400) ------------------------
       case 'calibrate':

@@ -1,6 +1,13 @@
 # ADR 0008: Per-vehicle simulator command template in the scenario DSL
 
-**Status**: Accepted (v0.1)
+**Status**: Accepted (v0.1). **Note (2026-09-10 cleanup)**: the
+scenario DSL was removed end-to-end in the 2026-09-10 cleanup, but the
+`[sim]` section's `command` + `duration_s` keys are still parsed by
+the lean `fleet-cli/src/config.rs` parser (kept for the persistent
+`tests/*.toml` fixtures + the live harness scripts). The placeholder
+substitution (HIL port, instance, sysid, duration, sitsim binary
+path) is unchanged. The `[[tasks]]` / `[[event]]` / `[success]` blocks
+in the same file are silently ignored post-cleanup.
 **Context**: fleet-simctl must spawn a simulator process per vehicle. Which simulator
 (rustsitsim binary, the Python prototype, a future custom sim) and with which arguments
 is a deployment decision, not a code decision. Spec §9.1's schema table lists no `[sim]`

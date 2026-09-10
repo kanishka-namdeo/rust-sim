@@ -9,6 +9,10 @@ description = "mavfleet binary: fleet bring-up, supervisor, REST/WS control plan
 name = "mavfleet"
 path = "src/main.rs"
 
+[[bin]]
+name = "fleet-supervisor"
+path = "src/bin/supervisor.rs"
+
 [dependencies]
 tokio = { workspace = true }
 serde = { workspace = true }

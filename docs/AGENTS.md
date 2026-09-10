@@ -62,13 +62,24 @@ Owned here: `ARCHITECTURE.md`, `VERIFICATION.md`, `OPERATIONS.md`,
 ## Work Guidance
 
 - Keep the port map in `ARCHITECTURE.md` in sync with `fleet-simctl`'s port
-  constants and the console's `SIM_PORT` / `FLEET_PORT` hooks.
-- **Known debt (post-M7):** `ARCHITECTURE.md`'s ASCII topology + port map
-  still show only `:8200+i` and `:8400`. It must be extended to include the
-  GCS v1 `:8300` mission-catalog + replay server (binary `fleet-catalog`,
-  owned by `fleet/crates/fleet-mission/`, ADR-0027) and the 7 console tabs.
-  `GCS_SPEC.md` §4.2/§4.3 is the authoritative reference for the v1 topology
-  and port map until `ARCHITECTURE.md` catches up.
+  constants and the console's `SIM_PORT` / `FLEET_PORT` /
+  `SUPERVISOR_PORT` hooks. The post-2026-09-10 port map is:
+  `:8300` catalog, `:8500` supervisor (ADR-0030), `:8400` fleet
+  (on-demand, spawned by `:8500`), `:3000` console, `:81` gateway,
+  `:8200+i` sim (UI no longer consumes), `:4560+i` HIL TCP,
+  `:14540+i` / `:14580+i` MAVLink UDP.
+- **Known debt (post-M7, partly resolved 2026-09-10):**
+  `ARCHITECTURE.md`'s ASCII topology + port map now list `:8500`
+  supervisor (ADR-0030) and `:3000` console alongside `:8300` catalog
+  and `:8400` fleet (on-demand); the 7 overlay panels are listed
+  (Mission, Library, Fleet C2, SITL, Setup, Analyze, PreFlight,
+  Settings, Cheat). `GCS_SPEC.md` §4.2/§4.3 remain the authoritative
+  v1 reference; `GCS_V2_SPEC.md` is the authoritative v2 reference
+  for the Operations Canvas.
+- The SITL lifecycle is operator-driven (ADR-0030): `stack_up.sh start`
+  no longer auto-starts the fleet. `SANDBOX_SETUP.md` step 8 + the
+  persistent-stack note (reval 2026-09-09) and `DEPLOYMENT.md` step 4
+  reflect the new `start` / `start-fleet` split.
 
 ## Verification
 

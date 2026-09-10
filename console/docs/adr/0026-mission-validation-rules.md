@@ -78,10 +78,11 @@ If no inclusion fence is defined (the `geofence.inclusion` array is
 empty), this rule is **skipped** — the operator can fly without a
 fence. This is allowed (the catalog does not require a fence) but
 the Fly View's Go To fence validation (GCS_SPEC.md §5.2 AC-5.2.4) is
-also skipped, and the fleet safety ladder (the existing 8-policy
-ladder in `fleet/docs/SPEC.md`) is degraded to altitude-only. The
-Plan View shows a warning toast on Save: `"no inclusion fence defined;
-flight will be unfenced"`.
+also skipped, and the fleet's geofence-breach detection (the passive
+`GEOFENCE_WARN` health flag in `fleet-safety/geofence.rs` post-2026-09-10
+cleanup — the 8-policy safety ladder was removed) is degraded to
+altitude-only. The Plan View shows a warning toast on Save: `"no
+inclusion fence defined; flight will be unfenced"`.
 
 ### Rule V-4: No waypoint may be inside an exclusion polygon
 

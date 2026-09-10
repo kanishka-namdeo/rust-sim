@@ -30,11 +30,12 @@ code live — and whether the catalog can stay up while the fleet manager
 
 **New `fleet-catalog` binary in the existing `fleet-mission` crate.**
 The `fleet-mission` crate already exists and owns mission-related types
-(scenario DSL, runner, report). The GCS catalog code (`MissionFile`,
-`store`, `validation`, `catalog` REST server) joins it as new modules.
-The binary `fleet-catalog` is a new `[[bin]]` target in the same crate,
-parallel to how `fleet-cli`'s `mavfleet` binary sits alongside library
-code.
+(scenario DSL, runner, report — all three were removed end-to-end in the
+2026-09-10 cleanup; the GCS catalog code is now the only library surface).
+The GCS catalog code (`MissionFile`, `store`, `validation`, `catalog`
+REST server) joins it as new modules. The binary `fleet-catalog` is a
+new `[[bin]]` target in the same crate, parallel to how `fleet-cli`'s
+`mavfleet` binary sits alongside library code.
 
 ### Module layout
 
@@ -43,20 +44,24 @@ fleet/crates/fleet-mission/
 ├── Cargo.toml              # adds axum, tokio, ulid, chrono deps + new bin target
 ├── src/
 │   ├── lib.rs              # re-exports new modules
-│   ├── scenario.rs         # existing (unchanged)
-│   ├── compile.rs         # existing (unchanged)
-│   ├── runner/             # existing (unchanged)
-│   ├── report.rs           # existing (unchanged)
-│   ├── gcs/                # NEW — GCS catalog code
+│   ├── gcs/                # GCS catalog code (the only library surface post-2026-09-10 cleanup)
 │   │   ├── mod.rs          # pub mod mission_file; pub mod store; pub mod validation; pub mod server; pub mod version_check;
 │   │   ├── mission_file.rs # ADR-0019: MissionFile struct + serde
 │   │   ├── store.rs        # ADR-0020: atomic writes, versioning, soft-delete
 │   │   ├── validation.rs   # ADR-0026: 13 validation rules
 │   │   ├── version_check.rs# ADR-0029: PX4 version gate
 │   │   └── server.rs       # axum REST server on :8300
-│   └── main.rs             # NEW — the fleet-catalog binary entry point
+│   └── main.rs             # the fleet-catalog binary entry point
 └── tests/                  # integration tests
 ```
+
+> **2026-09-10 cleanup note.** The original design listed `scenario.rs`,
+> `compile.rs`, `runner/`, `report.rs` as "existing (unchanged)" siblings
+> of `gcs/` — the scenario DSL + compiler + per-vehicle runner + run-report
+> modules were removed end-to-end in the 2026-09-10 cleanup (Task 7b);
+> `fleet-mission` is now catalog-only. The `main.rs` `fleet-catalog`
+> binary remains. (The companion `fleet-supervisor` binary lives in
+> `fleet-cli/src/bin/supervisor.rs`; ADR-0030.)
 
 The binary is named `fleet-catalog` (not `fleet-mission` to avoid
 confusion with the crate name; not `mavfleet` to avoid confusion with
@@ -88,7 +93,8 @@ the fleet manager binary). It is invoked as `fleet-catalog --port 8300
   in `fleet-mission` means it can depend on `fleet-core` (already a
   dep) without a new crate boundary.
 - **The crate name fits.** `fleet-mission` already owns "mission" types
-  (scenario, runner, report). The GCS catalog is mission-related; the
+  (in the v0.1 design record: scenario, runner, report — all removed
+  in the 2026-09-10 cleanup). The GCS catalog is mission-related; the
   name is accurate.
 - **No new crate overhead.** A new crate means a new `Cargo.toml`, a
   new entry in the workspace `members` list, a new `lib.rs`. Adding
@@ -125,14 +131,18 @@ the fleet manager binary). It is invoked as `fleet-catalog --port 8300
 ### Negative
 
 - **Two binaries to run.** An operator running the full GCS stack must
-  start both `mavfleet` (fleet manager) and `fleet-catalog` (mission
-  catalog). Mitigation: a `scripts/start_gcs.sh` wrapper that starts
-  both (plus the console dev server + Caddy) is a v1 deliverable.
-- **The `fleet-mission` crate grows.** It now contains both the
-  existing scenario/runner/report code and the new GCS catalog code.
-  Mitigation: the GCS code is namespaced under `src/gcs/`; the existing
-  code is unchanged. The crate's public API (`lib.rs` re-exports) keeps
-  the two concerns separable.
+  start `fleet-catalog` (mission catalog, `:8300`), `fleet-supervisor`
+  (SITL lifecycle, `:8500`; ADR-0030), and the console (Next.js, `:3000`).
+  The `mavfleet` fleet manager (`:8400`) is spawned on-demand by the
+  supervisor. Mitigation: `scripts/stack_up.sh start` brings up catalog +
+  supervisor + console in one call (ADR-0030); the persistent-stack
+  launcher replaced the planned `scripts/start_gcs.sh` wrapper.
+- **The `fleet-mission` crate grows.** In the v0.1 design record it
+  contained both the scenario/runner/report code and the new GCS catalog
+  code. After the 2026-09-10 cleanup the scenario/runner/report code was
+  removed end-to-end; the crate is now catalog-only. The GCS code lives
+  under `src/gcs/`; the crate's public API (`lib.rs` re-exports) is just
+  the catalog.
 
 ## Alternatives considered
 
@@ -166,8 +176,10 @@ would need reimplementation in TypeScript.
 ## Verification
 
 - **Unit:** `fleet-mission`'s test suite grows with the new `gcs/`
-  modules' tests. `cargo test -p fleet-mission` runs both the existing
-  scenario/runner/report tests and the new catalog tests.
+  modules' tests. `cargo test -p fleet-mission` runs the catalog tests
+  (in the v0.1 design record it also ran the scenario/runner/report
+  tests; those modules were removed end-to-end in the 2026-09-10
+  cleanup).
 - **Integration:** G-0, G-1, G-2 (GCS_SPEC.md §9) all start
   `fleet-catalog` as a subprocess, exercise the REST API, and tear it
   down. The harness scripts live under `console/tests/` (per the spec)

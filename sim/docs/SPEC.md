@@ -2,6 +2,31 @@
 
 **Engineering Specification** | Version 0.1 (draft for implementation) | September 2026
 
+> **Post-2026-09-10 cleanup banner.** The sim itself is unchanged —
+> same 6-DOF quad dynamics, same HIL wire codec, same fault catalog,
+> same REST+WS plane on `:8200+i`, same lockstep contract. What
+> changed is its **role**: the GCS UI (`../console/`) no longer
+> consumes the sim's internal data plane. The per-vehicle sim socket
+> ladder (`__rsimTelemetry.simSockets`), the Sim Console overlay,
+> the `useSimConsole` hook, the `SimFrame` / `ActiveFault` /
+> `FAULT_CATALOG` TS types, the `mock-sim.ts` mock, and the G-19
+> (analyze sim) harness were all removed from `console/` in the
+> 2026-09-10 cleanup (Tasks 7a/7b/7c-finish). Section 12 below ("Dashboard
+> (Next.js)") is the v0.1 design record of the sim's own prototype
+> dashboard — that dashboard was the GCS's v0.1 Sim Console, now
+> removed. The sim's REST+WS plane on `:8200+i` still exists; only PX4
+> (over the HIL TCP link on `4560+i`) and the `fleet-supervisor`'s
+> `mavfleet` process (over the sim's REST fault plane, when
+> applicable) talk to it. The fleet-side `mavfleet check` subcommand
+> (which used to validate the scenario DSL) is gone; the sim's own
+> `sitsim-cli scenario-run` + `sitsim-cli replay-info` paths are
+> unchanged.
+>
+> See `../console/docs/adr/0030-sitl-supervisor.md` for the new
+> operator-driven SITL lifecycle (ADR-0030); see `../fleet/AGENTS.md`
+> for the `fleet-supervisor` binary on `:8500` that owns the
+> `mavfleet` child.
+
 **Reference target:** PX4-Autopilot v1.16.2 (pinned). All protocol facts in Section 3 were verified
 empirically against this release on a live build; items still requiring confirmation during
 implementation are tagged with explicit verification identifiers (V-1, V-2, ...).
@@ -939,7 +964,20 @@ plus scenario exceeds a cap: the driver writes a checkpoint of test-case complet
 re-enters only unexecuted cases. This is deliberately boring, scripted, and dependency-free,
 because cleverness in build orchestration is where reproducibility goes to die.
 
-## 12. Dashboard (Next.js)
+## 12. Dashboard (Next.js) — HISTORICAL v0.1 design record (removed 2026-09-10)
+
+> The dashboard described in this section was the sim's own v0.1
+> prototype dashboard — the GCS's v0.1 Sim Console tab (later an
+> overlay panel). It was removed end-to-end in the 2026-09-10 cleanup
+> (Tasks 7a/7b/7c-finish): the Sim Console overlay, the
+> `useSimConsole` hook, the per-vehicle sim socket ladder
+> (`__rsimTelemetry.simSockets`), the `SimFrame` / `ActiveFault` /
+> `FAULT_CATALOG` TS types, the `mock-sim.ts` mock, and the G-19
+> (analyze sim) harness were all removed. The GCS UI no longer
+> consumes the sim's internal data plane. The sim's REST+WS plane on
+> `:8200+i` still exists for PX4 + the `fleet-supervisor`'s mavfleet
+> process; see `../console/AGENTS.md` for the post-cleanup Operations
+> Canvas + 7 overlay panels.
 
 ### 12.1 Views
 

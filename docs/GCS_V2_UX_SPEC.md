@@ -1,9 +1,9 @@
 # GCS v2 UX Bridge Spec — Onboarding, Empty States, Loading, Errors & Delight
 
-**Status:** Draft v1.0 — 2026-09-10 (bridges the competitive audit + gap analysis → implementation)
+**Status:** Draft v1.0 — 2026-09-10 (bridges the competitive audit + gap analysis → implementation). **Post-2026-09-10 cleanup:** the per-vehicle `:8200+i` sim plane is no longer consumed by the GCS UI (the sim stays as PX4's HIL physics engine); the `:8400` fleet plane spawns on-demand by the SITL supervisor (`:8500`, ADR-0030). Error messages referencing `:8200`/`:8400` below describe the pre-cleanup UX surface.
 **Scope:** `console/` — UX-only, zero backend changes (§10 carries)
 **Owners:** RustSim core team
-**Related:** `docs/GCS_V2_SPEC.md` (the engineering contract), `docs/GCS_V2_READINESS_REVIEW.md`
+**Related:** `docs/GCS_V2_SPEC.md` (the engineering contract), `docs/GCS_V2_READINESS_REVIEW.md`, `console/docs/adr/0030-sitl-supervisor.md`
 
 ---
 

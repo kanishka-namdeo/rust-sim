@@ -87,6 +87,14 @@ export function LeftRail() {
       active: app.overlays.fleet,
     },
     {
+      id: 'sitl',
+      label: 'SITL',
+      shortcut: '—',
+      icon: <Cpu size={20} aria-hidden="true" />,
+      onClick: () => toggleOverlay('sitl'),
+      active: app.overlays.sitl,
+    },
+    {
       id: 'setup',
       label: 'Setup',
       shortcut: 'S',
@@ -169,4 +177,4 @@ export function LeftRail() {
 
 // Icons — kept inline so the rail is self-contained; M8 ships with the
 // lucide-react set already pinned at 0.525 (T-A1 dependency contract).
-import { MapPin, Hexagon, Route, Library, Network, Wrench, BarChart3, ClipboardCheck, Settings, Keyboard } from 'lucide-react'
+import { MapPin, Hexagon, Route, Library, Network, Cpu, Wrench, BarChart3, ClipboardCheck, Settings, Keyboard } from 'lucide-react'

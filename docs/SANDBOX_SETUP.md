@@ -149,14 +149,47 @@ assertions fail.)
 ## 8. Run the verification ladder
 
 Single-invocation harnesses, one shell call each (do not background them
-across calls — processes do not survive between agent tool invocations):
+across calls — processes do not survive between agent tool invocations).
+These run the `mavfleet` CLI directly (the persistent stack below is
+NOT required for them):
 
 ```bash
 (cd sim   && bash tests/run_i1.sh)        # I-1 boot gate,   ~1 min, expects "[I-1] PASS"
 (cd sim   && bash tests/run_i2_flight.sh) # I-2 real flight, ~3 min, expects "I-2 PASS"
 (cd fleet && bash tests/run_f1.sh)        # F-1 bring-up+estop, ~2 min, expects "[F-1] PASS"
-(cd fleet && FLEET_SIM_CFG_DIR=... bash tests/run_f2.sh)  # F-2, ~5 min, "F-2 PASS"
 ```
+
+> **Note (2026-09-10 cleanup).** `fleet/tests/run_f2.sh` (the F-2
+> auctioned-mission harness) was deleted end-to-end in the lean cleanup —
+> its assertions depended on the auction allocator, runner, and
+> run-report.json, all of which were removed. The surviving
+> fleet-coverage harness is `run_f1.sh` (bring-up + e-stop) plus the
+> operator-driven fleet start path. The `live_test_runtime.sh` (R-1)
+> harness was deleted for the same reason. See ADR-0030.
+
+### 8a. The persistent operator stack (optional, ADR-0030)
+
+If you want to leave the GCS up while you browse it (the QGC/MP pattern —
+the GCS launches cold; you start SITL on demand):
+
+```bash
+bash scripts/stack_up.sh start
+# brings up: catalog :8300, supervisor :8500, console :3000 — NO fleet
+# browse http://localhost:81 via the Caddy gateway (or the sandbox system
+# gateway on :81 — see reval 2026-09-09 below).
+# Start SITL from the GCS UI's SITL Manager panel (hold-to-confirm Start),
+# or via the CLI:
+bash scripts/stack_up.sh start-fleet        # spawns :8400 + PX4 SITL
+bash scripts/stack_up.sh status             # 4-plane state + SITL lifecycle
+bash scripts/stack_up.sh stop-fleet         # tear the fleet down (via :8500)
+bash scripts/stack_up.sh stop               # everything down, ports verified
+```
+
+The supervisor's REST API on `:8500`:
+`GET /api/sitl/status`, `POST /api/sitl/start` (body `{"scenario?": "<name>"}`
+— defaults to `operator_session.toml`), `POST /api/sitl/stop`,
+`GET /api/sitl/scenarios`. The console's SITL Manager overlay panel
+calls the same endpoints (see ADR-0030).
 
 Browser end-to-end through the Caddy gateway (:81 must answer 502 before
 the script runs — start Caddy first, in the same tool call as the test is
@@ -192,8 +225,8 @@ SITL themselves, single-invocation like everything else):
 ```bash
 (cd fleet && bash tests/live_test_operator.sh)
 # O-1: "[O-1] PASS — 15 checks" — geo blocks on the frame, go-to flight,
-# hold+land, fence-validated mission upload, auction-flown op* tasks,
-# estop teardown.
+# hold+land, fence-validated mission upload, operator-driven mission
+# start, estop teardown.
 
 bash scripts/browser_map_test.sh
 # O-2: "OPERATOR MAP BROWSER LIVE TEST PASS (16 checks)" — the Operator Map
@@ -202,14 +235,15 @@ bash scripts/browser_map_test.sh
 # Same caddy/leak preconditions as S-2; also kills stale next-server
 # instances (a leaked console server serves an old bundle — the map-fit
 # bug class documented in console/AGENTS.md).
-
-(cd fleet && bash tests/live_test_runtime.sh)
-# R-1: "R-1 PASS: RUNTIME CONTROL PLANE COMPLETE" — the ADR-0018 plane
-# against real PX4: fault proxy (accept + relayed rejections + 404),
-# runtime NED task append (fence/id gates), hot scenario load (422 gate,
-# staged swap + rebind + isolated run dirs), the timeline fault event
-# injected through the sim's own plane, mission-active 409, estop exit 2.
 ```
+
+> **Note (2026-09-10 cleanup).** `fleet/tests/live_test_runtime.sh` (the
+> R-1 runtime-control-plane harness) was deleted end-to-end in the lean
+> cleanup — its assertions targeted the removed `PUT /api/fleet`
+> (hot-swap), `POST /api/tasks` (append), and `POST /api/vehicles/{i}/
+> faults` (fault proxy) routes. The runtime control plane (ADR-0018) is
+> gone; the SITL supervisor (ADR-0030) on `:8500` is the new SITL
+> lifecycle entry point.
 
 ## 9. Known flakiness and its fix (applied in-repo)
 
@@ -224,6 +258,14 @@ pattern, apply the f2-style gate, do not widen time budgets.
 
 ## 10. Verification record (this sequence, executed 2026-09-07/08)
 
+> **Historical record.** This table records the 2026-09-07/08 run, before
+> the 2026-09-10 lean cleanup. The F-2 auctioned-mission harness and the
+> R-1 runtime-control-plane harness were both deleted in the cleanup;
+> the surviving fleet-coverage harness is `run_f1.sh` (F-1 below) plus
+> the operator-driven fleet start path. The "auction-flown mission"
+> wording in O-1 reflects the pre-cleanup auction allocator (removed
+> 2026-09-10). See `docs/VERIFICATION.md` for the current state.
+
 | Gate | Result |
 |---|---|
 | `sim` unit tests | 99/99 PASS |
@@ -231,13 +273,13 @@ pattern, apply the f2-style gate, do not widen time budgets.
 | I-1 boot gate (real PX4 rcS + EKF2 + loop closed + ULog) | PASS |
 | I-2 physical flight (arm → offboard → z −1.72 m → land → disarm) | PASS |
 | F-1 bring-up + estop → ABORTED(2) + clean teardown | PASS |
-| F-2 two-vehicle auctioned mission, real dynamics, from replay truth | PASS |
+| F-2 two-vehicle auctioned mission, real dynamics, from replay truth | PASS (pre-cleanup; harness deleted 2026-09-10) |
 | Browser live test (gateway :81, both consoles LIVE, telemetry moving) | PASS |
 | S-1 vehicle-setup REST live test (param download, typed writes, calibration, modes, airframe apply + restart + persistence) | PASS (44/44) |
 | S-2 Vehicle Setup browser test (QGC-style tab end-to-end, Boat apply via dialog) | PASS (13/13) |
-| O-1 operator-map REST live test (geo frame, go-to flight, hold+land, fence-validated upload, auction-flown mission, estop) | PASS (15 checks) |
+| O-1 operator-map REST live test (geo frame, go-to flight, hold+land, fence-validated upload, auction-flown mission, estop) | PASS (15 checks) — pre-cleanup wording; the auction allocator was removed 2026-09-10 |
 | O-2 Operator Map browser test (Leaflet LIVE, map-click waypoints, upload + start mission, live flight) | PASS (16/16) |
-| R-1 runtime control plane live test (fault proxy, task append, hot scenario load, timeline fault wiring, mission-active 409) | PASS (23 checks) |
+| R-1 runtime control plane live test (fault proxy, task append, hot scenario load, timeline fault wiring, mission-active 409) | PASS (23 checks) — pre-cleanup; harness deleted 2026-09-10 |
 | F-1 / F-2 / O-1 / O-2 regression re-run after the ADR-0018 supervisor changes (2026-09-08) | PASS |
 | Console `npm run lint` + `npm run build` | clean |
 
@@ -258,7 +300,7 @@ this run — they require a fresh PX4-Autopilot build per step 6.
 | `console` `npm install` (416 packages) + `npm run lint` + `npm run build` | PASS |
 | `console` `npm run dev` boots in 324 ms, `GET /` returns HTTP 200 | PASS |
 | `sitsim-cli replay-info smoke.replay` returns deterministic hash | PASS |
-| `mavfleet check tests/demo_live.toml` returns exit 0 | PASS |
+| `mavfleet check tests/demo_live.toml` returns exit 0 | PASS (pre-cleanup; subcommand deleted 2026-09-10) |
 | Python deps `pymavlink`, `pyulog` installed for `/usr/bin/python3.13` | PASS |
 
 Artifacts from this run live under each harness's `tests/*_artifacts/`;
@@ -276,7 +318,13 @@ the harness precondition ":81 answers 502" is satisfied by the system
 gateway. Background processes still do not survive between agent tool
 invocations (verified again); a classic double-fork daemon does survive
 and is the pattern for a persistent operator stack
-(`scripts/stack_up.sh`).
+(`scripts/stack_up.sh`). The persistent operator stack is the
+operator-facing counterpart of the single-invocation harnesses below:
+it brings up catalog + supervisor + console (NO fleet) and leaves
+them up while you browse the GCS through the gateway. SITL is
+operator-driven (ADR-0030, 2026-09-10): the operator starts SITL on
+demand from the GCS UI's SITL Manager panel, or via
+`scripts/stack_up.sh start-fleet` for CLI users.
 
 Two fixes landed this run, both found by driving the *persistent
 operator stack* (long-idle `hold_for_setup` fleets — a use case no
@@ -316,6 +364,15 @@ and masked both bugs):
 
 Full re-verification after the fixes (fresh binaries, real PX4):
 
+> **Historical record.** This table records the 2026-09-09 reval run,
+> before the 2026-09-10 lean cleanup. The F-2 auctioned-mission harness
+> and the R-1 runtime-control-plane harness were both deleted in the
+> cleanup; "Sim Console LIVE" wording below refers to the pre-cleanup
+> Sim Console overlay (now removed). G-10 (orchestration), G-12 (replay
+> scrub), and G-19 (analyze sim) were also deleted; the surviving
+> G-ladder has 11 gates. See `docs/VERIFICATION.md` for the current
+> state and the SITL supervisor (ADR-0030) row.
+
 | Gate | Result |
 |---|---|
 | `rustup` install of Rust stable (1.98.1) | PASS |
@@ -327,11 +384,11 @@ Full re-verification after the fixes (fresh binaries, real PX4):
 | I-1 boot gate (rcS + EKF2 + loop closed + ULog) | PASS |
 | I-2 physical flight (arm → offboard → z −1.77 m → land → disarm) | PASS |
 | F-1 bring-up + estop → ABORTED(2) + clean teardown | PASS |
-| F-2 two-vehicle auctioned mission, real dynamics, from replay truth | PASS |
+| F-2 two-vehicle auctioned mission, real dynamics, from replay truth | PASS (pre-cleanup; harness deleted 2026-09-10) |
 | O-1 operator-map REST live test (goto arrival now exact: NED 18.02, −0.01, −9.98) | PASS |
-| R-1 runtime control plane live test (24 checks) | PASS |
-| Browser live test (gateway :81, Sim Console LIVE, Fleet C2 LIVE, telemetry moving, screenshots) | PASS |
-| G-ladder G-0…G-13 (all 14, incl. G-5/G-6/G-7/G-8/G-9/G-10 live-vehicle gates) | PASS |
+| R-1 runtime control plane live test (24 checks) | PASS (pre-cleanup; harness deleted 2026-09-10) |
+| Browser live test (gateway :81, Sim Console LIVE, Fleet C2 LIVE, telemetry moving, screenshots) | PASS (Sim Console overlay since removed 2026-09-10) |
+| G-ladder G-0…G-13 (all 14, incl. G-5/G-6/G-7/G-8/G-9/G-10 live-vehicle gates) | PASS (G-10/G-12/G-19 deleted in cleanup; 11 surviving) |
 | **New: long-idle operator goto** — `hold_for_setup` fleet, goto at **+80 s**, arm + fly to target from replay truth | **PASS** |
 
 Artifacts from this run live under each harness's `tests/*_artifacts/`;

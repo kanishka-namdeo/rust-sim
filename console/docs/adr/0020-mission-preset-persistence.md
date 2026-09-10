@@ -1,11 +1,25 @@
 # ADR-0020: Mission + preset persistence — filesystem with atomic writes
 
-- Status: Accepted
+- Status: Accepted (the mission + preset persistence half is current;
+  the **`.replay` symlink + `/api/replays*` routes half is removed in
+  the 2026-09-10 cleanup** — see the "Replay file storage" historical
+  note below)
 - Date: 2026-09-09
 - Owning milestone: M1 (Plan View MVP), M4 (Vehicle Setup extensions)
 - Supersedes: none
 - Related: GCS_SPEC.md §5.1 (mission persistence), §5.3 (param presets), §6.1;
   ADR-0019 (file format — the *what*; this ADR is the *where*)
+
+> **2026-09-10 cleanup note.** The mission + preset persistence half of
+> this ADR is still current — the `:8300` catalog server still stores
+> missions as `<ulid>.toml` files with atomic writes (temp-file + fsync
+> + rename) and per-vehicle param presets in `presets/<vid>.toml`. The
+> **`.replay` symlink half is removed**: the GCS UI's Analyze `.replay`
+> tab was trimmed (Task 7a/7b), so the catalog's `/api/replays*` routes
+> + handlers + replay-list index entries were removed with it. The
+> "Replay file storage" section below is kept as the v0.1 design
+> record. The console's Analyze overlay now serves only ULog browse +
+> plot (G-11 trimmed).
 
 ## Context
 
@@ -176,7 +190,12 @@ history) — the operator's mental model is "save presets, not
 version presets." If the operator wants to preserve an old preset,
 they save it with a new name.
 
-### Replay file storage
+### Replay file storage (HISTORICAL — removed 2026-09-10)
+
+> The `/api/replays*` routes + handlers + replay-list index entries in
+> `fleet-mission/src/gcs/server.rs` were removed in the 2026-09-10
+> cleanup (Task 7b) when the GCS UI's Analyze `.replay` tab was
+> trimmed. The section below is kept as the v0.1 design record.
 
 `.replay` files are not stored in the catalog; they are produced by
 `sitsim-cli` in the sim/fleet test directories. The catalog's

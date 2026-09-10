@@ -5,8 +5,15 @@
 Lockstep HIL flight simulator that drives unmodified PX4-Autopilot v1.16.2
 SITL: owns the vehicle (6-DOF quadrotor dynamics), the sensor models, the
 MAVLink v2 HIL wire codec, virtual time, replay, fault injection, and a
-REST+WS control plane. It is the physics/protocol half of every live test in
-this repo.
+REST+WS control plane. Post-2026-09-10 cleanup the sim stays as PX4's HIL
+physics engine — the GCS UI no longer consumes its internal data plane
+(the per-vehicle sim socket ladder was removed from `console/` in the
+2026-09-10 cleanup; the Sim Console overlay + the `useSimConsole` hook +
+the `SimFrame` / `ActiveFault` / `FAULT_CATALOG` types + the
+`mock-sim.ts` mock + the G-19 harness were all removed with it). The
+sim's REST+WS plane on `:8200+i` still exists; only PX4 (over the
+HIL TCP link on `4560+i`) and the `fleet-supervisor`'s `mavfleet`
+process (over the sim's REST fault plane, when applicable) talk to it.
 
 ## Ownership
 
@@ -15,7 +22,8 @@ lockstep semantics, fault engine, replay format, `sitsim-cli` behavior and
 exit codes, the control-plane API schema (SPEC §4).
 
 Not owned here: mission logic and fleet safety (see `../fleet/`), operator
-UI (see `../console/`).
+UI (see `../console/`). The GCS UI does not consume this crate's data plane
+post-2026-09-10.
 
 ## Local Contracts
 
