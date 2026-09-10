@@ -67,7 +67,7 @@ echo "[map-browser] preflight..." | tee -a "$LOG"
 CON_SERVER=$(find "$CON/.next/standalone" -name server.js -type f -not -path "*/node_modules/*" 2>/dev/null | head -1)
 [ -n "$CON_SERVER" ] || fail "console build missing (npm run build in console/)"
 command -v agent-browser >/dev/null || fail "agent-browser missing"
-caddy_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 http://127.0.0.1:81/)
+caddy_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 http://127.0.0.1:81/legacy)
 [ "$caddy_code" = "502" ] || fail "caddy :81 not routing (code $caddy_code)"
 pkill -f "run_sitsim_vehicle.sh" 2>/dev/null; pkill -x px4 2>/dev/null
 pkill -f "target/debug/mavfleet" 2>/dev/null; sleep 1
@@ -117,7 +117,7 @@ ok "console serving :3000 + gateway :81"
 
 # ---- 4. open the console through the gateway, go to the Operator Map tab
 agent-browser set viewport 1440 900 >/dev/null 2>&1
-agent-browser open http://127.0.0.1:81/ >/dev/null 2>&1 || fail "browser could not open :81"
+agent-browser open http://127.0.0.1:81/legacy >/dev/null 2>&1 || fail "browser could not open :81"
 agent-browser wait --load networkidle >/dev/null 2>&1
 agent-browser wait 6000 >/dev/null 2>&1
 

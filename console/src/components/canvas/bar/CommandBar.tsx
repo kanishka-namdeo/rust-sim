@@ -1,9 +1,10 @@
 'use client'
 
 /**
- * GCS v2 Operations Canvas — Command bar (Zone D, M8 T-B1).
+ * GCS v2 Operations Canvas — Command bar (Zone D, M9 T-C2).
  *
- * Spec: docs/GCS_V2_SPEC.md §8.4 + §2.2 zone D.
+ * Spec: docs/GCS_V2_SPEC.md §8.4 + §2.2 zone D + §7.4 (command safety) +
+ * §7.3.1 (keymap — verb buttons show their shortcut key).
  *
  * Fixed 96px bottom, full width, never collapses. Two rows:
  *  Row 1: active-vehicle chip · mode chip · verbs [ARM(hold) · TAKEOFF(hold) ·
@@ -12,25 +13,36 @@
  *  Row 2: map-mode switch [Fly · Plan · Fence · Corridor] · follow toggle ·
  *         cheat-sheet hint.
  *
- * State-gated per §7.4 (commands disabled when backend state would reject);
- * every verb shows its shortcut key on the button (`ARM (A)`). Busy state =
- * spinner chip 400 ms min display (command bus lands M9, M8 renders the
- * verbs visibly DISABLED per §13.1 "E-STOP and verb controls render disabled").
- *
- * The hold-to-confirm progress fill (§7.4 — 400 ms amber) and the deferred-
- * undo toast (§7.4 — tap + 6 s undo) land with T-C2 at M9.
+ * M9 wiring:
+ *  - State-gated per §7.4: each verb calls `guardVerb(name, vehicle)` to
+ *    determine enabled/disabled; disabled verbs show the reason as tooltip
+ *    (§2.3 rule 2).
+ *  - Hold-to-confirm (§7.4): ARM/TAKEOFF/START MISSION use a 400ms press-and-
+ *    hold with an amber progress fill. Released early = no fire.
+ *  - Busy state (§8.4): spinner chip 400ms min display via `useBusy()`.
+ *  - Verbs fire through `command(name, vehicle, payload)` — the command bus
+ *    routes to the correct REST endpoint and surfaces errors via the
+ *    notification queue.
  */
 
-import { useAppStore, setMapMode, setFollow, setGotoPending, type MapMode } from '@/state/app-store'
-import { useTelemetrySnapshot } from '@/state/telemetry-store'
-import { isBusy } from '@/state/command-bus'
+import { useState, useRef, useEffect, type JSX } from 'react'
+import { useAppStore, setMapMode, setFollow, type MapMode } from '@/state/app-store'
+import { useTelemetrySnapshot, getVehicleCount } from '@/state/telemetry-store'
+import {
+  command,
+  guardVerb,
+  isBusy,
+  isHoldConfirm,
+  useBusy,
+  HOLD_CONFIRM_MS,
+  type CommandName,
+} from '@/state/command-bus'
 
 interface Verb {
-  id: 'arm' | 'disarm' | 'takeoff' | 'land' | 'rtl' | 'hold' | 'mission_start'
+  id: CommandName
   label: string
   shortcut: string
   hold?: boolean // §7.4: ARM/TAKEOFF/START MISSION use hold-to-confirm
-  danger?: boolean // §7.4: destructive flight verbs
 }
 
 const VERBS: Verb[] = [
@@ -50,11 +62,13 @@ const MAP_MODES: { id: MapMode; label: string; shortcut: string }[] = [
   { id: 'corridor', label: 'Corridor', shortcut: '—' },
 ]
 
-export function CommandBar() {
+export function CommandBar(): JSX.Element {
   const app = useAppStore()
   const snap = useTelemetrySnapshot()
+  const busy = useBusy()
 
   const activeVehicle = snap.vehicles.find((v) => v.index === app.activeVehicle) ?? snap.vehicles[0]
+  const vehicleIndex = activeVehicle?.index
 
   return (
     <div
@@ -77,37 +91,16 @@ export function CommandBar() {
           {activeVehicle?.mode ?? '—'}
         </div>
 
-        {/* Verb buttons — M8: all disabled (command bus lands M9) */}
+        {/* Verb buttons — M9: wired through the command bus */}
         <div className="flex items-center gap-1">
-          {VERBS.map((verb) => {
-            const busy = isBusy(verb.id)
-            return (
-              <button
-                key={verb.id}
-                type="button"
-                disabled
-                style={{
-                  height: 32,
-                  padding: '0 10px',
-                  borderRadius: 'var(--rsim-radius-control)',
-                  border: '1px solid',
-                  borderColor: verb.hold ? 'var(--rsim-alert)' : 'var(--rsim-border)',
-                  background: verb.hold ? 'rgba(245, 158, 11, 0.06)' : 'rgba(17, 22, 29, 0.4)',
-                  color: 'var(--rsim-text-dim)',
-                  fontSize: 11,
-                  fontWeight: 600,
-                  fontFamily: 'var(--rsim-font-mono)',
-                  letterSpacing: '0.04em',
-                  cursor: 'not-allowed',
-                  opacity: 0.4,
-                }}
-                aria-label={`${verb.label} (${verb.shortcut})${verb.hold ? ' — hold to confirm' : ''}`}
-                title={`${verb.label} (${verb.shortcut}) — wired at M9${verb.hold ? ' · hold-to-confirm 400ms' : ''}${busy ? ' · busy' : ''}`}
-              >
-                {verb.label} <span style={{ opacity: 0.6 }}>({verb.shortcut})</span>
-              </button>
-            )
-          })}
+          {VERBS.map((verb) => (
+            <VerbButton
+              key={verb.id}
+              verb={verb}
+              vehicle={vehicleIndex}
+              disabled={busy != null}
+            />
+          ))}
 
           {/* MISSION ▸ strip toggle (M10 wires the MissionStrip overlay) */}
           <button
@@ -127,10 +120,21 @@ export function CommandBar() {
               cursor: 'not-allowed',
               opacity: 0.4,
             }}
-            title="Mission strip — wired at M10"
+            title="Mission strip overlay — wired at M10"
           >
             MISSION ▸ (M)
           </button>
+
+          {/* Busy chip — §8.4 spinner, 400ms min display */}
+          {busy && (
+            <div
+              className="rsim-mono rsim-chip"
+              style={{ color: 'var(--rsim-alert)', borderColor: 'var(--rsim-alert)', background: 'rgba(245, 158, 11, 0.08)' }}
+              aria-label={`busy: ${busy.name}`}
+            >
+              ⏳ {busy.name}…
+            </div>
+          )}
 
           {/* Goto target chip — visible when goto pending */}
           {app.gotoPending && (
@@ -138,7 +142,7 @@ export function CommandBar() {
               className="rsim-mono rsim-chip"
               style={{ color: 'var(--rsim-alert)', borderColor: 'var(--rsim-alert)', background: 'rgba(245, 158, 11, 0.08)' }}
             >
-              goto: click target for v{app.activeVehicle}
+              goto: click target for v{app.activeVehicle} · Esc cancel
             </div>
           )}
         </div>
@@ -207,5 +211,126 @@ export function CommandBar() {
         </div>
       </div>
     </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// VerbButton — the hold-to-confirm + state-gated verb button.
+// §7.4: ARM/TAKEOFF/START MISSION/START FLEET/airframe-apply = hold 400ms
+// with an amber progress fill. DISARM/LAND/RTL/HOLD/estop = single tap
+// (safety-positive — never gate behind confirmation).
+// ---------------------------------------------------------------------------
+
+function VerbButton({ verb, vehicle, disabled }: { verb: Verb; vehicle: number | undefined; disabled: boolean }): JSX.Element {
+  const guard = guardVerb(verb.id, vehicle)
+  const busy = isBusy(verb.id)
+  const enabled = guard.enabled && !busy && !disabled
+  const [holdProgress, setHoldProgress] = useState(0) // 0..1 for the amber fill
+  const holdTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const holdStartRef = useRef<number>(0)
+  const firedRef = useRef<boolean>(false)
+
+  // Cleanup the hold timer on unmount.
+  useEffect(() => {
+    return () => {
+      if (holdTimerRef.current) clearInterval(holdTimerRef.current)
+    }
+  }, [])
+
+  const startHold = (e: React.MouseEvent<HTMLButtonElement>): void => {
+    if (!enabled || !verb.hold) return
+    e.preventDefault()
+    firedRef.current = false
+    holdStartRef.current = Date.now()
+    setHoldProgress(0)
+    // Tick every 50ms to update the amber fill; fire at 400ms.
+    holdTimerRef.current = setInterval(() => {
+      const elapsed = Date.now() - holdStartRef.current
+      const progress = Math.min(1, elapsed / HOLD_CONFIRM_MS)
+      setHoldProgress(progress)
+      if (progress >= 1 && !firedRef.current) {
+        firedRef.current = true
+        if (holdTimerRef.current) clearInterval(holdTimerRef.current)
+        holdTimerRef.current = null
+        setHoldProgress(0)
+        void command(verb.id, vehicle, verb.id === 'takeoff' ? { alt_m: 5 } : {})
+      }
+    }, 50)
+  }
+
+  const cancelHold = (): void => {
+    if (holdTimerRef.current) {
+      clearInterval(holdTimerRef.current)
+      holdTimerRef.current = null
+    }
+    setHoldProgress(0)
+    firedRef.current = false
+  }
+
+  const handleClick = (e: React.MouseEvent<HTMLButtonElement>): void => {
+    if (!enabled) return
+    if (verb.hold) {
+      // Hold verbs: the mousedown starts the hold; click only fires if the
+      // mouse is released after 400ms (the interval already fired). If the
+      // mouse is released early, onMouseUp cancels. The click handler is a
+      // no-op for hold verbs — the interval owns the fire.
+      e.preventDefault()
+      return
+    }
+    // Single-tap verb — fire immediately.
+    void command(verb.id, vehicle, verb.id === 'takeoff' ? { alt_m: 5 } : {})
+  }
+
+  const tooltip = enabled
+    ? `${verb.label} (${verb.shortcut})${verb.hold ? ' — hold 400ms' : ''}`
+    : `${verb.label} (${verb.shortcut}) — ${guard.reason ?? 'disabled'}`
+
+  return (
+    <button
+      type="button"
+      disabled={!enabled}
+      onMouseDown={startHold}
+      onMouseUp={cancelHold}
+      onMouseLeave={cancelHold}
+      onClick={handleClick}
+      style={{
+        position: 'relative',
+        height: 32,
+        padding: '0 10px',
+        borderRadius: 'var(--rsim-radius-control)',
+        border: '1px solid',
+        borderColor: verb.hold ? 'var(--rsim-alert)' : enabled ? 'var(--rsim-border)' : 'var(--rsim-border)',
+        background: verb.hold ? 'rgba(245, 158, 11, 0.06)' : enabled ? 'rgba(17, 22, 29, 0.6)' : 'rgba(17, 22, 29, 0.2)',
+        color: enabled ? (verb.hold ? 'var(--rsim-alert)' : 'var(--rsim-text)') : 'var(--rsim-text-dim)',
+        fontSize: 11,
+        fontWeight: 600,
+        fontFamily: 'var(--rsim-font-mono)',
+        letterSpacing: '0.04em',
+        cursor: enabled ? 'pointer' : 'not-allowed',
+        opacity: enabled ? 1 : 0.4,
+        overflow: 'hidden',
+      }}
+      aria-label={tooltip}
+      title={tooltip}
+    >
+      {/* Hold-to-confirm amber progress fill (§7.4 — 400ms amber) */}
+      {verb.hold && holdProgress > 0 && (
+        <span
+          aria-hidden="true"
+          style={{
+            position: 'absolute',
+            left: 0,
+            top: 0,
+            bottom: 0,
+            width: `${holdProgress * 100}%`,
+            background: 'rgba(245, 158, 11, 0.25)',
+            pointerEvents: 'none',
+          }}
+        />
+      )}
+      <span style={{ position: 'relative' }}>
+        {verb.label} <span style={{ opacity: 0.6 }}>({verb.shortcut})</span>
+      </span>
+    </button>
   )
 }

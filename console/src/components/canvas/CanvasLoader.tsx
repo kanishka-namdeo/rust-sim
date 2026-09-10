@@ -51,7 +51,7 @@ function Loading(): ReactNode {
   )
 }
 
-function Error({ error }: { error: Error }): ReactNode {
+function ErrorFallback({ error }: { error: Error }): ReactNode {
   return (
     <div
       className="rsim-canvas flex h-screen w-screen flex-col items-center justify-center gap-2"
@@ -84,7 +84,7 @@ export function CanvasLoader() {
       (e: Error) => setErr(e),
     )
   }, [])
-  if (err) return <Error error={err} />
+  if (err) return <ErrorFallback error={err} />
   if (!Comp) return <Loading />
   return (
     <Suspense fallback={<Loading />}>

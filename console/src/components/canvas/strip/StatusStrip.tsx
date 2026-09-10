@@ -1,45 +1,59 @@
 'use client'
 
 /**
- * GCS v2 Operations Canvas — Status strip (Zone A, M8 T-B1).
+ * GCS v2 Operations Canvas — Status strip (Zone A, M9).
  *
- * Spec: docs/GCS_V2_SPEC.md §8.1 + §2.2 zone A.
+ * Spec: docs/GCS_V2_SPEC.md §8.1 + §2.2 zone A + §2.3 rule 5 (E-stop).
  *
  * Fixed 48px top, full width, pointer-events:auto. Never collapses; the
  * E-STOP button is always visible. Renders:
  *  - Brand chip `RSIM` + fleet phase badge
  *  - Per-vehicle chips `v0 READY · 87 %`
  *  - Per-plane ConnBadge (fleet/sim/catalog) — reuses the v1 §5.4 contract;
- *    M8 reads from the telemetry store's `getPlaneStates()`
+ *    reads from the telemetry store's `getPlaneStates()`
  *  - Clock: sim time + wall clock (mono, tabular numerics)
- *  - E-STOP button (amber, rightmost, fires `POST /api/fleet/estop` —
- *    command bus lands M9, so M8 renders the button visibly DISABLED
- *    per §13.1 "E-STOP and verb controls render disabled").
+ *  - E-STOP button (amber, rightmost, fires `POST /api/fleet/estop` via the
+ *    M9 command bus; single-key `E` also fires it on keyup).
  *
- * The status strip is the M8 ConnBadge home; the v1 `ConnBadge` component
- * retires at M14 (spec §3.1).
+ * §2.3 rule 5: E-stop is one deliberate action, visually firewalled. Single
+ * press of `E` or click fires immediately; no hold-to-confirm; amber-on-dark;
+ * flashes the status strip for 2s on fire.
  */
 
+import { useState, type JSX } from 'react'
 import { useTelemetrySnapshot, getPlaneStates, getFleetSnapshot } from '@/state/telemetry-store'
 import { useAppStore, setActiveVehicle } from '@/state/app-store'
 import { useHudRef } from '../FlushLoop'
 import { PlaneBadges } from './PlaneBadges'
+import { command } from '@/state/command-bus'
 
-export function StatusStrip() {
+export function StatusStrip(): JSX.Element {
   const snap = useTelemetrySnapshot()
   const app = useAppStore()
   const fleetSnap = getFleetSnapshot()
   const phase = fleetSnap?.phase ?? 'INIT'
+  const [estopFlashing, setEstopFlashing] = useState(false)
 
   const setPhase = useHudRef('phase_strip')
   const setSimClock = useHudRef('clock_sim')
   const setWallClock = useHudRef('clock_wall')
 
+  const fireEstop = (): void => {
+    // §2.3 rule 5: immediate fire, no hold-to-confirm. Flash the strip 2s.
+    setEstopFlashing(true)
+    setTimeout(() => setEstopFlashing(false), 2000)
+    void command('estop_fleet', undefined, {})
+  }
+
   return (
     <div
       data-rsim-zone="A"
       className="pointer-events-auto absolute top-0 left-0 right-0 flex items-center gap-3 px-4 border-b"
-      style={{ height: 48, zIndex: 30 }}
+      style={{
+        height: 48,
+        zIndex: 30,
+        ...(estopFlashing ? { boxShadow: 'inset 0 0 0 2px var(--rsim-alert)' } : {}),
+      }}
     >
       {/* Brand + fleet phase */}
       <div className="flex items-center gap-2">
@@ -105,19 +119,21 @@ export function StatusStrip() {
           <span ref={setWallClock} aria-label="wall clock">—</span>
         </div>
 
-        {/* E-STOP button — M8: disabled (command bus lands M9) */}
+        {/* E-STOP button — M9: wired through the command bus.
+            §2.3 rule 5: single press, no hold-to-confirm, amber, firewalled
+            from takeoff-class verbs. The strip flashes 2s on fire. */}
         <button
           type="button"
           className="rsim-estop"
-          disabled
+          onClick={fireEstop}
+          aria-pressed={estopFlashing}
+          title="E-STOP (E) — immediate fleet estop, no hold-to-confirm"
           style={{
             height: 32,
             padding: '0 12px',
-            opacity: 0.4,
-            cursor: 'not-allowed',
+            cursor: 'pointer',
+            opacity: estopFlashing ? 1 : 0.9,
           }}
-          aria-pressed={false}
-          title="E-STOP — wired at M9 (single-key E or click fires POST /api/fleet/estop)"
         >
           E-STOP
         </button>

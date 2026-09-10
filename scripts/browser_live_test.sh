@@ -62,7 +62,7 @@ for p in 8400 8200 8201 3000; do
     curl -s --max-time 1 "http://127.0.0.1:$p/" >/dev/null 2>&1 && fail "port $p busy (previous run?)"
 done
 # Gateway must be alive: :81 answers 502 (console down) — proof of routing.
-caddy_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 http://127.0.0.1:81/)
+caddy_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 http://127.0.0.1:81/legacy)
 [ "$caddy_code" = "502" ] || fail "caddy :81 not routing (code $caddy_code; run caddy with console/Caddyfile.example)"
 
 # ---- 1. fleet manager (2 vehicles x real rustsitsim + PX4)
@@ -92,7 +92,7 @@ for _ in $(seq 1 100); do
     sleep 1
 done
 [ -n "$ok" ] || fail "console did not serve :3000"
-code81=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 http://127.0.0.1:81/)
+code81=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 http://127.0.0.1:81/legacy)
 [ "$code81" = "200" ] || fail "gateway :81 did not serve the console (code $code81)"
 echo "[live] console up: :3000 direct=200, :81 via gateway=$code81" | tee -a "$LOG"
 
@@ -113,7 +113,7 @@ echo "[live] both vehicles booted (px4 + sitsim pairs live)" | tee -a "$LOG"
 
 # ---- 4. drive the browser through the GATEWAY
 agent-browser set viewport 1440 900 >/dev/null 2>&1
-agent-browser open http://127.0.0.1:81/ >/dev/null 2>&1 || fail "browser could not open :81"
+agent-browser open http://127.0.0.1:81/legacy >/dev/null 2>&1 || fail "browser could not open :81"
 agent-browser wait --load networkidle >/dev/null 2>&1
 agent-browser wait 6000 >/dev/null 2>&1  # WS + first telemetry frames
 

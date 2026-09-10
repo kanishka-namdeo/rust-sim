@@ -29,6 +29,7 @@ import { TelemetryColumn } from './column/TelemetryColumn'
 import { CommandBar } from './bar/CommandBar'
 import { NotificationStack } from './notify/NotificationStack'
 import { FlushLoop } from './FlushLoop'
+import { ShortcutsProvider } from './ShortcutsProvider'
 import { startTelemetry, stopTelemetry } from '@/state/telemetry-store'
 
 export function OperationsCanvas() {
@@ -61,6 +62,9 @@ export function OperationsCanvas() {
 
       {/* The single rAF flush loop — owns the HUD ref registry writes. */}
       <FlushLoop />
+
+      {/* M9: global key handler + cheat-sheet dialog (§7.3 + §7.3.3). */}
+      <ShortcutsProvider />
 
       {/* Zone F overlay panels ship with T-B2..B7 (M10..M13).
           M8 leaves them unmounted; the rail toggles flip the app-store flags
