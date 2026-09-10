@@ -40,10 +40,20 @@ export function LibraryPanel(): JSX.Element {
           <button type="button" onClick={() => { import('@/state/plan-store').then(({ newMission }) => newMission()) }} style={btnStyle}>+ New</button>
         </div>
 
-        {/* Mission list */}
+        {/* Mission list — empty state with CTA */}
         <div style={{ padding: 4 }}>
           {catalog.missions.length === 0 && (
-            <div style={{ padding: 12, fontSize: 11, color: 'var(--rsim-text-dim)' }}>No saved missions. Save from the Mission Strip (M).</div>
+            <div className="rsim-empty-state">
+              <div className="rsim-empty-state-icon">🗺️</div>
+              <div className="rsim-empty-state-title">No saved missions</div>
+              <div className="rsim-empty-state-detail">
+                Save a mission from the Mission Strip (M), or create one from Plan mode (P) + click the map.
+              </div>
+              <div className="rsim-empty-state-cta">
+                <button type="button" onClick={() => { import('@/state/plan-store').then(({ newMission }) => newMission()) }}>+ New Mission</button>
+                <button type="button" onClick={() => catalog.refresh()}>⟳ Refresh</button>
+              </div>
+            </div>
           )}
           {catalog.missions.map((m) => (
             <div key={m.id} style={{ padding: '8px 12px', borderBottom: '1px solid var(--rsim-border)', display: 'flex', flexDirection: 'column', gap: 4 }}>

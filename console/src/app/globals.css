@@ -296,3 +296,157 @@
   transform-origin: center;
   transition: none; /* the FlushLoop writes transform every frame */
 }
+
+/* ===========================================================================
+ * GCS v2 UX improvements — skeletons, focus-visible, animations, hints
+ * Spec: docs/GCS_V2_UX_SPEC.md §5 (loading), §7 (a11y), §8 (delight)
+ * ========================================================================= */
+
+/* §5 — Skeleton shimmer */
+.rsim-skeleton {
+  background: linear-gradient(90deg, var(--rsim-surface-solid) 25%, var(--rsim-border) 50%, var(--rsim-surface-solid) 75%);
+  background-size: 200% 100%;
+  animation: rsim-shimmer 1.5s infinite;
+  border-radius: var(--rsim-radius-chip);
+}
+@keyframes rsim-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* §7.1 — Focus-visible ring (WCAG 2.1 AA) */
+.rsim-canvas :focus-visible {
+  outline: 2px solid var(--rsim-accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* §8.1 — Overlay open/close animations */
+@keyframes rsim-overlay-enter {
+  from { opacity: 0; transform: translateX(-12px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+.rsim-canvas [data-rsim-zone='F'] {
+  animation: rsim-overlay-enter 150ms ease-out;
+}
+
+/* §8.2 — Success pulse on action ACK */
+@keyframes rsim-success-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.6); }
+  100% { box-shadow: 0 0 0 12px rgba(52, 211, 153, 0); }
+}
+.rsim-success-pulse {
+  animation: rsim-success-pulse 600ms ease-out;
+}
+
+/* §8.3 — E-STOP idle pulse */
+@keyframes rsim-estop-idle {
+  0%, 100% { opacity: 0.9; }
+  50% { opacity: 1; box-shadow: 0 0 6px rgba(245, 158, 11, 0.5); }
+}
+.rsim-canvas .rsim-estop:not(:disabled):not([aria-pressed='true']) {
+  animation: rsim-estop-idle 2s ease-in-out infinite;
+}
+
+/* §3.3 — On-map hint chip */
+.rsim-map-hint {
+  position: absolute;
+  bottom: 110px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  border-radius: var(--rsim-radius-panel);
+  background: var(--rsim-surface-solid);
+  border: 1px solid var(--rsim-border);
+  color: var(--rsim-text-dim);
+  font-size: 11px;
+  font-family: var(--rsim-font-mono);
+  pointer-events: none;
+  animation: rsim-hint-fade 400ms ease-out;
+  z-index: 15;
+}
+@keyframes rsim-hint-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.rsim-map-hint.rsim-hint-dismissing {
+  animation: rsim-hint-fade-out 300ms ease-out forwards;
+}
+@keyframes rsim-hint-fade-out {
+  to { opacity: 0; }
+}
+
+/* §9.3 — Empty state CTA styling */
+.rsim-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 32px 16px;
+  text-align: center;
+  color: var(--rsim-text-dim);
+}
+.rsim-empty-state-icon {
+  font-size: 32px;
+  opacity: 0.4;
+  margin-bottom: 4px;
+}
+.rsim-empty-state-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--rsim-text);
+}
+.rsim-empty-state-detail {
+  font-size: 11px;
+  line-height: 1.5;
+  max-width: 240px;
+}
+.rsim-empty-state-cta {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+.rsim-empty-state-cta button {
+  padding: 6px 14px;
+  border-radius: var(--rsim-radius-control);
+  border: 1px solid var(--rsim-border);
+  background: rgba(17, 22, 29, 0.6);
+  color: var(--rsim-text);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 150ms, border-color 150ms;
+}
+.rsim-empty-state-cta button:hover {
+  background: rgba(34, 211, 238, 0.08);
+  border-color: var(--rsim-accent);
+  color: var(--rsim-accent);
+}
+
+/* §7.2 — Overlay dialog semantics (focus trap handled by component) */
+.rsim-canvas [data-rsim-zone='F'] {
+  outline: none;
+}
+
+/* §5.2 — Loading bar (top of canvas) */
+.rsim-loading-bar {
+  position: absolute;
+  top: 48px;
+  left: 56px;
+  right: 312px;
+  height: 2px;
+  background: var(--rsim-border);
+  overflow: hidden;
+  z-index: 35;
+}
+.rsim-loading-bar-fill {
+  height: 100%;
+  background: var(--rsim-accent);
+  width: 30%;
+  animation: rsim-loading-bar 1.5s ease-in-out infinite;
+}
+@keyframes rsim-loading-bar {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}

@@ -39,6 +39,7 @@ import { SimControlPanel } from './overlays/SimControlPanel'
 import { SettingsPanel } from './overlays/SettingsPanel'
 import { PreFlightPanel } from './overlays/PreFlightPanel'
 import { GotoConfirmChip } from './overlays/GotoConfirmChip'
+import { OnboardingTour } from './overlays/OnboardingTour'
 import { ContextMenu } from './map/context-menu'
 import { useAppStore } from '@/state/app-store'
 import { startTelemetry, stopTelemetry } from '@/state/telemetry-store'
@@ -94,6 +95,9 @@ export function OperationsCanvas() {
 
       {/* Goto confirm chip — competition feature (QGC goto alt input) */}
       <GotoConfirmChip />
+
+      {/* UX: first-run welcome + guided tour (§3) */}
+      <OnboardingTour />
     </div>
   )
 }

@@ -162,7 +162,19 @@ function WaypointTable({ waypoints, selectedWp, erroredSeqs, onSelect, onPatch, 
           <button type="button" onClick={(e) => { e.stopPropagation(); onRemove(w.seq) }} style={{ background: 'transparent', border: 'none', color: 'var(--rsim-danger)', cursor: 'pointer', fontSize: 14, padding: 0 }} title="Delete">×</button>
         </div>
       ))}
-      {waypoints.length === 0 && <div style={{ padding: 12, fontSize: 11, color: 'var(--rsim-text-dim)' }}>No waypoints. Plan mode (P) + click map to add.</div>}
+      {waypoints.length === 0 && (
+        <div className="rsim-empty-state" style={{ padding: '16px 8px' }}>
+          <div className="rsim-empty-state-icon">📍</div>
+          <div className="rsim-empty-state-title">No waypoints yet</div>
+          <div className="rsim-empty-state-detail">
+            Switch to Plan mode (P) and click the map to add waypoints.<br />
+            Or use a pattern generator to create a survey grid.
+          </div>
+          <div className="rsim-empty-state-cta">
+            <button type="button" onClick={() => { import('@/state/app-store').then(({ setMapMode }) => setMapMode('plan')) }}>Go to Plan mode</button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
