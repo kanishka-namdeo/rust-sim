@@ -55,6 +55,8 @@ export const LAYER_IDS = [
   'wp-err',
   'mission-line',
   'mission-flown',
+  'task-body',
+  'task-label',
   'rally-body',
   'rally-label',
   'graticule-line',
@@ -62,7 +64,7 @@ export const LAYER_IDS = [
 
 export type LayerId = (typeof LAYER_IDS)[number]
 
-export const SOURCE_IDS = ['vehicles', 'tracks', 'fence', 'waypoints', 'mission-active', 'rally', 'graticule'] as const
+export const SOURCE_IDS = ['vehicles', 'tracks', 'fence', 'waypoints', 'mission-active', 'tasks', 'rally', 'graticule'] as const
 export type SourceId = (typeof SOURCE_IDS)[number]
 
 // ---------------------------------------------------------------------------
@@ -397,6 +399,46 @@ export function rallyFeatureCollection(
 }
 
 // ---------------------------------------------------------------------------
+// L6: Tasks — fleet task markers (diamond + label).
+// Spec §6.4 L6: "task-body (diamond), task-label". Auction state colors.
+// ---------------------------------------------------------------------------
+
+export interface TaskFeatureProperties {
+  label: string
+  state: string // 'pending' | 'assigned' | 'in_progress' | 'done' | 'rejected'
+  assignee: string | null
+}
+
+export function taskFeatureCollection(
+  tasks: { id: string; pos_ned_m: [number, number, number]; status: string; assigned_to: string | null }[] | null,
+  geoOrigin: { lat_deg: number; lon_deg: number; alt_m: number } | null,
+): GeoJSON.FeatureCollection<GeoJSON.Point, TaskFeatureProperties> {
+  const features: GeoJSON.Feature<GeoJSON.Point, TaskFeatureProperties>[] = []
+  if (!tasks || !geoOrigin) {
+    bumpLayerCount('task-body', 0)
+    return { type: 'FeatureCollection', features }
+  }
+  // Convert NED → LLA via the geo.ts nedToGeodetic port. For M11 we use a
+  // simple flat-earth approximation (the PX4 test field is small enough).
+  const lat0 = geoOrigin.lat_deg
+  const lon0 = geoOrigin.lon_deg
+  const mPerDegLat = 111320
+  const mPerDegLon = 111320 * Math.cos((lat0 * Math.PI) / 180)
+  for (const t of tasks) {
+    const [n, e] = t.pos_ned_m
+    const lat = lat0 + n / mPerDegLat
+    const lon = lon0 + e / mPerDegLon
+    features.push({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [Number(lon.toFixed(6)), Number(lat.toFixed(6))] },
+      properties: { label: t.id, state: t.status, assignee: t.assigned_to },
+    })
+  }
+  bumpLayerCount('task-body', features.length)
+  return { type: 'FeatureCollection', features }
+}
+
+// ---------------------------------------------------------------------------
 // Layer init — called once after the basemap `load` event. The layer
 // catalog here is the M8 subset; M10..M13 add L3..L12.
 // ---------------------------------------------------------------------------
@@ -490,6 +532,47 @@ export function addLayers(ctx: LayerInitCtx): void {
     layout: {
       'line-cap': 'round',
       'line-join': 'round',
+    },
+  })
+
+  // --- L6: tasks (fleet task markers — diamond + label) ---
+  // Spec §6.4 L6: "task-body (diamond), task-label". Fleet C2 overlay open.
+  ctx.addSource('tasks', {
+    type: 'geojson',
+    data: { type: 'FeatureCollection', features: [] } as GeoJSON.FeatureCollection,
+  })
+  ctx.addLayer({
+    id: 'task-body',
+    type: 'symbol',
+    source: 'tasks',
+    layout: {
+      'text-field': '◆',
+      'text-size': 16,
+      'text-allow-overlap': true,
+      visibility: 'none',
+    },
+    paint: {
+      'text-color': ['case', ['==', ['get', 'state'], 'done'], '#34D399', ['==', ['get', 'state'], 'in_progress'], '#22D3EE', ['==', ['get', 'state'], 'assigned'], '#F59E0B', '#8B98A5'],
+      'text-halo-color': '#11161D',
+      'text-halo-width': 2,
+    },
+  })
+  ctx.addLayer({
+    id: 'task-label',
+    type: 'symbol',
+    source: 'tasks',
+    layout: {
+      'text-field': ['concat', ['get', 'label'], ' · ', ['get', 'state']],
+      'text-size': 10,
+      'text-offset': [0, 1.5],
+      'text-anchor': 'top',
+      'text-allow-overlap': true,
+      visibility: 'none',
+    },
+    paint: {
+      'text-color': '#8B98A5',
+      'text-halo-color': '#11161D',
+      'text-halo-width': 2,
     },
   })
 
@@ -707,7 +790,7 @@ export function addLayers(ctx: LayerInitCtx): void {
 // Called by MapCanvas when the app-store's mapMode changes.
 // ---------------------------------------------------------------------------
 
-export function setPlanModeLayersVisible(ctx: { setLayoutProperty: (layer: string, name: 'visibility', value: 'visible' | 'none') => void }, mode: 'fly' | 'plan' | 'fence' | 'corridor'): void {
+export function setPlanModeLayersVisible(ctx: { setLayoutProperty: (layer: string, name: 'visibility', value: 'visible' | 'none') => void }, mode: 'fly' | 'plan' | 'fence' | 'corridor', fleetOverlayOpen: boolean = false): void {
   const planVisible = mode === 'plan' || mode === 'fence' || mode === 'corridor'
   const fenceVisible = mode === 'fence' || mode === 'plan'
   const wpVisible = mode === 'plan' || mode === 'corridor'
@@ -721,6 +804,9 @@ export function setPlanModeLayersVisible(ctx: { setLayoutProperty: (layer: strin
   ctx.setLayoutProperty('wp-body', 'visibility', wpVisible ? 'visible' : 'none')
   ctx.setLayoutProperty('wp-err', 'visibility', wpVisible ? 'visible' : 'none')
   ctx.setLayoutProperty('wp-label', 'visibility', wpVisible ? 'visible' : 'none')
+  // L6 tasks — visible when Fleet C2 overlay is open
+  ctx.setLayoutProperty('task-body', 'visibility', fleetOverlayOpen ? 'visible' : 'none')
+  ctx.setLayoutProperty('task-label', 'visibility', fleetOverlayOpen ? 'visible' : 'none')
   // L7 rally
   ctx.setLayoutProperty('rally-body', 'visibility', planVisible ? 'visible' : 'none')
   ctx.setLayoutProperty('rally-label', 'visibility', planVisible ? 'visible' : 'none')

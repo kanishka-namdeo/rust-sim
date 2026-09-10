@@ -48,6 +48,7 @@ import {
   waypointLineFeatureCollection,
   missionActiveFeatureCollection,
   rallyFeatureCollection,
+  taskFeatureCollection,
   getLayerFeatureCount,
   type LayerId,
 } from './map/layers'
@@ -556,9 +557,14 @@ export function MapCanvas(): JSX.Element {
     const rallySrc = map.getSource('rally') as maplibregl.GeoJSONSource | undefined
     if (rallySrc) rallySrc.setData(rallyFc)
 
-    // Plan-mode layer visibility — toggle L3/L4/L7 based on app.mapMode.
+    // L6: tasks — fleet task markers (diamond + label). Visible when Fleet C2 overlay is open.
+    const tasksFc = taskFeatureCollection(fleetSnap?.tasks ?? null, fleetSnap?.geo_origin ?? null)
+    const tasksSrc = map.getSource('tasks') as maplibregl.GeoJSONSource | undefined
+    if (tasksSrc) tasksSrc.setData(tasksFc)
+
+    // Plan-mode layer visibility — toggle L3/L4/L6/L7 based on app.mapMode + fleet overlay.
     try {
-      setPlanModeLayersVisible({ setLayoutProperty: (l, n, v) => map.setLayoutProperty(l, n, v) }, app.mapMode)
+      setPlanModeLayersVisible({ setLayoutProperty: (l, n, v) => map.setLayoutProperty(l, n, v) }, app.mapMode, app.overlays.fleet)
     } catch {
       // Style not loaded yet — skip; will retry on next flush.
     }
