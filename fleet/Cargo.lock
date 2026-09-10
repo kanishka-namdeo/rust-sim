@@ -303,19 +303,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3e0f1c7c3a72c66fd80abe965175f7523475c0489a87d3ff9d6e8c87d87a9d2d"
 
 [[package]]
-name = "fleet-alloc"
-version = "0.1.0"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "fleet-cli"
 version = "0.1.0"
 dependencies = [
  "axum",
  "clap",
- "fleet-alloc",
  "fleet-core",
  "fleet-mavlink",
  "fleet-mission",
@@ -356,7 +348,6 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "clap",
- "fleet-alloc",
  "fleet-core",
  "fleet-modes",
  "fleet-safety",

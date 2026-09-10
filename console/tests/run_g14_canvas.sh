@@ -14,12 +14,18 @@
 #   (c) vehicles + tracks from a REAL 2-vehicle SITL fleet
 #       (__rsimMapDebug.layers["vehicles-body"] >= 2)
 #   (d) telemetry numerics change across 12 s (snapshot-diff)
-#   (e) __rsimTelemetry.simSockets == fleet-frame vehicle count (P11)
-#   (f) window.__rsimCommits <= 5 Hz over 60 s (mock-engine soak leg —
+#   (e) window.__rsimCommits <= 5 Hz over 60 s (mock-engine soak leg —
 #       SIMULATED badge asserted; covers R-11)
-#   (g) forced-offline (kill fleet WS) → CONNECTING → SIMULATED badge path
-#   (h) node_modules/maplibre-gl/LICENSE.txt contains BSD-3
-#   (i) standalone artifacts exist (.next/standalone/public/maplibre/*)
+#   (f) forced-offline (kill fleet WS) → CONNECTING → SIMULATED badge path
+#   (g) node_modules/maplibre-gl/LICENSE.txt contains BSD-3
+#   (h) standalone artifacts exist (.next/standalone/public/maplibre/*)
+#
+# Note (Task 7a/7b cleanup, 2026-09-10): the `__rsimTelemetry.simSockets`
+# assertion was removed — the per-vehicle sim socket ladder and the
+# SimControl overlay were removed when the overkill sim-internal UI
+# (physics telemetry + fault console + SIM E-STOP) left the GCS surface.
+# The sim backend still runs as PX4's HIL physics engine, but the console
+# no longer opens a sim socket per vehicle.
 #
 # Environment overrides:
 #   AGENT_BROWSER  (default agent-browser)
@@ -88,10 +94,6 @@ echo "$ZONES" | grep -q "D" || { echo "  ✗ zone D (command bar) missing"; BC_F
 # --- (c) vehicles + tracks from REAL SITL fleet ---
 VEHICLE_COUNT=$(bc_eval 'window.__rsimMapDebug?.layers?.["vehicles-halo"] ?? 0')
 bc_assert_ge "vehicles from REAL SITL fleet (>= 2)" "$VEHICLE_COUNT" 2
-
-# --- (e) P11 — simSockets == fleet-frame vehicle count ---
-SIM_SOCKETS=$(bc_eval 'window.__rsimTelemetry?.simSockets ?? 0')
-bc_assert_eq "P11: simSockets == 2 (fleet-frame vehicle count)" "$SIM_SOCKETS" 2
 
 # --- (d) telemetry numerics change across 12 s (snapshot-diff) ---
 FRAMES_A=$(bc_eval 'window.__rsimTelemetry?.framesIn ?? 0')

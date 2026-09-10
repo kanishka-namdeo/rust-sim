@@ -9,7 +9,7 @@
  * 40×40 icon buttons top→bottom with 10px labels:
  *
  *   Plan mode `P` · Mission strip `M` · Library · Fleet C2 `B` ·
- *   SITL control · Setup `S` · Analyze `Y` · Pre-flight ·
+ *   Setup `S` · Analyze `Y` · Pre-flight ·
  *   Notifications `F8` · Cheat sheet `?` · Settings
  *
  * Active overlay icons get the accent-dim background; max two open (§4.2).
@@ -85,14 +85,6 @@ export function LeftRail() {
       icon: <Network size={20} aria-hidden="true" />,
       onClick: () => toggleOverlay('fleet'),
       active: app.overlays.fleet,
-    },
-    {
-      id: 'sim',
-      label: 'SITL',
-      shortcut: '—',
-      icon: <Cpu size={20} aria-hidden="true" />,
-      onClick: () => toggleOverlay('sim'),
-      active: app.overlays.sim,
     },
     {
       id: 'setup',
@@ -177,4 +169,4 @@ export function LeftRail() {
 
 // Icons — kept inline so the rail is self-contained; M8 ships with the
 // lucide-react set already pinned at 0.525 (T-A1 dependency contract).
-import { MapPin, Hexagon, Route, Library, Network, Cpu, Wrench, BarChart3, ClipboardCheck, Settings, Keyboard } from 'lucide-react'
+import { MapPin, Hexagon, Route, Library, Network, Wrench, BarChart3, ClipboardCheck, Settings, Keyboard } from 'lucide-react'

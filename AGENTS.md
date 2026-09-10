@@ -18,25 +18,50 @@ Core contract: work products, source materials, instructions, records, assets, a
 - RustSim repo rules (below) bind every component; component `AGENTS.md`
   files specialize them locally.
 
-The repo is in **GCS v1** scope: turning `console/` into a QGC/MP-class
-ground control station for PX4 SITL only. The buildout is structured as
-7 milestones (M1..M7) backed by 14 verification gates (G-0..G-13, which
-extend the existing I/F/S/O/R ladder in `docs/VERIFICATION.md`). The
-buildout introduced a third Rust control plane — the `:8300` mission
-catalog + replay server (binary `fleet-catalog`, owned by
-`fleet/crates/fleet-mission/`, see ADR-0027) — and grew the console
-from 4 mounted views to 7 tabs (Plan, Fly, Sim Console, Fleet C2,
-Operator Map, Vehicle Setup, Analyze). The binding spec is
-`docs/GCS_SPEC.md`; GCS-specific ADRs live in `console/docs/adr/`
-(numbered 0019+ to continue the cross-repo sequence).
-
-The **GCS v2 "Operations Canvas"** redesign — single-screen full-bleed
+The repo is in **GCS lean-scope** (post-cleanup 2026-09-10): turning
+`console/` into a QGC/MP-class ground control station for PX4 SITL only,
+with overkill features removed end-to-end. The GCS v1 buildout was
+structured as 7 milestones (M1..M7) backed by 14 verification gates
+(G-0..G-13). The GCS v2 "Operations Canvas" redesign (M8..M15, gates
+G-14..G-21) is the current shipped state — single-screen full-bleed
 MapLibre GL map with edge-HUD widgets, right-click context menus, and
-single-key shortcuts (milestones M8..M15, gates G-14..G-21, zero backend
-changes) — is specified in `docs/GCS_V2_SPEC.md`. It supersedes
-`GCS_SPEC.md`'s presentation-layer contracts. Until M8 lands, the shipped
-console remains GCS v1 (7 tabs, Leaflet); v2 spec statements describe
-target state, not shipped state.
+single-key shortcuts.
+
+**2026-09-10 lean cleanup** removed end-to-end:
+- **UI**: Sim Console overlay (physics telemetry + fault console + SIM
+  E-STOP — overkill for a GCS), Fleet C2 swarming patterns panel,
+  Analyze `.replay` tab (custom sim format; ULog stays), fault/swarm
+  command verbs (`fault_inject`/`fault_clear`/`estop_sim`/`scenario_hotswap`/`task_append`),
+  the `SimFrame`/`ActiveFault`/`FAULT_CATALOG`/`SwarmPattern`/`Replay*` types,
+  the per-vehicle sim socket ladder in the telemetry store, the mock-sim
+  engine, and the 3 dead v1 dashboard widgets (StatTile/StripChart/ConnBadge).
+- **Backend**: `fleet-alloc` crate (auction + Hungarian), `fleet-safety/policy.rs`
+  (8-policy ladder — PX4's own failsafes cover the operator case),
+  `fleet-mission` scenario DSL + compiler + runner + report, `fleet-cli/simproxy.rs`
+  (HTTP/1.1 fault proxy), `fleet-cli/report.rs` (supervisor run-report),
+  routes `PUT /api/fleet` (hot-swap), `POST /api/tasks` (runtime task append),
+  `POST /api/vehicles/{i}/faults` (fault proxy), `GET/POST /api/fleet/patterns*`
+  (swarming), `GET /api/replays*` (custom sim format), `mavfleet check`
+  subcommand. The supervisor tick body shrank from autonomy (auction +
+  runner + policy + timeline + hot-load) to "spawn N vehicles, bind links,
+  10 Hz FleetFrame aggregation, serve REST+WS, e-stop".
+- **DB**: no SQL/SQLite/sled — TOML/JSON-on-disk with atomic writes in
+  `fleet-mission/src/gcs/store.rs` is the GCS-appropriate pattern; kept.
+- **Tests**: deleted G-10 (orchestration), G-12 (replay scrub), G-19
+  (analyze sim — fault console + SIM E-STOP + replays tab), R-1 harness
+  (`live_test_runtime.sh`), F-2 harness (`run_f2.sh`), F-2's
+  `live_test_operator.sh` step (e). Trimmed G-11 to ULog-only. Trimmed
+  G-14 to drop the `simSockets` assertion. Trimmed G-20 to expect 6
+  overlay panels (was 7). Trimmed G-21's gate-harness list.
+
+The console ships 6 overlay panels (Mission Strip + Library + Fleet C2
+cards/bindings/events + Setup Drawer + Analyze ULog-only + Pre-Flight +
+Settings + Cheat Sheet). The fleet catalog (`:8300`) serves mission
+CRUD + ULog browse + param presets. The fleet manager (`:8400`) serves
+telemetry WS + arm/land/rtl/hold/goto + mission upload/download + prearm
+checks + QGC-style Vehicle Setup + fleet mission bindings + e-stop. The
+sim/ workspace stays as PX4's HIL physics engine (TCP 4560+i), but its
+internal data is no longer consumed by the GCS UI.
 
 ## RustSim Repository Rules (Local Contracts)
 

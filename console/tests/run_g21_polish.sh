@@ -82,8 +82,10 @@ else
 fi
 
 # (e) Full ladder re-run — just verify the harnesses exist
+# Note (Task 7a/7b cleanup, 2026-09-10): G-19 (analyze_sim) removed when
+# the SimControl overlay + Analyze replays tab left the GCS surface.
 echo "[$GATE_NAME] (e) gate harnesses present..."
-for g in g14_canvas g15_keys g16_plan g17_fleet g18_setup g19_analyze_sim g20_parity; do
+for g in g14_canvas g15_keys g16_plan g17_fleet g18_setup g20_parity; do
   if [ -f "$CONSOLE/tests/run_$g.sh" ]; then
     echo "  ✓ run_$g.sh present"
   else

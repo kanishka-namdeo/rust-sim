@@ -31,20 +31,18 @@ use axum::Router;
 use serde_json::json;
 
 use crate::setup;
-use crate::simproxy;
 use crate::state::{self, AppState};
-use crate::state::{OperatorCmd, OperatorTask, OperatorWaypoint};
+use crate::state::{OperatorCmd, OperatorWaypoint};
 
 /// Build the control-plane router (also the unit-test surface).
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
-        .route("/api/fleet", get(fleet_get).put(fleet_put))
+        .route("/api/fleet", get(fleet_get))
         .route("/api/fleet/estop", post(estop_post))
         .route("/api/estop", post(estop_post))
         .route("/api/vehicles/{index}", get(vehicle_get))
         .route("/api/events", get(events_get))
-        .route("/api/vehicles/{index}/faults", post(vehicle_faults_post))
-        .route("/api/tasks", get(tasks_get).post(tasks_post))
+        .route("/api/tasks", get(tasks_get))
         // -- vehicle-setup plane (ADR-0016, QGC/MP-style) ----------------
         .route("/api/airframes", get(airframes_get))
         .route("/api/modes", get(modes_get))
@@ -66,28 +64,26 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/vehicles/{index}/goto", post(vehicle_goto_post))
         // -- MAVLink mission upload/download (M2-API): direct proxies to the
         // link's mission-protocol state machine (commit 99993f5). Distinct
-        // from ADR-0017's `POST /api/mission` (geo→NED + auction): these
+        // from ADR-0017's `POST /api/mission` (geo→NED task board): these
         // endpoints pass raw MISSION_ITEM_INT items through to PX4.
         .route("/api/vehicles/{index}/mission", get(vehicle_mission_get))
         .route("/api/vehicles/{index}/mission/upload", post(vehicle_mission_upload_post))
         // -- M3 (Fly View): QGC-style pre-arm checklist (GCS_SPEC.md §5.2).
-        // The Fly View's ARM button gates on `all_passed` here; each check
-        // reflects the live VehicleState + health flags so the operator sees
-        // the real reason an arming attempt would be TEMPORARILY_REJECTED.
         .route("/api/vehicles/{index}/prearm-checks", get(vehicle_prearm_checks_get))
         // -- M5 (Fleet C2, GCS_SPEC.md §5.4): per-vehicle mission binding,
-        // fleet-wide start (parallel/sequential), swarming patterns.
-        // Bindings are stored in AppState (one ULID per vehicle, None = unbound);
+        // fleet-wide start (parallel/sequential). Bindings are stored in
+        // AppState (one ULID per vehicle, None = unbound);
         // `POST /api/fleet/start` fetches each bound mission from :8300 and
         // uploads it via the per-vehicle link's mission protocol.
+        // (Task 7b: the swarming-patterns routes / runtime task append /
+        // hot scenario swap / fault proxy are gone — the GCS is
+        // operator-driven.)
         .route(
             "/api/fleet/mission-bindings",
             get(fleet_mission_bindings_get).post(fleet_mission_bindings_post),
         )
         .route("/api/fleet/mission-bindings/{vehicle_id}", delete(fleet_mission_binding_delete))
         .route("/api/fleet/start", post(fleet_start_post))
-        .route("/api/fleet/patterns", get(fleet_patterns_get))
-        .route("/api/fleet/patterns/{name}/generate", post(fleet_pattern_generate_post))
         // WS plane: the spec path plus the gateway-forwarded root path.
         .route("/ws/fleet", get(ws_entry))
         .route("/ws", get(ws_entry))
@@ -162,240 +158,12 @@ async fn events_get(
     }))
 }
 
-/// `GET /api/tasks` — task table (assignment, state, hover observation).
+/// `GET /api/tasks` — task table (the operator-uploaded mission board).
+/// (Task 7b: the runtime `POST /api/tasks` append route is gone — the
+/// operator uploads via `POST /api/mission` instead; this GET stays as
+/// a read-only surface of the task table the operator built.)
 async fn tasks_get(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     ok(json!({ "tasks": s.tasks_snapshot() }))
-}
-
-// ---------------------------------------------------------------------------
-// Runtime task append (ADR-0018, `POST /api/tasks`)
-// ---------------------------------------------------------------------------
-
-/// `POST /api/tasks` body: a single task object or an array of them. Tasks
-/// are NED metres home-relative (the scenario DSL's own convention) — the
-/// direct counterpart of `POST /api/mission`'s geo waypoints.
-#[derive(Debug, serde::Deserialize)]
-struct TaskBody {
-    #[serde(default)]
-    id: Option<String>,
-    pos_ned_m: [f32; 3],
-    #[serde(default)]
-    hover_s: f32,
-    #[serde(default = "default_task_reward")]
-    reward: f32,
-    #[serde(default)]
-    deadline_s: Option<f32>,
-}
-
-fn default_task_reward() -> f32 {
-    1.0
-}
-
-/// `POST /api/tasks` (spec 6.5): append tasks at runtime — the supervisor
-/// validates them with the compiler's own rules (fence polygon, altitude
-/// box, reachability) and injects them into the task board + auction pool,
-/// so the next auction round reallocates over the grown pool.
-async fn tasks_post(
-    State(s): State<Arc<AppState>>,
-    body: Option<axum::extract::Json<serde_json::Value>>,
-) -> Response {
-    let Some(axum::extract::Json(v)) = body else {
-        return err(StatusCode::BAD_REQUEST, "body must be a task JSON object or array");
-    };
-    let items: Vec<serde_json::Value> = match v {
-        serde_json::Value::Array(a) => a,
-        serde_json::Value::Object(_) => vec![v],
-        _ => return err(StatusCode::BAD_REQUEST, "body must be a task JSON object or array"),
-    };
-    if items.is_empty() {
-        return err(StatusCode::UNPROCESSABLE_ENTITY, "no tasks in body");
-    }
-    if items.len() > 64 {
-        return err(StatusCode::UNPROCESSABLE_ENTITY, "too many tasks (max 64)");
-    }
-    let mut tasks = Vec::with_capacity(items.len());
-    for (k, item) in items.into_iter().enumerate() {
-        let parsed: TaskBody = match serde_json::from_value(item) {
-            Ok(p) => p,
-            Err(e) => {
-                return err(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    &format!("task[{k}] invalid: {e} (pos_ned_m = [x, y, z] NED, z negative up)"),
-                )
-            }
-        };
-        if !parsed.pos_ned_m.iter().all(|c| c.is_finite()) {
-            return err(StatusCode::UNPROCESSABLE_ENTITY, &format!("task[{k}] pos_ned_m must be finite"));
-        }
-        tasks.push(OperatorTask {
-            id: parsed.id,
-            pos_ned_m: parsed.pos_ned_m,
-            hover_s: parsed.hover_s,
-            reward: parsed.reward,
-            deadline_s: parsed.deadline_s,
-        });
-    }
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    s.push_operator_cmd(OperatorCmd::Append { tasks, ack: tx });
-    match tokio::time::timeout(Duration::from_secs(2), rx).await {
-        Ok(Ok(ack)) => ok(json!({
-            "accepted": ack.accepted,
-            "rejected": ack.rejected.iter()
-                .map(|(l, r)| json!({"label": l, "reason": r}))
-                .collect::<Vec<_>>(),
-            "pool": ack.pool,
-        }))
-        .into_response(),
-        _ => err(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "supervisor did not drain the append — is the fleet running?",
-        )
-        .into_response(),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Hot scenario load (ADR-0018, `PUT /api/fleet`)
-// ---------------------------------------------------------------------------
-
-/// `PUT /api/fleet` body: the full scenario TOML as text.
-#[derive(Debug, serde::Deserialize)]
-struct FleetPutBody {
-    scenario_toml: String,
-}
-
-/// `PUT /api/fleet` (spec 3.4): validate a scenario TOML, stage it, and —
-/// when the fleet is quiescent (no mission flying) — gracefully stop this
-/// run and hot-restart with the staged scenario on the same port. The
-/// parse/compile gate is the same one `mavfleet check` applies; the
-/// supervisor re-checks quiescence at drain time (the REST handler's view
-/// can be a hair stale).
-async fn fleet_put(
-    State(s): State<Arc<AppState>>,
-    body: Result<
-        axum::extract::Json<FleetPutBody>,
-        axum::extract::rejection::JsonRejection,
-    >,
-) -> Response {
-    let axum::extract::Json(FleetPutBody { scenario_toml }) = match body {
-        Ok(b) => b,
-        Err(e) => {
-            return err(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                &format!("invalid body: {e}"),
-            )
-        }
-    };
-    if scenario_toml.trim().is_empty() {
-        return err(StatusCode::BAD_REQUEST, "scenario_toml must not be empty");
-    }
-    // Full validation up front: schema, ranges, compile-time task checks —
-    // a scenario that cannot run is rejected before anything is staged.
-    if let Err(e) = fleet_mission::Scenario::parse_toml(&scenario_toml) {
-        return err(StatusCode::UNPROCESSABLE_ENTITY, &format!("invalid scenario: {e}"));
-    }
-    let plan = {
-        let scenario = fleet_mission::Scenario::parse_toml(&scenario_toml).expect("re-parsed");
-        fleet_mission::MissionPlan::compile(&scenario)
-    };
-    if !plan.rejections.is_empty() {
-        let detail = plan
-            .rejections
-            .iter()
-            .map(|(id, r)| format!("{id}: {r}"))
-            .collect::<Vec<_>>()
-            .join("; ");
-        return err(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            &format!("scenario rejected at compile: {detail}"),
-        );
-    }
-    // Fast quiescence gate (the supervisor re-checks at drain time).
-    let flying: Vec<u8> = (0..s.count).filter(|&i| s.mission_active(i)).collect();
-    if !flying.is_empty() {
-        return err(
-            StatusCode::CONFLICT,
-            &format!(
-                "vehicles {flying:?} are flying an autonomous mission — land/clear before a scenario swap"
-            ),
-        );
-    }
-    // Stage the file in this run's directory, then ask the supervisor.
-    let staged = s
-        .run_dir
-        .join(format!("hot-scenario-{}.toml", fleet_core::events::fleet_epoch_ms()));
-    if let Err(e) = std::fs::write(&staged, &scenario_toml) {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("cannot stage scenario: {e}"));
-    }
-    s.set_next_scenario(staged.clone());
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    s.push_operator_cmd(OperatorCmd::HotLoad { ack: tx });
-    match tokio::time::timeout(Duration::from_secs(2), rx).await {
-        Ok(Ok(ack)) if ack.accepted => ok(json!({
-            "staged": staged,
-            "note": "graceful stop in progress — the fleet restarts with the staged scenario; the control plane rebinds on this port within seconds",
-        }))
-        .into_response(),
-        Ok(Ok(ack)) => {
-            s.take_next_scenario(); // supervisor nack: nothing is staged
-            err(
-                StatusCode::CONFLICT,
-                ack.reason.as_deref().unwrap_or("supervisor rejected the swap"),
-            )
-            .into_response()
-        }
-        _ => {
-            s.take_next_scenario(); // no supervisor answer: clean up the staging
-            err(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "supervisor did not drain the load — is the fleet running?",
-            )
-            .into_response()
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Fault proxy (ADR-0018, `POST /api/vehicles/{i}/faults`)
-// ---------------------------------------------------------------------------
-
-/// `POST /api/vehicles/{i}/faults`: inject a rustsitsim fault on vehicle i
-/// by proxying to its own control plane (:8200+i, the sim's §7.3 REST fault
-/// plane). The body is the sim's fault-event schema — `{"type":
-/// "motor_cut", "params": {...}, "duration_ms": ...}` — validated by the
-/// sim itself (single source of truth for the catalog) and the response is
-/// relayed verbatim, status included.
-async fn vehicle_faults_post(
-    State(s): State<Arc<AppState>>,
-    Path(index): Path<u8>,
-    body: Option<axum::extract::Json<serde_json::Value>>,
-) -> Response {
-    if index >= s.count {
-        return err(StatusCode::NOT_FOUND, &format!("vehicle {index} out of range (0..{})", s.count - 1));
-    }
-    let Some(axum::extract::Json(v)) = body else {
-        return err(StatusCode::BAD_REQUEST, "body must be a fault event JSON object");
-    };
-    let Some(t) = v.get("type").and_then(|t| t.as_str()) else {
-        return err(StatusCode::BAD_REQUEST, "body must carry a \"type\" (the rustsitsim fault catalog id)");
-    };
-    if t.trim().is_empty() {
-        return err(StatusCode::BAD_REQUEST, "\"type\" must not be empty");
-    }
-    let port = fleet_simctl::ports::sim_api(index);
-    match simproxy::post_json(port, "/api/faults", &v).await {
-        Ok((code, sim_body)) => {
-            let status = StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_GATEWAY);
-            // Relay the sim's own envelope {"ok","data"|"error"} verbatim —
-            // the catalog, ids ("runtime-N") and reasons are the sim's.
-            (status, Json(sim_body)).into_response()
-        }
-        Err(e) => err(
-            StatusCode::SERVICE_UNAVAILABLE,
-            &format!("vehicle {index} sim control plane not reachable: {e}"),
-        )
-        .into_response(),
-    }
 }
 
 /// `POST /api/estop` (and `/api/fleet/estop`) — operator e-stop: every
@@ -405,7 +173,7 @@ async fn estop_post(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     s.log.log(
         fleet_core::events::EventKind::SupervisorAction,
         None,
-        "operator e-stop requested via API (policy 1)",
+        "operator e-stop requested via API",
     );
     ok(json!({ "estop": true, "phase": s.phase() }))
 }
@@ -828,9 +596,11 @@ struct MissionBody {
 }
 
 /// `POST /api/mission` — upload operator waypoints (QGC Plan View's
-/// Upload): geo -> NED at the supervisor, validated with the compiler's
-/// own rules. Rejections carry reasons; the accepted ids enter the task
-/// board and the sequential auction's pool.
+/// Upload): geo -> NED at the supervisor, validated against the live
+/// geofence + altitude box. Rejections carry reasons; the accepted ids
+/// enter the operator task board (surfaced via `GET /api/tasks` and the
+/// `tasks` array on the fleet frame). (Task 7b: the sequential auction
+/// and scenario-DSL compiler are gone — the board is operator-driven.)
 async fn mission_upload_post(
     State(s): State<Arc<AppState>>,
     body: axum::extract::Json<MissionBody>,
@@ -893,9 +663,12 @@ async fn mission_upload_post(
     }
 }
 
-/// `POST /api/mission/start` — start the deferred mission (QGC's Start
-/// Mission): the setup bench flips to RUNNING and the auction flies the
-/// uploaded tasks exactly like a scenario mission.
+/// `POST /api/mission/start` — start the deferred operator mission
+/// (QGC's Start Mission): the setup bench flips to RUNNING. (Task 7b:
+/// the auction no longer flies the uploaded tasks autonomously — the
+/// operator uses `POST /api/fleet/start` to upload + arm a bound
+/// catalog mission, or `POST /api/vehicles/{i}/goto` for a single
+/// waypoint.)
 async fn mission_start_post(State(s): State<Arc<AppState>>) -> Response {
     let (tx, rx) = tokio::sync::oneshot::channel();
     s.push_operator_cmd(OperatorCmd::Start { ack: tx });
@@ -1205,8 +978,10 @@ async fn vehicle_goto_post(
     }
     let ned = origin.geodetic_to_ned(body.lat_deg, body.lon_deg, origin.alt_m + alt_agl);
     // clamp into the fence minus the runner's margin (§7.2): a go-to can
-    // never command a setpoint the mission rules themselves reject.
-    const MARGIN: f32 = fleet_mission::runner::CLAMP_MARGIN_M;
+    // never command a setpoint the mission rules themselves reject. (Task
+    // 7b: the runner module is gone — inline the 2 m clamp margin it
+    // used to define.)
+    const MARGIN: f32 = 2.0;
     let xy = s.fence.clamp_setpoint([ned[0] as f32, ned[1] as f32], MARGIN);
     let z = s.fence.clamp_altitude(-alt_agl as f32, MARGIN);
     let clamped =
@@ -1965,328 +1740,6 @@ async fn fleet_start_post(
 }
 
 // ---------------------------------------------------------------------------
-// `GET /api/fleet/patterns` + `POST /api/fleet/patterns/{name}/generate`
-// ---------------------------------------------------------------------------
-
-/// One entry in the `GET /api/fleet/patterns` listing.
-#[derive(Debug, serde::Serialize)]
-struct PatternInfo {
-    name: &'static str,
-    description: &'static str,
-    /// "implemented" (the generator returns generated missions) or
-    /// "stub" (the endpoint returns 501 NotImplemented).
-    implemented: bool,
-}
-
-/// `GET /api/fleet/patterns` — list the swarming-pattern library (M5,
-/// GCS_SPEC.md §5.4). Three patterns per spec: follow-the-leader,
-/// search-grid, parallel-patrol. Only follow-the-leader is implemented
-/// in M5; the other two return 501 on `generate`.
-async fn fleet_patterns_get(State(_s): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    let patterns = vec![
-        PatternInfo {
-            name: "follow-the-leader",
-            description: "Followers maintain formation behind the leader at a configurable separation.",
-            implemented: true,
-        },
-        PatternInfo {
-            name: "search-grid",
-            description: "Divide an area into strips, one per vehicle, at a fixed spacing.",
-            implemented: false,
-        },
-        PatternInfo {
-            name: "parallel-patrol",
-            description: "Same waypoints for each vehicle, offset perpendicular to the path.",
-            implemented: false,
-        },
-    ];
-    ok(json!({ "patterns": patterns }))
-}
-
-/// `POST /api/fleet/patterns/{name}/generate` body for follow-the-leader.
-#[derive(Debug, serde::Deserialize)]
-struct FollowTheLeaderBody {
-    /// Leader vehicle index.
-    leader: u8,
-    /// Follower vehicle indices (each gets a generated mission).
-    followers: Vec<u8>,
-    /// Horizontal separation behind the leader, metres (default 10 m).
-    #[serde(default = "default_ftl_separation_m")]
-    separation_m: f64,
-    /// Cruise altitude, metres AGL (default 12 m).
-    #[serde(default = "default_ftl_alt_m")]
-    alt_m: f64,
-    /// Optional: a pre-binding mission_id for the leader. When omitted,
-    /// the generator uses the leader's currently-bound mission; when
-    /// that is also missing, returns 422 with a hint.
-    #[serde(default)]
-    leader_mission_id: Option<String>,
-}
-
-fn default_ftl_separation_m() -> f64 {
-    10.0
-}
-fn default_ftl_alt_m() -> f64 {
-    12.0
-}
-
-/// One generated mission for one follower (the per-vehicle output of
-/// `POST /api/fleet/patterns/follow-the-leader/generate`).
-#[derive(Debug, serde::Serialize)]
-struct GeneratedMission {
-    vehicle_id: u8,
-    /// The leader's mission id (so the console can show "follower of
-    /// mission X"). Echoed in the response.
-    leader_mission_id: String,
-    /// Generated waypoints — same shape as a catalog Waypoint, ready to
-    /// POST back to :8300 as a new mission.
-    waypoints: Vec<fleet_mission::gcs::mission_file::Waypoint>,
-}
-
-/// Offset a lat/lon pair by `north_m`/`east_m` metres (small-area
-/// flat-earth approximation — fine for the <1 km separations swarming
-/// patterns use). Returns `(lat_deg, lon_deg)`.
-fn offset_latlon(lat_deg: f64, lon_deg: f64, north_m: f64, east_m: f64) -> (f64, f64) {
-    // 1° lat ≈ 111_320 m; 1° lon ≈ 111_320 m × cos(lat).
-    const M_PER_DEG_LAT: f64 = 111_320.0;
-    let lat = lat_deg + north_m / M_PER_DEG_LAT;
-    let lon = lon_deg + east_m / (M_PER_DEG_LAT * lat_deg.to_radians().cos());
-    (lat, lon)
-}
-
-/// Compute the bearing (degrees, 0 = north, 90 = east) from (lat1, lon1)
-/// to (lat2, lon2). Used to place a follower `separation_m` *behind*
-/// the leader along the leader's direction of travel.
-fn bearing_deg(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
-    let phi1 = lat1.to_radians();
-    let phi2 = lat2.to_radians();
-    let dlam = (lon2 - lon1).to_radians();
-    let y = dlam.sin() * phi2.cos();
-    let x = phi1.cos() * phi2.sin() - phi1.sin() * phi2.cos() * dlam.cos();
-    let theta = y.atan2(x).to_degrees();
-    (theta + 360.0) % 360.0
-}
-
-/// `POST /api/fleet/patterns/{name}/generate` — generate per-vehicle
-/// missions from a swarming pattern. M5 implements `follow-the-leader`
-/// fully; the other two patterns return 501 NotImplemented.
-async fn fleet_pattern_generate_post(
-    State(s): State<Arc<AppState>>,
-    Path(name): Path<String>,
-    body: axum::extract::Json<serde_json::Value>,
-) -> Response {
-    match name.as_str() {
-        "follow-the-leader" => fleet_pattern_follow_the_leader(s, body).await,
-        "search-grid" | "parallel-patrol" => err(
-            StatusCode::NOT_IMPLEMENTED,
-            &format!(
-                "pattern '{name}' is stubbed in M5; only 'follow-the-leader' is implemented"
-            ),
-        ),
-        other => err(
-            StatusCode::NOT_FOUND,
-            &format!(
-                "unknown pattern '{other}'; known: follow-the-leader, search-grid, parallel-patrol"
-            ),
-        ),
-    }
-}
-
-/// Compute the follower's waypoints for the follow-the-leader pattern
-/// (M5 pure geometry helper). For each leader waypoint at index k ≥ 1,
-/// the follower's waypoint is placed at `separation_m` *behind* the
-/// leader along the bearing from waypoint k-1 → waypoint k. Waypoint 0
-/// (takeoff) is placed `separation_m` behind the leader along a 0°
-/// bearing (north), since there's no previous waypoint to derive a
-/// heading from — M5.1 will read the real takeoff yaw from telemetry.
-///
-/// All follower waypoints inherit the leader's `seq`/`frame`/`command`/
-/// `param1-4` (so a survey mission stays a survey mission, just shifted
-/// in space); `z` is overridden to `alt_m` (the pattern's cruise alt).
-pub(crate) fn compute_follow_the_leader_waypoints(
-    leader_waypoints: &[fleet_mission::gcs::mission_file::Waypoint],
-    separation_m: f64,
-    alt_m: f64,
-) -> Vec<fleet_mission::gcs::mission_file::Waypoint> {
-    let mut out: Vec<fleet_mission::gcs::mission_file::Waypoint> =
-        Vec::with_capacity(leader_waypoints.len());
-    for (k, wp) in leader_waypoints.iter().enumerate() {
-        let (lat1, lon1, lat2, lon2) = if k == 0 {
-            // No previous waypoint: use a "north-facing" default — the
-            // follower starts one separation behind the leader's takeoff
-            // point along a 0° bearing. (Real takeoff heading comes from
-            // the vehicle's yaw; M5.1 will read it from telemetry.)
-            (wp.x, wp.y, wp.x + 1e-6, wp.y)
-        } else {
-            let prev = &leader_waypoints[k - 1];
-            (prev.x, prev.y, wp.x, wp.y)
-        };
-        let bearing = bearing_deg(lat1, lon1, lat2, lon2);
-        // Place the follower at `separation_m` behind the leader along
-        // the bearing axis: north_m = -sep * cos(bearing), east_m =
-        // -sep * sin(bearing) (opposite of the travel direction).
-        let north_m = -separation_m * bearing.to_radians().cos();
-        let east_m = -separation_m * bearing.to_radians().sin();
-        let (flat, flon) = offset_latlon(wp.x, wp.y, north_m, east_m);
-        out.push(fleet_mission::gcs::mission_file::Waypoint {
-            seq: wp.seq,
-            frame: wp.frame,
-            command: wp.command,
-            x: flat,
-            y: flon,
-            z: alt_m as f32,
-            param1: wp.param1,
-            param2: wp.param2,
-            param3: wp.param3,
-            param4: wp.param4,
-        });
-    }
-    out
-}
-
-/// follow-the-leader generator: takes the leader's mission (from
-/// bindings or `leader_mission_id` in the body), and for each follower
-/// produces a mission whose waypoints are the leader's waypoints offset
-/// by `separation_m` behind (in the direction opposite to travel).
-///
-/// For the leader's waypoint at index k (k ≥ 1), the follower's waypoint
-/// is placed at `separation_m` behind the leader along the bearing from
-/// waypoint k-1 → waypoint k. Waypoint 0 (the takeoff point) is placed
-/// at `separation_m` behind the leader's takeoff, on the same bearing
-/// used for waypoint 1 (or the leader's home bearing when there's only
-/// one waypoint — degenerate but defined).
-async fn fleet_pattern_follow_the_leader(
-    s: Arc<AppState>,
-    body: axum::extract::Json<serde_json::Value>,
-) -> Response {
-    let body: FollowTheLeaderBody = match serde_json::from_value(body.0) {
-        Ok(b) => b,
-        Err(e) => {
-            return err(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                &format!("invalid body: {e}"),
-            )
-        }
-    };
-    if body.followers.is_empty() {
-        return err(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "followers must not be empty",
-        );
-    }
-    if body.followers.iter().any(|f| *f >= s.count) {
-        return err(
-            StatusCode::NOT_FOUND,
-            &format!("one or more followers are out of range (fleet count {})", s.count),
-        );
-    }
-    if body.leader >= s.count {
-        return err(
-            StatusCode::NOT_FOUND,
-            &format!("leader {} is out of range (fleet count {})", body.leader, s.count),
-        );
-    }
-    if body.followers.contains(&body.leader) {
-        return err(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "leader must not appear in the followers list",
-        );
-    }
-    if body.separation_m <= 0.0 || !body.separation_m.is_finite() {
-        return err(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "separation_m must be > 0 and finite",
-        );
-    }
-    if body.alt_m < 0.0 || body.alt_m > 120.0 || !body.alt_m.is_finite() {
-        return err(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "alt_m must be in [0, 120] m AGL",
-        );
-    }
-
-    // Resolve the leader's mission: explicit body field first, then the
-    // leader's bound mission.
-    let leader_id = match body.leader_mission_id.clone() {
-        Some(id) => id,
-        None => match s.mission_binding(body.leader) {
-            Some(id) => id,
-            None => {
-                return err(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "leader has no bound mission and no leader_mission_id was provided",
-                )
-            }
-        },
-    };
-    if !state::looks_like_ulid(&leader_id) {
-        return err(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            &format!("leader_mission_id '{leader_id}' is not a valid ULID"),
-        );
-    }
-
-    let leader_mission =
-        match fetch_mission_from_catalog(s.catalog_url(), &leader_id).await {
-            Some(m) => m,
-            None => {
-                return err(
-                    StatusCode::NOT_FOUND,
-                    &format!("leader mission {leader_id} not found in catalog"),
-                )
-            }
-        };
-    if leader_mission.waypoints.is_empty() {
-        return err(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "leader mission has no waypoints",
-        );
-    }
-
-    let follower_waypoints = compute_follow_the_leader_waypoints(
-        &leader_mission.waypoints,
-        body.separation_m,
-        body.alt_m,
-    );
-
-    // All followers share the same generated waypoints in M5 (real
-    // formation flight would offset each by its index × separation;
-    // that's M5.1's job). Echoed in the response so the client can
-    // POST each back to :8300 to create per-vehicle missions.
-    let generated: Vec<GeneratedMission> = body
-        .followers
-        .iter()
-        .map(|f| GeneratedMission {
-            vehicle_id: *f,
-            leader_mission_id: leader_id.clone(),
-            waypoints: follower_waypoints.clone(),
-        })
-        .collect();
-
-    s.log.log(
-        fleet_core::events::EventKind::SupervisorAction,
-        None,
-        format!(
-            "operator: follow-the-leader via API — leader={} followers={} separation={}m waypoints={}",
-            body.leader,
-            body.followers.len(),
-            body.separation_m,
-            follower_waypoints.len()
-        ),
-    );
-
-    ok(json!({
-        "ok": true,
-        "pattern": "follow-the-leader",
-        "leader_mission_id": leader_id,
-        "separation_m": body.separation_m,
-        "alt_m": body.alt_m,
-        "generated": serde_json::to_value(&generated).unwrap_or(json!(null)),
-    }))
-    .into_response()
-}
-
-// ---------------------------------------------------------------------------
 // WS plane
 // ---------------------------------------------------------------------------
 
@@ -2303,9 +1756,8 @@ async fn ws_entry(State(s): State<Arc<AppState>>, mut parts: Parts) -> Response 
             "service": "mavfleet",
             "scenario": s.scenario_path,
             "endpoints": [
-                "GET /api/fleet", "PUT /api/fleet", "GET /api/vehicles/{i}", "GET /api/events",
-                "GET|POST /api/tasks", "POST /api/estop", "POST /api/fleet/estop",
-                "POST /api/vehicles/{i}/faults",
+                "GET /api/fleet", "GET /api/vehicles/{i}", "GET /api/events",
+                "GET /api/tasks", "POST /api/estop", "POST /api/fleet/estop",
                 "GET /api/airframes", "GET /api/modes",
                 "GET /api/vehicles/{i}/setup", "GET|POST /api/vehicles/{i}/params",
                 "POST /api/vehicles/{i}/params/refresh",
@@ -2321,8 +1773,6 @@ async fn ws_entry(State(s): State<Arc<AppState>>, mut parts: Parts) -> Response 
                 "GET|POST /api/fleet/mission-bindings",
                 "DELETE /api/fleet/mission-bindings/{vehicle_id}",
                 "POST /api/fleet/start",
-                "GET /api/fleet/patterns",
-                "POST /api/fleet/patterns/{name}/generate",
                 "WS /ws/fleet | /ws | /"
             ],
             "phase": s.phase(),
@@ -2377,8 +1827,7 @@ async fn forward_ws(state: Arc<AppState>, mut socket: WebSocket) {
 mod tests {
     use super::*;
     use fleet_core::registry::Registry;
-    use fleet_core::EventLog;
-    use fleet_mission::report::TaskStatus;
+    use fleet_core::{EventLog, TaskStatus};
     use tower::ServiceExt; // oneshot
     use axum::body::Body;
     use axum::http::{header, Request};
@@ -2688,242 +2137,7 @@ mod tests {
         assert!(j["error"].as_str().unwrap().contains("drain"));
     }
 
-    // -- runtime task append (ADR-0018, POST /api/tasks) -------------------
-
     #[tokio::test]
-    async fn tasks_post_validation_errors() {
-        let state = test_state();
-        let app = router(state);
-        // not an object/array -> 400
-        let (st, _) = post_json(app.clone(), "/api/tasks", r#""just a string""#).await;
-        assert_eq!(st, StatusCode::BAD_REQUEST);
-        // missing pos_ned_m -> 422 with the field hint
-        let (st, j) = post_json(app.clone(), "/api/tasks", r#"{"id": "wp_x"}"#).await;
-        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
-        assert!(j["error"].as_str().unwrap().contains("pos_ned_m"));
-        // empty array -> 422
-        let (st, j) = post_json(app.clone(), "/api/tasks", "[]").await;
-        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
-        assert!(j["error"].as_str().unwrap().contains("no tasks"));
-        // non-finite position -> 422 (serde passes NaN through JSON? no —
-        // guard anyway with an out-of-shape array)
-        let (st, j) = post_json(
-            app,
-            "/api/tasks",
-            r#"[{"pos_ned_m": [1.0, 2.0]}, {"pos_ned_m": [1.0, 2.0, -3.0], "hover_s": 1}]"#,
-        )
-        .await;
-        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
-        assert!(j["error"].as_str().unwrap().contains("task[0]"));
-    }
-
-    /// The queue+drain+ack loop for task appends — same discipline as the
-    /// mission upload: handler queues Append, this test plays supervisor.
-    #[tokio::test]
-    async fn tasks_post_queues_and_acks() {
-        let state = test_state();
-        let app = router(Arc::clone(&state));
-        let task = tokio::spawn(async move {
-            let req = Request::post("/api/tasks")
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    r#"[{"id": "wp_ned", "pos_ned_m": [20.0, 20.0, -12.0], "hover_s": 5}, {"pos_ned_m": [15.0, 0.0, -8.0]}]"#,
-                ))
-                .unwrap();
-            app.oneshot(req).await.unwrap()
-        });
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let cmds = state.take_operator_cmds();
-        assert_eq!(cmds.len(), 1, "exactly one queued command");
-        match cmds.into_iter().next().unwrap() {
-            OperatorCmd::Append { tasks, ack } => {
-                assert_eq!(tasks.len(), 2);
-                assert_eq!(tasks[0].id.as_deref(), Some("wp_ned"));
-                assert_eq!(tasks[0].pos_ned_m, [20.0, 20.0, -12.0]);
-                assert!((tasks[0].hover_s - 5.0).abs() < 1e-6);
-                assert!(tasks[1].id.is_none(), "auto id when omitted");
-                assert!((tasks[1].reward - 1.0).abs() < 1e-6, "default reward");
-                ack.send(crate::state::UploadAck {
-                    accepted: vec!["wp_ned".into(), "op1".into()],
-                    rejected: vec![],
-                    pool: 2,
-                })
-                .unwrap();
-            }
-            other => panic!("expected Append, got {other:?}"),
-        }
-        let resp = task.await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let j = body_json(resp).await;
-        assert_eq!(j["data"]["accepted"], serde_json::json!(["wp_ned", "op1"]));
-        assert_eq!(j["data"]["pool"], 2);
-    }
-
-    /// No supervisor -> 503, the honest timeout (not a hang).
-    #[tokio::test]
-    async fn tasks_post_times_out_without_supervisor() {
-        let state = test_state();
-        let app = router(state);
-        let (st, j) = post_json(app, "/api/tasks", r#"{"pos_ned_m": [1.0, 2.0, -3.0]}"#).await;
-        assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE);
-        assert!(j["error"].as_str().unwrap().contains("drain"));
-    }
-
-    // -- hot scenario load (ADR-0018, PUT /api/fleet) ----------------------
-
-    fn put_json(app: Router, uri: &str, body: &str) -> impl std::future::Future<Output = (StatusCode, serde_json::Value)> {
-        let req = Request::put(uri)
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(body.to_string()))
-            .unwrap();
-        async move {
-            let resp = app.oneshot(req).await.unwrap();
-            let status = resp.status();
-            (status, body_json(resp).await)
-        }
-    }
-
-    /// JSON-escape a TOML text into a PUT body string.
-    fn put_body(toml: &str) -> String {
-        serde_json::json!({ "scenario_toml": toml }).to_string()
-    }
-
-    const MIN_SCENARIO_TOML: &str = "[fleet]\ncount = 1\n\n[[tasks]]\nid = \"wp_a\"\npos_ned_m = [10.0, 0.0, -10.0]\nhover_s = 2\n";
-
-    #[tokio::test]
-    async fn fleet_put_validation_errors() {
-        let state = test_state();
-        let app = router(state);
-        // missing scenario_toml field -> 422 with the field named (the JSON
-        // envelope contract holds: the Json rejection is wrapped, not
-        // leaked as a text/plain axum rejection)
-        let (st, j) = put_json(app.clone(), "/api/fleet", "{}").await;
-        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
-        assert!(j["error"].as_str().unwrap().contains("scenario_toml"));
-        // invalid TOML -> 422 with the parse reason
-        let (st, j) = put_json(app.clone(), "/api/fleet", &put_body("not [valid toml")).await;
-        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
-        assert!(j["error"].as_str().unwrap().contains("invalid scenario"));
-        // valid TOML but a compile-rejected task (outside the 100 m fence)
-        let bad = "[fleet]\ncount = 1\n\n[[tasks]]\nid = \"far\"\npos_ned_m = [500.0, 0.0, -10.0]\n";
-        let (st, j) = put_json(app, "/api/fleet", &put_body(bad)).await;
-        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
-        assert!(j["error"].as_str().unwrap().contains("far"));
-        assert!(j["error"].as_str().unwrap().contains("compile"));
-    }
-
-    #[tokio::test]
-    async fn fleet_put_mission_active_conflict() {
-        let state = test_state();
-        state.set_mission_active(0, true);
-        let app = router(state);
-        let (st, j) = put_json(app, "/api/fleet", &put_body(MIN_SCENARIO_TOML)).await;
-        assert_eq!(st, StatusCode::CONFLICT);
-        assert!(j["error"].as_str().unwrap().contains("autonomous mission"));
-    }
-
-    /// Happy path: valid + quiescent -> staged file + HotLoad queued; the
-    /// test plays supervisor, accepts, and the response points at the staged
-    /// TOML. The staging is observable via next_scenario.
-    #[tokio::test]
-    async fn fleet_put_queues_and_acks() {
-        let state = test_state();
-        let app = router(Arc::clone(&state));
-        let task = tokio::spawn(async move {
-            let req = Request::put("/api/fleet")
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(put_body(MIN_SCENARIO_TOML)))
-                .unwrap();
-            app.oneshot(req).await.unwrap()
-        });
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let cmds = state.take_operator_cmds();
-        assert_eq!(cmds.len(), 1);
-        match cmds.into_iter().next().unwrap() {
-            OperatorCmd::HotLoad { ack } => {
-                let staged = state.next_scenario_path().expect("staged before ack");
-                assert!(staged.to_string_lossy().contains("hot-scenario-"));
-                assert!(staged
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.ends_with(".toml")));
-                let written = std::fs::read_to_string(&staged).unwrap();
-                assert!(written.contains("[fleet]"));
-                assert!(written.contains("count = 1"));
-                ack.send(crate::state::HotLoadAck {
-                    accepted: true,
-                    reason: None,
-                })
-                .unwrap();
-            }
-            other => panic!("expected HotLoad, got {other:?}"),
-        }
-        let resp = task.await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let j = body_json(resp).await;
-        assert!(j["data"]["staged"].as_str().unwrap().contains("hot-scenario-"));
-        assert!(j["data"]["note"].as_str().unwrap().contains("rebinds"));
-        // still staged after the accepted ack (run_scenario consumes it
-        // later); take() consumes it exactly once.
-        assert!(state.next_scenario_path().is_some());
-        let consumed = state.take_next_scenario();
-        assert!(consumed.is_some());
-        assert!(state.next_scenario_path().is_none(), "take consumed it");
-    }
-
-    /// Supervisor nack (e.g. mission started in the race window) -> 409 and
-    /// the staging is cleared: nothing half-swapped.
-    #[tokio::test]
-    async fn fleet_put_nack_clears_staging() {
-        let state = test_state();
-        let app = router(Arc::clone(&state));
-        let task = tokio::spawn(async move {
-            let req = Request::put("/api/fleet")
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(put_body(MIN_SCENARIO_TOML)))
-                .unwrap();
-            app.oneshot(req).await.unwrap()
-        });
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let cmds = state.take_operator_cmds();
-        match cmds.into_iter().next().unwrap() {
-            OperatorCmd::HotLoad { ack } => {
-                ack.send(crate::state::HotLoadAck {
-                    accepted: false,
-                    reason: Some("mission started but not complete".into()),
-                })
-                .unwrap();
-            }
-            other => panic!("expected HotLoad, got {other:?}"),
-        }
-        let resp = task.await.unwrap();
-        assert_eq!(resp.status(), StatusCode::CONFLICT);
-        let j = body_json(resp).await;
-        assert!(j["error"].as_str().unwrap().contains("mission started"));
-        assert!(state.next_scenario_path().is_none(), "staging cleared on nack");
-    }
-
-    // -- fault proxy (ADR-0018, POST /api/vehicles/{i}/faults) -------------
-
-    #[tokio::test]
-    async fn vehicle_faults_post_validation() {
-        let state = test_state();
-        let app = router(state);
-        // index out of range -> 404
-        let (st, j) = post_json(app.clone(), "/api/vehicles/5/faults", r#"{"type": "motor_cut"}"#).await;
-        assert_eq!(st, StatusCode::NOT_FOUND);
-        assert!(j["error"].as_str().unwrap().contains("out of range"));
-        // body without a "type" -> 400
-        let (st, j) = post_json(app.clone(), "/api/vehicles/0/faults", r#"{"params": {"motor": 1}}"#).await;
-        assert_eq!(st, StatusCode::BAD_REQUEST);
-        assert!(j["error"].as_str().unwrap().contains("type"));
-        // empty type -> 400
-        let (st, _) = post_json(app, "/api/vehicles/0/faults", r#"{"type": "  "}"#).await;
-        assert_eq!(st, StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
-
     async fn guided_command_gates() {
         let state = test_state();
         let app = router(Arc::clone(&state));
@@ -3663,8 +2877,9 @@ mod tests {
         assert_eq!(j["data"]["all_passed"], false);
     }
 
-    // -- M5 (Fleet C2, GCS_SPEC.md §5.4): mission bindings, fleet start,
-    // swarming patterns ----------------------------------------------------
+    // -- M5 (Fleet C2, GCS_SPEC.md §5.4): mission bindings, fleet start -------
+    // (Task 7b: the swarming-patterns routes are gone — the GCS is
+    // operator-driven; this section covers bindings + fleet start.)
 
     /// Two valid ULIDs for the binding tests. Real ULIDs are 26-char
     /// Crockford base32 (sortable, time-prefixed); these are just fixed
@@ -3883,231 +3098,5 @@ mod tests {
         .await;
         assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
         assert!(j["error"].as_str().unwrap().contains("timeout_s"));
-    }
-
-    #[tokio::test]
-    async fn fleet_patterns_list_returns_three() {
-        let state = test_state();
-        let app = router(state);
-        let resp = app
-            .oneshot(Request::get("/api/fleet/patterns").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let j = body_json(resp).await;
-        assert_eq!(j["ok"], true);
-        let patterns = j["data"]["patterns"].as_array().unwrap();
-        assert_eq!(patterns.len(), 3, "exactly three swarming patterns per spec §5.4");
-        let names: Vec<&str> = patterns.iter().map(|p| p["name"].as_str().unwrap()).collect();
-        assert!(names.contains(&"follow-the-leader"));
-        assert!(names.contains(&"search-grid"));
-        assert!(names.contains(&"parallel-patrol"));
-        // follow-the-leader is the only implemented pattern in M5
-        let ftl = patterns.iter().find(|p| p["name"] == "follow-the-leader").unwrap();
-        assert_eq!(ftl["implemented"], true);
-        let others = patterns.iter().filter(|p| p["name"] != "follow-the-leader");
-        for p in others {
-            assert_eq!(p["implemented"], false);
-        }
-    }
-
-    #[tokio::test]
-    async fn fleet_patterns_search_grid_and_patrol_are_501() {
-        let state = test_state();
-        let app = router(state);
-        // search-grid → 501
-        let (st, j) = post_json(
-            app.clone(),
-            "/api/fleet/patterns/search-grid/generate",
-            r#"{"vehicles":[0,1],"area_polygon":[[47.4,8.5],[47.41,8.5],[47.41,8.51],[47.4,8.51]],"spacing_m":50,"alt_m":30}"#,
-        )
-        .await;
-        assert_eq!(st, StatusCode::NOT_IMPLEMENTED);
-        assert!(j["error"].as_str().unwrap().contains("stubbed"));
-        // parallel-patrol → 501
-        let (st, j) = post_json(
-            app.clone(),
-            "/api/fleet/patterns/parallel-patrol/generate",
-            r#"{"vehicles":[0,1],"waypoints":[[47.4,8.5,30],[47.41,8.5,30]],"offset_m":20}"#,
-        )
-        .await;
-        assert_eq!(st, StatusCode::NOT_IMPLEMENTED);
-        // unknown pattern name → 404
-        let (st, j) = post_json(
-            app,
-            "/api/fleet/patterns/warp-drive/generate",
-            "{}",
-        )
-        .await;
-        assert_eq!(st, StatusCode::NOT_FOUND);
-        assert!(j["error"].as_str().unwrap().contains("unknown pattern"));
-    }
-
-    /// `POST /api/fleet/patterns/follow-the-leader/generate` — happy path
-    /// through a real catalog server on an ephemeral port. The test
-    /// uses `AppState::new_with_catalog_url` so the fleet-cli router
-    /// talks to the test's catalog (no env-var race between parallel
-    /// tests — the URL is captured by AppState at construction time).
-    #[tokio::test]
-    async fn fleet_patterns_follow_the_leader_generates() {
-        use fleet_mission::gcs::server as catalog_server;
-        use fleet_mission::gcs::store::Store;
-        use fleet_mission::gcs::mission_file::{MissionFile, MissionMeta, Waypoint};
-
-        // Stand up a real catalog server on an ephemeral port.
-        let tmp = std::env::temp_dir().join(format!("m5-ftl-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        let store = Store::new(&tmp).unwrap();
-
-        // Create the leader mission BEFORE moving the store into AppState
-        // (Store doesn't impl Clone — the catalog owns one and the test
-        // touches it through the catalog's own REST router via the live
-        // server on an ephemeral port).
-        let leader_mission = MissionFile {
-            mission: MissionMeta {
-                id: ULID_A.into(),
-                name: "leader".into(),
-                version: 1,
-                created_at: "2026-09-09T00:00:00Z".into(),
-                updated_at: "2026-09-09T00:00:00Z".into(),
-                vehicle_type: "quad".into(),
-                px4_version: "v1.16.2".into(),
-            },
-            waypoints: vec![
-                Waypoint { seq: 0, frame: 3, command: 16, x: 47.39777, y: 8.54558, z: 12.0, param1: 0.0, param2: 0.0, param3: 0.0, param4: 0.0 },
-                Waypoint { seq: 1, frame: 3, command: 16, x: 47.39787, y: 8.54558, z: 12.0, param1: 0.0, param2: 0.0, param3: 0.0, param4: 0.0 },
-                Waypoint { seq: 2, frame: 3, command: 16, x: 47.39797, y: 8.54558, z: 12.0, param1: 0.0, param2: 0.0, param3: 0.0, param4: 0.0 },
-            ],
-            geofence: Default::default(),
-            rally: vec![],
-        };
-        let created = store.create(leader_mission).unwrap();
-        // Store::create overwrites the id with its own generated ULID —
-        // capture the actual id and use that for the POST body.
-        let leader_id = created.mission.id.clone();
-        assert!(state::looks_like_ulid(&leader_id), "store-assigned id is a ULID");
-        let catalog_state = Arc::new(catalog_server::AppState::for_test(store, "http://127.0.0.1:8400"));
-        let catalog_app = catalog_server::router(catalog_state);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let catalog_port = listener.local_addr().unwrap().port();
-        let catalog_url = format!("http://127.0.0.1:{catalog_port}");
-        tokio::spawn(async move {
-            let _ = axum::serve(listener, catalog_app).await;
-        });
-
-        // Build the fleet-cli router against that catalog URL.
-        let registry = Registry::new(2);
-        let log = EventLog::in_memory();
-        let fleet_state = AppState::new_with_catalog_url(
-            Arc::clone(&registry),
-            log,
-            2,
-            "test-scenario.toml",
-            0,
-            fleet_core::geo::GeoOrigin::DEFAULT,
-            fleet_safety::geofence::Geofence::default_square(),
-            std::env::temp_dir(),
-            catalog_url.clone(),
-        );
-        let app = router(fleet_state);
-
-        // POST follow-the-leader with leader=0, followers=[1], sep=10m.
-        // The leader_mission_id is the store-assigned ULID (capture above).
-        let body = format!(
-            r#"{{"leader":0,"followers":[1],"separation_m":10.0,"alt_m":12.0,"leader_mission_id":"{leader_id}"}}"#
-        );
-        let (st, j) = post_json(
-            app.clone(),
-            "/api/fleet/patterns/follow-the-leader/generate",
-            &body,
-        )
-        .await;
-        assert_eq!(st, StatusCode::OK, "got: {j}");
-        assert_eq!(j["ok"], true);
-        assert_eq!(j["data"]["pattern"], "follow-the-leader");
-        assert_eq!(j["data"]["leader_mission_id"], leader_id);
-        assert_eq!(j["data"]["separation_m"], 10.0);
-        assert_eq!(j["data"]["alt_m"], 12.0);
-        let generated = j["data"]["generated"].as_array().unwrap();
-        assert_eq!(generated.len(), 1, "one follower → one generated mission");
-        assert_eq!(generated[0]["vehicle_id"], 1);
-        assert_eq!(generated[0]["leader_mission_id"], leader_id);
-        let wps = generated[0]["waypoints"].as_array().unwrap();
-        assert_eq!(wps.len(), 3, "same number of waypoints as the leader");
-
-        // The leader's waypoints go north (lat increases). The follower
-        // should be placed 10 m SOUTH (behind the leader's travel
-        // direction). 10 m / 111_320 m/deg ≈ 8.98e-5 deg lat. Check the
-        // first non-takeoff waypoint (index 1) is offset by that amount.
-        let leader_lat1 = 47.39787;
-        let follower_lat1 = wps[1]["x"].as_f64().unwrap();
-        let delta = leader_lat1 - follower_lat1;
-        assert!(
-            delta > 0.0,
-            "follower should be south of (lower lat than) leader; leader={leader_lat1}, follower={follower_lat1}"
-        );
-        assert!(
-            (delta - 10.0 / 111_320.0).abs() < 1e-6,
-            "follower offset should be ~10m / 111320 = 8.98e-5 deg; got delta={delta}"
-        );
-        // Longitude unchanged (the path is due north, no east component).
-        let leader_lon1 = 8.54558;
-        let follower_lon1 = wps[1]["y"].as_f64().unwrap();
-        assert!(
-            (follower_lon1 - leader_lon1).abs() < 1e-9,
-            "follower lon should match leader's lon (due-north path); leader={leader_lon1}, follower={follower_lon1}"
-        );
-        // Altitude overridden to the pattern's cruise alt (12 m AGL).
-        assert_eq!(wps[1]["z"], 12.0);
-        // Frame/command/seq preserved from the leader.
-        assert_eq!(wps[1]["seq"], 1);
-        assert_eq!(wps[1]["frame"], 3);
-        assert_eq!(wps[1]["command"], 16);
-
-        // cleanup
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    /// Pure-geometry helper test (no HTTP, no catalog server): the
-    /// `compute_follow_the_leader_waypoints` function produces waypoints
-    /// offset by `separation_m` behind the leader along the bearing from
-    /// the previous waypoint. This is the kernel of the pattern and the
-    /// most exact assertion (no reqwest timeouts, no float-equality
-    /// surprises through JSON).
-    #[test]
-    fn follow_the_leader_geometry_offsets_behind_travel() {
-        use fleet_mission::gcs::mission_file::Waypoint;
-        let leader = vec![
-            // takeoff + 2 north-going waypoints (lat increases by 0.0001
-            // ≈ 11.1 m per hop)
-            Waypoint { seq: 0, frame: 3, command: 16, x: 47.39777, y: 8.54558, z: 12.0, param1: 0.0, param2: 0.0, param3: 0.0, param4: 0.0 },
-            Waypoint { seq: 1, frame: 3, command: 16, x: 47.39787, y: 8.54558, z: 12.0, param1: 0.0, param2: 0.0, param3: 0.0, param4: 0.0 },
-            Waypoint { seq: 2, frame: 3, command: 16, x: 47.39797, y: 8.54558, z: 12.0, param1: 0.0, param2: 0.0, param3: 0.0, param4: 0.0 },
-        ];
-        let follower = compute_follow_the_leader_waypoints(&leader, 10.0, 12.0);
-        assert_eq!(follower.len(), 3);
-        // Waypoint 0 (takeoff) is offset along a 0° (north) bearing —
-        // i.e. 10 m south of the leader's takeoff.
-        let delta_lat0 = leader[0].x - follower[0].x;
-        assert!(delta_lat0 > 0.0, "follower takeoff south of leader");
-        assert!(
-            (delta_lat0 - 10.0 / 111_320.0).abs() < 1e-6,
-            "delta lat0 ≈ 8.98e-5; got {delta_lat0}"
-        );
-        // Waypoint 1 — same direction (path is due north): 10 m south.
-        let delta_lat1 = leader[1].x - follower[1].x;
-        assert!(
-            (delta_lat1 - 10.0 / 111_320.0).abs() < 1e-6,
-            "delta lat1 ≈ 8.98e-5; got {delta_lat1}"
-        );
-        // Longitude unchanged along a due-north path.
-        assert!((follower[1].y - leader[1].y).abs() < 1e-9);
-        // The follower's altitude is overridden to alt_m.
-        assert_eq!(follower[0].z, 12.0);
-        // seq/frame/command preserved.
-        assert_eq!(follower[1].seq, 1);
-        assert_eq!(follower[1].frame, 3);
-        assert_eq!(follower[1].command, 16);
     }
 }

@@ -8,9 +8,8 @@
  *
  * Vehicle cards (MDPI pattern: id, fsm, mode, battery badge, next target,
  * coords, mini-attitude, RTH button) — NOT tables. Bindings sub-panel
- * (assign/upload/state badges). Patterns sub-panel (generate + auto-bind).
- * Start-fleet dialog (parallel/sequential + gate + timeout). Task board +
- * auction log. Event log w/ filters + 8-policy safety ladder. Full FSM
+ * (assign/upload/state badges). Start-fleet dialog (parallel/sequential +
+ * gate + timeout). Event log w/ filters + 8-policy safety ladder. Full FSM
  * table as expandable detail.
  *
  * Data: fleet REST + WS events_tail (:8400) via useFleetC2 hook.
@@ -28,7 +27,7 @@ import { fsmStyle } from '@/lib/fsm'
 export function FleetC2Panel(): JSX.Element {
   const fleet = useFleetC2()
   const snap = useTelemetrySnapshot()
-  const [tab, setTab] = useState<'cards' | 'bindings' | 'patterns' | 'events'>('cards')
+  const [tab, setTab] = useState<'cards' | 'bindings' | 'events'>('cards')
 
   return (
     <div data-rsim-zone="F" role="dialog" aria-modal="true" className="pointer-events-auto rsim-canvas" style={{ position: 'absolute', left: 56, top: 48, bottom: 96, width: 380, zIndex: 25, background: 'var(--rsim-surface-solid)', borderRight: '1px solid var(--rsim-border)', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'var(--rsim-font-ui)', color: 'var(--rsim-text)' }}>
@@ -42,7 +41,7 @@ export function FleetC2Panel(): JSX.Element {
 
       {/* Tab bar */}
       <div style={{ display: 'flex', borderBottom: '1px solid var(--rsim-border)' }}>
-        {(['cards', 'bindings', 'patterns', 'events'] as const).map((t) => (
+        {(['cards', 'bindings', 'events'] as const).map((t) => (
           <button key={t} type="button" onClick={() => setTab(t)} style={{ flex: 1, padding: '6px 8px', background: 'transparent', border: 'none', borderBottom: tab === t ? '2px solid var(--rsim-accent)' : '2px solid transparent', color: tab === t ? 'var(--rsim-accent)' : 'var(--rsim-text-dim)', fontSize: 11, fontWeight: 600, cursor: 'pointer', textTransform: 'capitalize' }}>{t}</button>
         ))}
       </div>
@@ -50,7 +49,6 @@ export function FleetC2Panel(): JSX.Element {
       <div style={{ flex: 1, overflow: 'auto' }}>
         {tab === 'cards' && <VehicleCards vehicles={snap.vehicles} fleet={fleet} />}
         {tab === 'bindings' && <BindingsPanel fleet={fleet} />}
-        {tab === 'patterns' && <PatternsPanel fleet={fleet} />}
         {tab === 'events' && <EventLog events={fleet.events} />}
       </div>
 
@@ -141,25 +139,6 @@ function BindingsPanel({ fleet }: { fleet: FleetC2Api }): JSX.Element {
         )
       })}
       <button type="button" onClick={() => void apply()} style={{ ...btnStyle, marginTop: 8, width: '100%' }} disabled={fleet.busy}>Apply bindings</button>
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Patterns panel — generate swarm patterns + auto-bind.
-// ---------------------------------------------------------------------------
-
-function PatternsPanel({ fleet }: { fleet: FleetC2Api }): JSX.Element {
-  return (
-    <div style={{ padding: 8 }}>
-      <div style={{ fontSize: 11, color: 'var(--rsim-text-dim)', marginBottom: 8 }}>Swarm patterns — generate per-vehicle missions and auto-bind. Full patterns dialog lands M11 late.</div>
-      {fleet.patterns.map((p) => (
-        <div key={p.name} style={{ padding: 8, borderBottom: '1px solid var(--rsim-border)' }}>
-          <div style={{ fontSize: 12, fontWeight: 600 }}>{p.name}</div>
-          <div style={{ fontSize: 10, color: 'var(--rsim-text-dim)' }}>{p.description}</div>
-          <button type="button" onClick={() => { void fleet.generatePattern(p.name, {}).then((r) => { if (r.ok) pushNotification({ severity: 'info', title: 'Pattern generated', detail: `${r.result?.missions.length ?? 0} missions` }) }) }} style={{ ...btnStyle, marginTop: 4, fontSize: 10 }} disabled={fleet.busy}>Generate</button>
-        </div>
-      ))}
     </div>
   )
 }

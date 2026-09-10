@@ -183,6 +183,17 @@ pub fn fleet_epoch_ms() -> u64 {
     }
 }
 
+/// Wall-clock unix seconds (for run-dir naming and run-boundary log
+/// lines). Moved here from `fleet-mission::report::unix_now` when the
+/// scenario DSL was removed (Task 7b).
+pub fn unix_now() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

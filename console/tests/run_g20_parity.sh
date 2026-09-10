@@ -6,8 +6,9 @@
 # Asserts:
 #   (a) ignoreBuildErrors:false — npm run build passes with full typecheck
 #   (b) npm run lint clean
-#   (c) normalize.test.ts 19/19 pass
-#   (d) all 7 overlay panels mountable (M, L, B, S, Y, SITL, Settings)
+#   (c) normalize.test.ts passes (13 tests after Task 7a cleanup)
+#   (d) all 6 GCS overlay panels mountable (M, L, B, S, Y, Settings)
+#       — SITL/SimControl overlay removed in Task 7a (overkill sim-internal UI)
 #   (e) Leaflet removed from package.json
 #   (f) /legacy route removed (only / + /api in route map)
 #   (g) map load <= 5s (cold route)
@@ -80,12 +81,13 @@ else
   echo "  ✓ route map is / + /api only (no /legacy)"
 fi
 
-# (d) all 7 overlay panels — check they're imported in OperationsCanvas
-OVERLAYS=$(grep -c "overlays\.\(mission\|library\|fleet\|setup\|analyze\|sim\|settings\)" "$CONSOLE/src/components/canvas/OperationsCanvas.tsx")
-if [ "$OVERLAYS" -ge 7 ]; then
-  echo "  ✓ all 7 overlay panels mounted in OperationsCanvas ($OVERLAYS)"
+# (d) all 6 GCS overlay panels — check they're imported in OperationsCanvas
+# (Task 7a cleanup: SITL/SimControl overlay removed; 7 -> 6 panels)
+OVERLAYS=$(grep -c "overlays\.\(mission\|library\|fleet\|setup\|analyze\|settings\)" "$CONSOLE/src/components/canvas/OperationsCanvas.tsx")
+if [ "$OVERLAYS" -ge 6 ]; then
+  echo "  ✓ all 6 GCS overlay panels mounted in OperationsCanvas ($OVERLAYS)"
 else
-  fail "only $OVERLAYS overlay panels mounted (expected >= 7)"
+  fail "only $OVERLAYS overlay panels mounted (expected >= 6)"
 fi
 
 echo "[$GATE_NAME] PASS — parity audit verified"

@@ -1,9 +1,0 @@
-[package]
-name = "fleet-alloc"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-description = "Contract-net style sequential auction allocator with a Hungarian optimality baseline for mavfleet"
-
-[dependencies]
-serde = { workspace = true }

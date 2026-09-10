@@ -15,7 +15,9 @@
 #       decoded mode, telemetry message counts, heartbeat age < 3 s.
 #   (c) POST /api/estop lands ({"ok":true}); the manager ABORTS the run,
 #       exits with the CI-classifiable code (2 = aborted per F-7), and
-#       writes run-report.json + events.ndjson into the run dir.
+#       writes events.ndjson into the run dir (the run-report / success
+#       criteria module was removed in Task 7b — the events log is the
+#       operator-facing run summary now).
 #   (d) Teardown: no processes left, all §17 per-instance ports free
 #       (TCP 4560+i refused; UDP 14540+i / 14580+i bindable).
 #
@@ -41,7 +43,6 @@ rm -rf "$OUT"; mkdir -p "$OUT"
 RUN_DIR="$OUT/run"
 MANAGER_LOG="$OUT/manager.log"
 FLEET_JSON="$OUT/fleet.json"
-REPORT="$OUT/run/run-report.json"
 EVENTS="$OUT/run/events.ndjson"
 
 BOOT_BUDGET_S=150   # both vehicles READY (2 px4 boots on 2 cores, staggered)
@@ -60,8 +61,6 @@ fail() {
     done
     echo "--- events.ndjson (tail 20):"
     tail -20 "$EVENTS" 2>/dev/null || echo "(no event log)"
-    echo "--- run-report.json:"
-    head -c 2000 "$REPORT" 2>/dev/null || echo "(no report)"
     echo
     cleanup
     exit 1
@@ -185,26 +184,20 @@ case "$exit_code" in
     *) fail "unexpected manager exit code $exit_code (expected 2=ABORTED or 0)";;
 esac
 
-# ---- 6. Report + event log written regardless of outcome (§9.2).
-[ -s "$REPORT" ] || fail "run-report.json missing/empty at $REPORT"
+# ---- 6. Event log written regardless of outcome (the run-report /
+#        success-criteria module was removed in Task 7b — the events
+#        log is the operator-facing run summary now).
 [ -s "$EVENTS" ] || fail "events.ndjson missing/empty at $EVENTS"
-"$JSON_PY" - "$REPORT" "$EVENTS" <<'PYEOF' || fail "report/event-log assertions failed"
+"$JSON_PY" - "$EVENTS" <<'PYEOF' || fail "event-log assertions failed"
 import json, sys
-r = json.load(open(sys.argv[1]))
-assert r["vehicle_count"] == 2, r["vehicle_count"]
-assert r["aborted"] is True, "report should record ABORTED after estop"
-assert r["phase"] == "ABORTED", r["phase"]
-assert r["exit_code"] == 2, r["exit_code"]
 kinds = {}
-for line in open(sys.argv[2]):
+for line in open(sys.argv[1]):
     kinds[json.loads(line)["kind"]] = kinds.get(json.loads(line)["kind"], 0) + 1
 assert kinds.get("fsm_transition", 0) >= 4, f"thin FSM trace: {kinds}"
 assert kinds.get("run_boundary", 0) >= 3, f"no run boundaries: {kinds}"
-print(f"  report: aborted={r['aborted']} phase={r['phase']} exit={r['exit_code']} "
-      f"duration={r['duration_ms']/1000:.1f}s vehicles={len(r['vehicles'])}")
 print(f"  events: {sum(kinds.values())} total {kinds}")
 PYEOF
-echo "[F-1] (c2) run report + append-only event log written and classified"
+echo "[F-1] (c2) append-only event log written (run-report removed in Task 7b)"
 
 # ---- 7. Teardown probe: no processes, §17 ports free (F-1's hard assert).
 sleep 1
@@ -235,5 +228,5 @@ print("  ports: 4560-4561 tcp refused; 14540-14541, 14580-14581 udp free")
 PYEOF
 echo "[F-1] (d) teardown verified: no processes, all §17 ports free"
 
-echo "[F-1] PASS: 2 vehicles READY with live health, estop → ABORTED(2), report written, clean teardown, ports free"
+echo "[F-1] PASS: 2 vehicles READY with live health, estop → ABORTED(2), event log written, clean teardown, ports free"
 exit 0

@@ -19,14 +19,13 @@
  *
  * Menu trees:
  *   M1 — empty map: Go to here, Add waypoint, Add fence vertex, Add rally,
- *         Measure, Center, Copy coords, Inject fault, Load scenario
+ *         Measure, Center, Copy coords, Load scenario
  *   M2 — vehicle: Select, Arm/Disarm, Takeoff, Land/RTL/Hold, Go to,
- *         Upload mission, Start mission, Setup, Calibrate, Inject fault,
- *         SIM E-STOP, FLEET E-STOP
+ *         Upload mission, Start mission, Setup, Calibrate, FLEET E-STOP
  *   M3 — waypoint: Edit, Insert before/after, Delete
  *   M4 — fence vertex: Delete vertex, Insert on segment, Edit ceiling/floor,
  *         Delete polygon; rally: Edit altitude, Delete
- *   M5 — mission leg: Insert waypoint here, Re-auction task, View task detail
+ *   M5 — mission leg: Insert waypoint here, View task detail
  *
  * Max 7 visible items before grouping separator; groups ordered
  * [Flight | Mission | Setup/SITL | Danger]; Danger always last, red.
@@ -223,7 +222,6 @@ function M2Vehicle({ menu }: { menu: MenuState }): JSX.Element {
       <Item label="Start mission" onSelect={() => void command('mission_start', v)} disabled={v == null} reason={guardVerb('mission_start', v).reason} />
       <Sep />
       <GroupLabel>Danger</GroupLabel>
-      <Item label="SIM E-STOP (this vehicle)" onSelect={() => void command('estop_sim', v)} disabled={v == null} danger />
       <Item label="FLEET E-STOP" onSelect={() => void command('estop_fleet', undefined)} danger />
     </>
   )
@@ -287,7 +285,6 @@ function M5LegOrTask({ menu }: { menu: MenuState }): JSX.Element {
       {menu.kind === 'task' && (
         <>
           <Sep />
-          <Item label="Re-auction task…" onSelect={() => { pushNotification({ severity: 'info', title: 'Re-auction', detail: 'POST /api/tasks (append) — next auction reallocates' }) }} />
           <Item label="View task detail" onSelect={() => { /* M11 Task panel */ }} />
         </>
       )}

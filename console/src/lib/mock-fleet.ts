@@ -12,7 +12,6 @@
 import { clamp, gaussian, mulberry32 } from './format'
 import { DEFAULT_ORIGIN, geodeticToNed, nedToGeodetic, type GeoOrigin } from './geo'
 import type {
-  AuctionEntry,
   FleetEvent,
   FleetSnapshot,
   FleetTask,
@@ -64,7 +63,6 @@ interface Mv {
 export interface FleetTick {
   snapshot: FleetSnapshot
   events: FleetEvent[]
-  auctions: AuctionEntry[]
 }
 
 const NAMES = ['ALPHA', 'BRAVO', 'CHARLIE']
@@ -81,7 +79,6 @@ export class FleetMockEngine {
   private vehicles: Mv[]
   private tasks = new Map<string, FleetTask>()
   private events: FleetEvent[] = []
-  private auctions: AuctionEntry[] = []
   private round = 0
   private taskSeq = 1
   private opSeq = 0
@@ -125,7 +122,6 @@ export class FleetMockEngine {
   /** Advance the fleet by dt seconds (call at 5 Hz). */
   tick(dt: number): FleetTick {
     const evBefore = this.events.length
-    const aucBefore = this.auctions.length
     if (this.phase === 'INIT') {
       this.tS += dt
       if (this.tS > 2.5) {
@@ -146,7 +142,6 @@ export class FleetMockEngine {
     return {
       snapshot: this.snapshot(),
       events: this.events.slice(evBefore),
-      auctions: this.auctions.slice(aucBefore),
     }
   }
 
@@ -347,23 +342,16 @@ export class FleetMockEngine {
       }
       if (!best) continue
       this.round++
-      const entry: AuctionEntry = {
-        t: Date.now(),
-        round: this.round,
-        task: task.id,
-        vehicle: best.id,
-        bid_s: Math.round(bestBid * 10) / 10,
-        bidders: bidders.length,
-      }
-      this.auctions.push(entry)
-      if (this.auctions.length > 60) this.auctions.shift()
+      const round = this.round
+      const bidS = Math.round(bestBid * 10) / 10
+      const biddersN = bidders.length
       task.status = 'assigned'
       task.assigned_to = best.id
       best.queue.push(task.id)
       this.emit(
         'award',
         best.id,
-        `round ${entry.round}: task ${task.id} → ${best.id} (bid ${entry.bid_s.toFixed(1)} s, ${entry.bidders} bidders)`,
+        `round ${round}: task ${task.id} → ${best.id} (bid ${bidS.toFixed(1)} s, ${biddersN} bidders)`,
         'info',
       )
       if (best.fsm === 'READY') this.fsm(best, 'ACTIVE', 'task assigned and accepted')
@@ -499,8 +487,11 @@ export class FleetMockEngine {
     return this.events
   }
 
-  get auctionLog(): AuctionEntry[] {
-    return this.auctions
+  get auctionLog(): never[] {
+    // The auction log was removed (the swarm/autonomy auction log was
+    // overkill for a GCS). Allocation still happens internally; the round
+    // counter surfaces only via the 'award' event in the event log.
+    return []
   }
 
   /** POST /api/fleet/estop — LAND all vehicles immediately, run ABORTED. */

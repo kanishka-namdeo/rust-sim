@@ -19,7 +19,6 @@ axum = { workspace = true }
 fleet-core = { path = "../fleet-core" }
 fleet-mavlink = { path = "../fleet-mavlink" }
 fleet-modes = { path = "../fleet-modes" }
-fleet-alloc = { path = "../fleet-alloc" }
 fleet-safety = { path = "../fleet-safety" }
 fleet-mission = { path = "../fleet-mission" }
 fleet-simctl = { path = "../fleet-simctl" }

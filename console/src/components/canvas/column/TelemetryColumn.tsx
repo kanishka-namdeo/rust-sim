@@ -21,7 +21,7 @@
  */
 
 import { useHudRef } from '../FlushLoop'
-import { useTelemetrySnapshot, getSimFrame, getStrip } from '@/state/telemetry-store'
+import { useTelemetrySnapshot, getStrip } from '@/state/telemetry-store'
 import { useAppStore } from '@/state/app-store'
 import { useEffect, useRef } from 'react'
 

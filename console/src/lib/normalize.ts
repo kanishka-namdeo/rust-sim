@@ -3,9 +3,8 @@
  *
  * Spec: docs/GCS_V2_SPEC.md §9.1 + §13.1 M8 skeleton interface #3 + P5/P8.
  *
- * Replaces the three v1 normalizer copies — `conn.ts:normalizeFleetSnapshot`,
- * `conn.ts:normalizeSimFrame`, `conn.ts:normalizeSimStatus`, plus the implicit
- * per-hook copies in `useFleetC2`, `useOperatorMap`, `useSimConsole` — with
+ * Replaces the v1 normalizer copies — `conn.ts:normalizeFleetSnapshot`,
+ * plus the implicit per-hook copies in `useFleetC2`, `useOperatorMap` — with
  * one module that:
  *
  *  - reads fleet-frame `attitude_q_wxyz` first (P5 fix: the live wire HAS
@@ -23,15 +22,12 @@
  */
 
 import type {
-  ActiveFault,
   FleetEvent,
   FleetSnapshot,
   FleetTask,
   FleetVehicle,
   Geofence,
   GeoOriginView,
-  SimFrame,
-  SimStatus,
 } from './types.ts'
 
 // ---------------------------------------------------------------------------
@@ -96,17 +92,6 @@ function numArr(c: unknown, len: number): number[] | null {
   return null
 }
 
-function counters(c: unknown): Record<string, number> {
-  const r = asRec(c)
-  if (!r) return {}
-  const out: Record<string, number> = {}
-  for (const [k, v] of Object.entries(r)) {
-    const n = num(v)
-    if (n != null) out[k] = n
-  }
-  return out
-}
-
 /** Unwrap `{"ok":bool,"data":...}` envelope if present, else return raw. */
 function unwrapEnvelope(j: unknown): unknown {
   const r = asRec(j)
@@ -129,43 +114,8 @@ function yawFromQuat(q: readonly number[]): number {
 }
 
 // ---------------------------------------------------------------------------
-// Auction entry shape (v1 conn.ts inlined; exposed here for the store)
-// ---------------------------------------------------------------------------
-
-export interface AuctionEntry {
-  t: number
-  round: number
-  task: string
-  vehicle: string
-  bid_s: number
-  bidders: number
-}
-
-// ---------------------------------------------------------------------------
 // Fallback constants (dual-mode mock ladder — same shape as v1 conn.ts)
 // ---------------------------------------------------------------------------
-
-export const SIM_FALLBACK_FRAME: SimFrame = {
-  t_us: 0,
-  phase: 'WAIT',
-  state: {
-    pos_ned_m: [0, 0, 0],
-    vel_ned_ms: [0, 0, 0],
-    q_wxyz: [1, 0, 0, 0],
-    omega_body_rads: [0, 0, 0],
-    motors: [0, 0, 0, 0],
-    battery_pct: 100,
-  },
-  sensors: {
-    accel_ms2: [0, 0, -9.81],
-    gyro_rads: [0, 0, 0],
-    baro_alt_m: 0,
-    gps_fix: 0,
-    gps_sat: 0,
-  },
-  faults_active: [],
-  stats: { tick_p95_us: null, sent: {}, recv: {} },
-}
 
 export const FALLBACK_FENCE: Geofence = {
   points: [
@@ -179,92 +129,12 @@ export const FALLBACK_FENCE: Geofence = {
 }
 
 // ---------------------------------------------------------------------------
-// rustsitsim normalizers (SPEC §4.1 / §4.2)
-// ---------------------------------------------------------------------------
-
-/** Normalize a WS telemetry frame (rustsitsim SPEC §4.2 schema) with key tolerance. */
-export function normalizeSimFrame(raw: unknown, prev: SimFrame | null): SimFrame {
-  const body = asRec(unwrapEnvelope(raw)) ?? {}
-  const state = asRec(body.state) ?? {}
-  const sensors = asRec(body.sensors) ?? {}
-  const stats = asRec(body.stats) ?? {}
-  const prevS = prev?.state
-  const prevSens = prev?.sensors
-
-  const faultsRaw = Array.isArray(body.faults_active) ? body.faults_active : []
-  const faults: ActiveFault[] = faultsRaw
-    .map((f) => {
-      const r = asRec(f) ?? {}
-      const id = str(r.id, r.fault_id, r.name)
-      const type = str(r.type, r.fault, r.kind, id ?? '')
-      if (!id && !type) return null
-      const params: Record<string, number | string> = {}
-      for (const [k, v] of Object.entries(r)) {
-        if (['id', 'type', 'fault_id', 'kind', 'name', 'since', 'started_at'].includes(k)) continue
-        const n = num(v)
-        params[k] = n != null ? n : String(v)
-      }
-      return {
-        id: id ?? type ?? 'unknown',
-        type: type ?? 'unknown',
-        params,
-        since: num(r.since, r.started_at) ?? Date.now(),
-        ttl_s: num(r.ttl_s, r.remaining_s, r.duration_s),
-      } satisfies ActiveFault
-    })
-    .filter((f): f is ActiveFault => f != null)
-
-  return {
-    t_us: num(body.t_us, body.t, body.virtual_time_us) ?? prev?.t_us ?? 0,
-    phase: str(body.phase, body.run_phase) ?? prev?.phase ?? 'WAIT',
-    state: {
-      pos_ned_m: vec3(state.pos_ned_m, state.pos, state.position_ned_m) ?? prevS?.pos_ned_m ?? [0, 0, 0],
-      vel_ned_ms: vec3(state.vel_ned_ms, state.vel, state.velocity_ned_ms) ?? prevS?.vel_ned_ms ?? [0, 0, 0],
-      q_wxyz:
-        (numArr(state.q_wxyz, 4) as [number, number, number, number] | null) ??
-        (numArr(state.q, 4) as [number, number, number, number] | null) ??
-        prevS?.q_wxyz ?? [1, 0, 0, 0],
-      omega_body_rads: vec3(state.omega_body_rads, state.omega) ?? prevS?.omega_body_rads ?? [0, 0, 0],
-      motors: numArr(state.motors, 4) ?? numArr(state.motor_outputs, 4) ?? prevS?.motors ?? [0, 0, 0, 0],
-      battery_pct: num(state.battery_pct, state.battery) ?? prevS?.battery_pct ?? 100,
-    },
-    sensors: {
-      accel_ms2: vec3(sensors.accel_ms2, sensors.accel, sensors.accel_body_ms2) ?? prevSens?.accel_ms2 ?? [0, 0, -9.81],
-      gyro_rads: vec3(sensors.gyro_rads, sensors.gyro) ?? prevSens?.gyro_rads ?? [0, 0, 0],
-      baro_alt_m: num(sensors.baro_alt_m, sensors.baro_altitude_m, sensors.pressure_alt_m) ?? prevSens?.baro_alt_m ?? 0,
-      gps_fix: num(sensors.gps_fix, sensors.fix_type) ?? prevSens?.gps_fix ?? 0,
-      gps_sat: num(sensors.gps_sat, sensors.satellites, sensors.sat) ?? prevSens?.gps_sat ?? 0,
-    },
-    faults_active: faults,
-    stats: {
-      tick_p95_us: num(stats.tick_p95_us, stats.p95_tick_us, stats.p95_us) ?? null,
-      sent: counters(stats.sent),
-      recv: counters(stats.recv),
-    },
-  }
-}
-
-/** Normalize GET /api/status payload. */
-export function normalizeSimStatus(raw: unknown, prev: SimStatus | null): SimStatus {
-  const body = asRec(unwrapEnvelope(raw)) ?? {}
-  const stats = asRec(body.stats) ?? {}
-  return {
-    phase: str(body.phase, body.run_phase) ?? prev?.phase ?? 'WAIT',
-    px4_connected: bool(body.px4_connected, body.connected, body.px4) ?? prev?.px4_connected ?? false,
-    loop_closed: bool(body.loop_closed, body.lockstep) ?? prev?.loop_closed ?? false,
-    tick_p95_us: num(stats.tick_p95_us, body.tick_p95_us, stats.p95_tick_us, body.p95_tick_us) ?? null,
-    rate_hz: num(stats.rate_hz, body.rate_hz, stats.tick_rate_hz, body.rate) ?? null,
-    t_us: num(body.t_us, body.virtual_time_us, stats.t_us) ?? prev?.t_us ?? 0,
-  }
-}
-
-// ---------------------------------------------------------------------------
 // mavfleet normalizers (SPEC §3.4 / §5)
 // ---------------------------------------------------------------------------
 
 /**
  * Normalize a /ws/fleet frame (or GET /api/fleet payload) into the
- * `{snapshot, events, auctions}` triple the v2 telemetry store consumes.
+ * `{snapshot, events}` pair the v2 telemetry store consumes.
  *
  * Tolerant of field-name variants across the live wire
  * (`vehicles[].attitude_q_wxyz`, `lat_deg_e7`, `lon_deg_e7`,
@@ -280,7 +150,7 @@ export function normalizeSimStatus(raw: unknown, prev: SimStatus | null): SimSta
 export function normalizeFleetSnapshot(
   raw: unknown,
   prevVehicles: Record<string, FleetVehicle> | null,
-): { snapshot: FleetSnapshot; events: FleetEvent[]; auctions: AuctionEntry[] } | null {
+): { snapshot: FleetSnapshot; events: FleetEvent[] } | null {
   const body = asRec(unwrapEnvelope(raw)) ?? {}
   const vehiclesRaw = Array.isArray(body.vehicles)
     ? body.vehicles
@@ -397,22 +267,6 @@ export function normalizeFleetSnapshot(
     : null
 
   const events: FleetEvent[] = (Array.isArray(body.events) ? body.events : []).map(normalizeEvent).filter((e): e is FleetEvent => e != null)
-  const auctions: AuctionEntry[] = (Array.isArray(body.auctions) ? body.auctions : [])
-    .map((ar) => {
-      const r = asRec(ar) ?? {}
-      const task = str(r.task, r.task_id)
-      const vehicle = str(r.vehicle, r.assigned_to)
-      if (!task || !vehicle) return null
-      return {
-        task,
-        vehicle,
-        bid_s: num(r.bid_s, r.bid) ?? 0,
-        round: num(r.round) ?? 0,
-        t: num(r.t) ?? Date.now(),
-        bidders: num(r.bidders) ?? 0,
-      }
-    })
-    .filter((a): a is AuctionEntry => a != null)
 
   return {
     snapshot: {
@@ -428,7 +282,6 @@ export function normalizeFleetSnapshot(
       geo_origin,
     },
     events,
-    auctions,
   }
 }
 

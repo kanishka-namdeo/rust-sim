@@ -23,7 +23,6 @@ clap = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 fleet-core = { path = "../fleet-core" }
 fleet-safety = { path = "../fleet-safety" }
-fleet-alloc = { path = "../fleet-alloc" }
 fleet-modes = { path = "../fleet-modes" }
 
 [dev-dependencies]

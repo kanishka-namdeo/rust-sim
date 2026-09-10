@@ -1,9 +1,13 @@
-//! ADR-0027: The `:8300` mission-catalog + replay server.
+//! ADR-0027: The `:8300` mission-catalog + ULog-browse server.
 //!
 //! Exposes the REST API defined in GCS_SPEC.md §7. All mission CRUD
 //! goes through the filesystem `Store` (ADR-0020); all validation goes
 //! through `validation::validate` (ADR-0026); upload-time version
 //! check goes through `version_check::check_vehicle_version` (ADR-0029).
+//!
+//! The `.replay` browse/scrub routes (Task 7b) were removed when the
+//! custom-sim replay format left the GCS surface; the ULog browse routes
+//! stay (the catalog still lists `.ulg` files for the Analyze overlay).
 //!
 //! The server is a thin axum app; the catalog logic lives in the
 //! library modules so unit tests do not need HTTP.
@@ -21,7 +25,7 @@ use serde_json::json;
 
 use crate::gcs::mission_file::MissionFile;
 use crate::gcs::preset::PresetParam;
-use crate::gcs::replay::{self, ReplayMeta, ReplaySummary, ReplayTopicData};
+use crate::gcs::replay;
 use crate::gcs::store::{MissionSummary, Store};
 use crate::gcs::ulog;
 use crate::gcs::validation::{validate as validate_mission, ValidationResult};
@@ -81,11 +85,8 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/api/vehicles/{vehicle_id}/param-presets/{name}/load",
             post(load_param_preset),
         )
-        // Analyze View (GCS_SPEC.md §5.5 — ULog browse + replay scrub)
-        .route("/api/replays", get(list_replays))
-        .route("/api/replays/{file}/meta", get(replay_meta))
-        .route("/api/replays/{file}/topics", get(replay_topics))
-        .route("/api/replays/{file}/data", get(replay_data))
+        // Analyze View (GCS_SPEC.md §5.5 — ULog browse only; .replay scrub
+        // removed Task 7b when the custom-sim replay format left the GCS).
         .route("/api/ulogs", get(list_ulogs))
         .route("/api/ulogs/{file}/topics", get(ulog_topics))
         .route(
@@ -128,10 +129,6 @@ async fn index() -> Json<serde_json::Value> {
             "POST /api/vehicles/{vehicle_id}/param-presets",
             "POST /api/vehicles/{vehicle_id}/param-presets/{name}/load",
             "DELETE /api/vehicles/{vehicle_id}/param-presets/{name}",
-            "GET /api/replays",
-            "GET /api/replays/{file}/meta",
-            "GET /api/replays/{file}/topics",
-            "GET /api/replays/{file}/data?from_tick&to_tick&topic",
             "GET /api/ulogs",
             "GET /api/ulogs/{file}/topics",
             "GET /api/ulogs/{file}/topics/{topic}/data?from_s&to_s",
@@ -518,169 +515,16 @@ async fn delete_param_preset(
 }
 
 // ---------------------------------------------------------------------------
-// Analyze View — replay browse + scrub (GCS_SPEC.md §5.5)
+// Analyze View — ULog browse (GCS_SPEC.md §5.5)
 // ---------------------------------------------------------------------------
 //
-// The six endpoints the Analyze View calls to (a) list `.replay` + `.ulg`
-// artifacts, (b) load a replay's header metadata, (c) enumerate the
-// topics a replay exposes (mapped from the 17-float state vector), and
-// (d) fetch a topic data range for the strip charts.
+// The `.replay` browse + scrub endpoints (Task 7b) were removed when the
+// custom-sim replay format left the GCS surface; the ULog browse routes
+// stay (the catalog still lists `.ulg` files for the Analyze overlay).
 //
-// All replay parsing goes through `gcs::replay` (a vendored copy of
-// `sitsim-sdk::replay`, kept self-contained so `fleet-mission` does not
-// pull in the full sim workspace). ULog parsing is delegated to `pyulog`
-// per ADR-0021; in this M6 pass the ULog subprocess shim returns 503
-// (parser unavailable) when `pyulog` is not on PATH — the file listing
-// endpoint still works filesystem-only.
-
-/// `GET /api/replays` — list `.replay` files in the catalog's
-/// `replays/` directory. Returns `{ok, data: [ReplaySummary]}` per
-/// GCS_SPEC.md §5.5.
-async fn list_replays(State(state): State<Arc<AppState>>) -> Response {
-    let _: Vec<ReplaySummary> = Vec::new(); // touch import
-    match replay::list_replay_files(&state.store.replays_dir()) {
-        Ok(list) => Json(json!({"ok": true, "data": list})).into_response(),
-        Err(e) => error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "STORE_ERROR",
-            &format!("{e}"),
-        ),
-    }
-}
-
-/// `GET /api/replays/{file}/meta` — parse the 64-byte header + count
-/// records. Returns the header metadata (tick_rate_hz, seed,
-/// scenario_sha256, records, virtual_duration_s) per GCS_SPEC.md §5.5.
-async fn replay_meta(
-    State(state): State<Arc<AppState>>,
-    Path(file): Path<String>,
-) -> Response {
-    let _: Option<ReplayMeta> = None; // touch import
-    match replay::read_replay_meta(&state.store.replays_dir(), &file) {
-        Ok(meta) => Json(json!({"ok": true, "data": meta})).into_response(),
-        Err(e) => match e {
-            replay::ReplayError::NotFound(_) => error_response(
-                StatusCode::NOT_FOUND,
-                "REPLAY_NOT_FOUND",
-                &format!("replay file '{file}' not found"),
-            ),
-            replay::ReplayError::BadHeader(m) => error_response(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "REPLAY_PARSE_ERROR",
-                &m,
-            ),
-            _ => error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "REPLAY_ERROR",
-                &format!("{e}"),
-            ),
-        },
-    }
-}
-
-/// `GET /api/replays/{file}/topics` — return the static topic catalogue
-/// (mapped from the 17-float state vector layout). The list is constant
-/// for any well-formed v1 replay file.
-async fn replay_topics(
-    State(state): State<Arc<AppState>>,
-    Path(file): Path<String>,
-) -> Response {
-    // Verify the file exists (returns 404 if not).
-    if let Err(e) = replay::read_replay_meta(&state.store.replays_dir(), &file) {
-        return match e {
-            replay::ReplayError::NotFound(_) => error_response(
-                StatusCode::NOT_FOUND,
-                "REPLAY_NOT_FOUND",
-                &format!("replay file '{file}' not found"),
-            ),
-            replay::ReplayError::BadHeader(m) => error_response(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "REPLAY_PARSE_ERROR",
-                &m,
-            ),
-            _ => error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "REPLAY_ERROR",
-                &format!("{e}"),
-            ),
-        };
-    }
-    let topics: Vec<serde_json::Value> = replay::TOPICS
-        .iter()
-        .map(|t| {
-            json!({
-                "name": t.name,
-                "label": t.label,
-                "unit": t.unit,
-                "components": t.components,
-            })
-        })
-        .collect();
-    Json(json!({"ok": true, "data": topics})).into_response()
-}
-
-#[derive(serde::Deserialize)]
-struct ReplayDataQuery {
-    from_tick: u64,
-    to_tick: u64,
-    topic: String,
-}
-
-/// `GET /api/replays/{file}/data?from_tick&to_tick&topic` — fetch a
-/// topic's values across `[from_tick, to_tick]` (inclusive). Returns
-/// `{ok, data: ReplayTopicData}` with one data point per tick.
-async fn replay_data(
-    State(state): State<Arc<AppState>>,
-    Path(file): Path<String>,
-    Query(q): Query<ReplayDataQuery>,
-) -> Response {
-    let _: Option<ReplayTopicData> = None; // touch import
-    match replay::read_replay_topic(
-        &state.store.replays_dir(),
-        &file,
-        &q.topic,
-        q.from_tick,
-        q.to_tick,
-    ) {
-        Ok(data) => Json(json!({"ok": true, "data": data})).into_response(),
-        Err(e) => match e {
-            replay::ReplayError::NotFound(_) => error_response(
-                StatusCode::NOT_FOUND,
-                "REPLAY_NOT_FOUND",
-                &format!("replay file '{file}' not found"),
-            ),
-            replay::ReplayError::TopicNotFound(t) => error_response(
-                StatusCode::NOT_FOUND,
-                "TOPIC_NOT_FOUND",
-                &format!("topic '{t}' not found in replay file"),
-            ),
-            replay::ReplayError::RangeOutOfBounds { from, to, records } => {
-                error_response(
-                    StatusCode::BAD_REQUEST,
-                    "RANGE_OUT_OF_BOUNDS",
-                    &format!(
-                        "tick range [{from}, {to}] out of bounds (file has {records} records)"
-                    ),
-                )
-            }
-            replay::ReplayError::BadHeader(m) => error_response(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "REPLAY_PARSE_ERROR",
-                &m,
-            ),
-            replay::ReplayError::BadRecord(m) => error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "REPLAY_CRC_ERROR",
-                &m,
-            ),
-            _ => error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "REPLAY_ERROR",
-                &format!("{e}"),
-            ),
-        },
-    }
-}
+// ULog parsing is delegated to `pyulog` per ADR-0021; the ULog subprocess
+// shim returns 503 (parser unavailable) when `pyulog` is not on PATH —
+// the file listing endpoint still works filesystem-only.
 
 /// `GET /api/ulogs` — list `.ulg` files in the catalog's ULog
 /// directory (GCS_SPEC.md §5.5 / ADR-0021). Filesystem-only — no
@@ -1152,187 +996,7 @@ inclusion = [
         assert_eq!(v2["data"].as_array().unwrap().len(), 0);
     }
 
-    // ---- Analyze View (GCS_SPEC.md §5.5) ----------------------------------
-
-    /// Helper: write a small valid v1 .replay file into `dir`.
-    fn write_test_replay(dir: &std::path::Path, name: &str, n_records: usize) {
-        use std::fs;
-        use std::io::Write;
-        fs::create_dir_all(dir).unwrap();
-        let path = dir.join(name);
-        let mut f = fs::File::create(&path).unwrap();
-        // Header
-        let mut header = vec![0u8; crate::gcs::replay::HEADER_LEN];
-        header[0..8].copy_from_slice(crate::gcs::replay::MAGIC);
-        header[8..10].copy_from_slice(&crate::gcs::replay::VERSION.to_le_bytes());
-        header[10..12].copy_from_slice(&(crate::gcs::replay::HEADER_LEN as u16).to_le_bytes());
-        let millihz = (200.0f64 * 1000.0).round() as u32;
-        header[12..16].copy_from_slice(&millihz.to_le_bytes());
-        header[16..24].copy_from_slice(&42u64.to_le_bytes());
-        header[24..32].copy_from_slice(&0u64.to_le_bytes());
-        for (i, b) in header[32..64].iter_mut().enumerate() {
-            *b = (i as u8).wrapping_mul(7);
-        }
-        f.write_all(&header).unwrap();
-        // Records
-        for tick in 0..n_records as u64 {
-            let mut rec = [0u8; crate::gcs::replay::RECORD_LEN];
-            let t_us = tick * 5_000;
-            rec[0..8].copy_from_slice(&t_us.to_le_bytes());
-            for i in 0..16 {
-                rec[8 + i] = (tick as u8).wrapping_add(i as u8);
-            }
-            let mut state = [0f32; 17];
-            for i in 0..3 {
-                state[i] = (tick as f32) * 0.1 + i as f32;
-            }
-            for i in 3..6 {
-                state[i] = (tick as f32) * 0.05 + (i - 3) as f32;
-            }
-            state[6] = 1.0;
-            for i in 7..10 {
-                state[i] = 0.0;
-            }
-            for i in 10..17 {
-                state[i] = (tick as f32) * 0.01 + (i - 10) as f32;
-            }
-            for (i, &v) in state.iter().enumerate() {
-                rec[24 + 4 * i..28 + 4 * i].copy_from_slice(&v.to_le_bytes());
-            }
-            rec[92..94].copy_from_slice(&0u16.to_le_bytes());
-            // CRC-16/X.25 — same algorithm as gcs::replay::x25_crc
-            let mut crc: u16 = 0xFFFF;
-            for &b in &rec[..94] {
-                crc ^= b as u16;
-                for _ in 0..8 {
-                    if crc & 1 != 0 {
-                        crc = (crc >> 1) ^ 0x8408;
-                    } else {
-                        crc >>= 1;
-                    }
-                }
-            }
-            rec[94..96].copy_from_slice(&crc.to_le_bytes());
-            f.write_all(&rec).unwrap();
-        }
-        f.sync_all().unwrap();
-    }
-
-    #[tokio::test]
-    async fn replay_list_returns_empty_when_no_files() {
-        let store = test_store();
-        let state = Arc::new(AppState::for_test(store, "http://127.0.0.1:8400"));
-        let app = router(state);
-        let (status, body) = send_request(app, "GET", "/api/replays", "").await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["ok"], true);
-        assert_eq!(body["data"].as_array().unwrap().len(), 0);
-    }
-
-    #[tokio::test]
-    async fn replay_list_returns_files_in_catalog() {
-        let store = test_store();
-        write_test_replay(&store.replays_dir(), "a.replay", 10);
-        write_test_replay(&store.replays_dir(), "b.replay", 5);
-        let state = Arc::new(AppState::for_test(store, "http://127.0.0.1:8400"));
-        let app = router(state);
-        let (status, body) = send_request(app, "GET", "/api/replays", "").await;
-        assert_eq!(status, StatusCode::OK);
-        let arr = body["data"].as_array().unwrap();
-        assert_eq!(arr.len(), 2);
-        assert_eq!(arr[0]["filename"], "a.replay");
-        assert_eq!(arr[1]["filename"], "b.replay");
-        assert_eq!(arr[0]["size_bytes"], (64 + 10 * 96) as u64);
-    }
-
-    #[tokio::test]
-    async fn replay_meta_returns_header_fields() {
-        let store = test_store();
-        write_test_replay(&store.replays_dir(), "test.replay", 100);
-        let state = Arc::new(AppState::for_test(store, "http://127.0.0.1:8400"));
-        let app = router(state);
-        let (status, body) = send_request(app, "GET", "/api/replays/test.replay/meta", "").await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["data"]["filename"], "test.replay");
-        assert_eq!(body["data"]["records"], 100);
-        assert!((body["data"]["tick_rate_hz"].as_f64().unwrap() - 200.0).abs() < 0.001);
-        assert!((body["data"]["virtual_duration_s"].as_f64().unwrap() - 0.5).abs() < 0.001);
-        assert_eq!(body["data"]["seed"], 42);
-        assert_eq!(body["data"]["scenario_sha256"].as_str().unwrap().len(), 64);
-    }
-
-    #[tokio::test]
-    async fn replay_meta_missing_file_returns_404() {
-        let store = test_store();
-        let state = Arc::new(AppState::for_test(store, "http://127.0.0.1:8400"));
-        let app = router(state);
-        let (status, body) = send_request(app, "GET", "/api/replays/nonexistent.replay/meta", "").await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(body["error"]["code"], "REPLAY_NOT_FOUND");
-    }
-
-    #[tokio::test]
-    async fn replay_topics_returns_catalog() {
-        let store = test_store();
-        write_test_replay(&store.replays_dir(), "test.replay", 5);
-        let state = Arc::new(AppState::for_test(store, "http://127.0.0.1:8400"));
-        let app = router(state);
-        let (status, body) = send_request(app, "GET", "/api/replays/test.replay/topics", "").await;
-        assert_eq!(status, StatusCode::OK);
-        let arr = body["data"].as_array().unwrap();
-        let names: Vec<_> = arr.iter().map(|t| t["name"].as_str().unwrap().to_string()).collect();
-        assert!(names.contains(&"pos_ned_m".to_string()));
-        assert!(names.contains(&"vel_ned_ms".to_string()));
-        assert!(names.contains(&"q_wxyz".to_string()));
-        assert!(names.contains(&"omega_rads".to_string()));
-        assert!(names.contains(&"rotors".to_string()));
-    }
-
-    #[tokio::test]
-    async fn replay_data_returns_topic_range() {
-        let store = test_store();
-        write_test_replay(&store.replays_dir(), "test.replay", 100);
-        let state = Arc::new(AppState::for_test(store, "http://127.0.0.1:8400"));
-        let app = router(state);
-        let path = "/api/replays/test.replay/data?from_tick=0&to_tick=50&topic=pos_ned_m";
-        let (status, body) = send_request(app, "GET", path, "").await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["data"]["topic"], "pos_ned_m");
-        assert_eq!(body["data"]["from_tick"], 0);
-        assert_eq!(body["data"]["to_tick"], 50);
-        let points = body["data"]["points"].as_array().unwrap();
-        assert_eq!(points.len(), 51);
-        assert_eq!(points[0]["tick"], 0);
-        assert_eq!(points[50]["tick"], 50);
-        // pos_ned_m at tick 0 = [0.0, 1.0, 2.0]; at tick 1 = [0.1, 1.0, 2.0] (i as f32 + tick * 0.1)
-        let v0 = points[0]["values"].as_array().unwrap();
-        assert_eq!(v0.len(), 3);
-        assert!((v0[0].as_f64().unwrap() - 0.0).abs() < 0.001);
-    }
-
-    #[tokio::test]
-    async fn replay_data_unknown_topic_returns_404() {
-        let store = test_store();
-        write_test_replay(&store.replays_dir(), "test.replay", 5);
-        let state = Arc::new(AppState::for_test(store, "http://127.0.0.1:8400"));
-        let app = router(state);
-        let path = "/api/replays/test.replay/data?from_tick=0&to_tick=4&topic=not_a_topic";
-        let (status, body) = send_request(app, "GET", path, "").await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(body["error"]["code"], "TOPIC_NOT_FOUND");
-    }
-
-    #[tokio::test]
-    async fn replay_data_range_out_of_bounds_returns_400() {
-        let store = test_store();
-        write_test_replay(&store.replays_dir(), "test.replay", 10);
-        let state = Arc::new(AppState::for_test(store, "http://127.0.0.1:8400"));
-        let app = router(state);
-        let path = "/api/replays/test.replay/data?from_tick=0&to_tick=10&topic=pos_ned_m";
-        let (status, body) = send_request(app, "GET", path, "").await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(body["error"]["code"], "RANGE_OUT_OF_BOUNDS");
-    }
+    // ---- Analyze View (GCS_SPEC.md §5.5) — ULog browse only --------------
 
     #[tokio::test]
     async fn ulogs_list_returns_empty_when_no_files() {

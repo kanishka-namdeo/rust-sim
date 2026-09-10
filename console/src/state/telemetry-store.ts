@@ -8,16 +8,10 @@
  *  - Fleet socket (`:8400` WS) — 10 Hz `FleetFrame` → `normalizeFleetSnapshot`
  *    (consolidated from the 3 v1 copies, P8 — `lib/normalize.ts`) → ring
  *    buffers (tracks 1800, strips 600, events 200) + last-frame ref.
- *  - Sim sockets (`:8200+i`) — one per vehicle present in the fleet snapshot
- *    (P11 fix: count discovered from fleet frame, NOT hardcoded). SimFrame
- *    normalizer is the same `lib/normalize.ts`. Sim frame is the only wire
- *    source of GPS fix/sats (`sensors.gps_fix`/`gps_sat`); instruments join
- *    by vehicle index (§8.3).
  *  - Catalog probe (:8300 REST) — health only at M8.
  *  - Probe/retry ladder (v1 contract preserved): probe → LIVE: WS + REST
  *    fallback → 3 × 2.5 s retry → SIMULATED mock engine (5–10 Hz) → 12 s
- *    re-probe. Mock engines port from `lib/mock-fleet.ts` / `lib/mock-sim.ts`
- *    unchanged.
+ *    re-probe. Mock engines port from `lib/mock-fleet.ts` unchanged.
  *
  * Telemetry numerics NEVER touch React state (§9.2). The `FlushLoop.tsx` rAF
  * loop reads this store every frame and writes to the HUD ref registry
@@ -27,28 +21,22 @@
  *
  * Gate instruments (§9.2 — always on, negligible cost):
  *   `window.__rsimTelemetry = { framesIn, framesRendered, lastFrameAt,
- *                                simSockets, commits }`
+ *                                commits }`
  *   `window.__rsimCommits` increments in the state-commit path; gates read it
  *   to assert ≤ 5 Hz over 60 s (G-14 mock-engine soak leg + G-20).
  */
 
 import { useSyncExternalStore } from 'react'
 import { gw, probePlane, wsUrl } from '../lib/conn'
-import {
-  normalizeFleetSnapshot,
-  normalizeSimFrame,
-  SIM_FALLBACK_FRAME,
-} from '../lib/normalize'
+import { normalizeFleetSnapshot } from '../lib/normalize'
 import type {
   ConnState,
   FleetEvent,
   FleetSnapshot,
   FleetVehicle,
-  SimFrame,
 } from '../lib/types'
 import { RingBuffer } from './ring-buffer'
 import { FleetMockEngine } from '../lib/mock-fleet'
-import { SimMockEngine } from '../lib/mock-sim'
 import { DEFAULT_ORIGIN } from '../lib/geo'
 
 // ---------------------------------------------------------------------------
@@ -66,7 +54,6 @@ const SIM_TICK_MS = 100 // 10 Hz mock (spec §9.1: "5–10 Hz")
 
 const FLEET_PORT = 8400
 const CATALOG_PORT = 8300
-const SIM_PORT_BASE = 8200 // :8200+i
 
 // ---------------------------------------------------------------------------
 // Per-strip keys (consumed by §8.3 mini-plots + the column C attitude HUD)
@@ -93,26 +80,21 @@ interface VehicleBuffers {
   strips: Record<StripKey, RingBuffer<{ t: number; v: number }>>
 }
 
-const planes: Record<'fleet' | 'catalog' | 'sim', PlaneState> = {
+const planes: Record<'fleet' | 'catalog', PlaneState> = {
   fleet: { conn: 'connecting', retryAt: Date.now() + PROBE_TIMEOUT_MS, lastError: null },
   catalog: { conn: 'connecting', retryAt: Date.now() + PROBE_TIMEOUT_MS, lastError: null },
-  sim: { conn: 'connecting', retryAt: Date.now() + PROBE_TIMEOUT_MS, lastError: null },
 }
 
 let snapshot: FleetSnapshot | null = null
 let vehicles: FleetVehicle[] = [] // last normalized vehicles (the snapshot.vehicles)
 let events: FleetEvent[] = [] // tail ring (latest 200)
-let simFrames: SimFrame[] = [] // per-vehicle last sim frame (index → frame)
-let simSockets: number[] = [] // open sim socket vehicle indices (P11 assertion target)
 const vehicleBuffers = new Map<number, VehicleBuffers>()
 
 // The catalog plane is a plain REST probe (no WS at M8). Track its conn state.
 let catalogProbeTimer: ReturnType<typeof setTimeout> | null = null
 let fleetSocket: WebSocket | null = null
 let fleetSocketRetry = 0
-const simSocketsMap = new Map<number, WebSocket>() // vehicle index → socket
 let mockFleet: FleetMockEngine | null = null
-let mockSims: Map<number, SimMockEngine> = new Map()
 let mockTimer: ReturnType<typeof setInterval> | null = null
 
 const listeners = new Set<() => void>()
@@ -153,9 +135,6 @@ if (typeof window !== 'undefined') {
     get lastFrameAt() {
       return inst.lastFrameAt
     },
-    get simSockets() {
-      return simSockets.length
-    },
     get commits() {
       return inst.commits
     },
@@ -179,7 +158,6 @@ export function getSnapshot(): {
   vehicles: FleetVehicle[]
   lastFrameAt: number
   planes: typeof planes
-  simSockets: number[]
 } {
   // `useSyncExternalStore` requires `getSnapshot` to return the SAME object
   // when state hasn't changed — otherwise it detects "changes" every call
@@ -192,7 +170,6 @@ export function getSnapshot(): {
     vehicles,
     lastFrameAt: inst.lastFrameAt,
     planes,
-    simSockets: simSockets.slice(),
   }
   snapshotCacheVersion = version
   return snapshotCache
@@ -222,10 +199,6 @@ export function getTrack(i: number): [number, number][] {
 
 export function getStrip(i: number, key: StripKey): { t: number; v: number }[] {
   return vehicleBuffers.get(i)?.strips[key].snapshot() ?? []
-}
-
-export function getSimFrame(i: number): SimFrame | null {
-  return simFrames[i] ?? null
 }
 
 /** Last normalized fleet snapshot (the source of truth for vehicles/tasks/fence). */
@@ -260,7 +233,7 @@ function ensureVehicleBuffers(i: number): VehicleBuffers {
 // Internal: strip sampling from a normalized FleetVehicle.
 // ---------------------------------------------------------------------------
 
-function sampleStrips(v: FleetVehicle, simFrame: SimFrame | null): void {
+function sampleStrips(v: FleetVehicle): void {
   const buf = ensureVehicleBuffers(v.index)
   const now = Date.now()
   // Track: [lon, lat] only when the vehicle has a GPS fix.
@@ -274,8 +247,8 @@ function sampleStrips(v: FleetVehicle, simFrame: SimFrame | null): void {
   buf.strips.ground_speed_ms.push({ t: now, v: speed })
   buf.strips.yaw_deg.push({ t: now, v: v.yaw_deg })
   // Roll/pitch from attitude_q_wxyz (P5 fix); fall back to 0 if absent
-  // (the v1 yaw-only behavior). Use sim frame's q as redundancy (§9.1).
-  const q = v.attitude_q_wxyz ?? simFrame?.state.q_wxyz ?? null
+  // (the v1 yaw-only behavior).
+  const q = v.attitude_q_wxyz ?? null
   if (q) {
     const { roll_deg, pitch_deg } = quatToRollPitchYaw(q)
     buf.strips.roll_deg.push({ t: now, v: roll_deg })
@@ -309,8 +282,8 @@ function quatToRollPitchYaw(q: [number, number, number, number]): {
 // ---------------------------------------------------------------------------
 
 function commitFleetFrame(
-  norm: { snapshot: FleetSnapshot; events: FleetEvent[]; auctions: unknown[] } | null,
-  source: 'live' | 'mock',
+  norm: { snapshot: FleetSnapshot; events: FleetEvent[] } | null,
+  _source: 'live' | 'mock',
 ): void {
   if (!norm) return
   inst.framesIn++
@@ -324,17 +297,9 @@ function commitFleetFrame(
     events = [...events, ...norm.events].slice(-EVENT_CAP)
   }
 
-  // P11: spawn/close sim sockets to match the fleet frame's vehicle count.
-  // The sim socket count is the G-14 assertion target (`__rsimTelemetry.simSockets
-  // == fleet-frame vehicle count`). Live WS for each vehicle present in the
-  // snapshot; only the live plane does this — the mock ladder uses SimMockEngine.
-  if (source === 'live' && planes.fleet.conn === 'live') {
-    syncSimSockets(norm.snapshot.vehicles)
-  }
-
   // Sample strips + tracks for each vehicle (the rAF loop reads these).
   for (const v of norm.snapshot.vehicles) {
-    sampleStrips(v, simFrames[v.index] ?? null)
+    sampleStrips(v)
   }
 
   // React state commit (≤ 5 Hz): only when armed/mode/fsm/phase/battery-chip
@@ -402,87 +367,6 @@ function maybeCommitReactState(snap: FleetSnapshot): void {
       ;(window as unknown as { __rsimCommits?: number }).__rsimCommits = inst.commits
     }
   }
-}
-
-// ---------------------------------------------------------------------------
-// Sim socket management — P11 fix (count from fleet snapshot, not hardcoded)
-// ---------------------------------------------------------------------------
-
-function syncSimSockets(fleetVehicles: FleetVehicle[]): void {
-  const liveIndices = fleetVehicles.map((v) => v.index).sort((a, b) => a - b)
-  const openIndices = Array.from(simSocketsMap.keys()).sort((a, b) => a - b)
-
-  // Spawn new sockets.
-  for (const i of liveIndices) {
-    if (!simSocketsMap.has(i)) openSimSocket(i)
-  }
-  // Close sockets whose vehicle disappeared.
-  for (const i of openIndices) {
-    if (!liveIndices.includes(i)) closeSimSocket(i)
-  }
-  simSockets = Array.from(simSocketsMap.keys()).sort((a, b) => a - b)
-}
-
-function openSimSocket(i: number): void {
-  if (typeof window === 'undefined') return
-  const port = SIM_PORT_BASE + i
-  try {
-    const ws = new WebSocket(wsUrl(port))
-    ws.onopen = () => {
-      simSocketsMap.set(i, ws)
-      simSockets = Array.from(simSocketsMap.keys()).sort((a, b) => a - b)
-      // Update the sim plane state to 'live' when at least one socket opens.
-      if (planes.sim.conn !== 'live') {
-        planes.sim = { conn: 'live', retryAt: null, lastError: null }
-      }
-      bump()
-    }
-    ws.onmessage = (ev) => {
-      try {
-        const raw = JSON.parse(typeof ev.data === 'string' ? ev.data : '{}')
-        const frame = normalizeSimFrame(raw, simFrames[i] ?? null)
-        simFrames[i] = frame
-        // Sample strips now if we have a matching fleet vehicle — sim frame
-        // carries the authoritative attitude quaternion and gps_fix/sats.
-        const v = vehicles.find((x) => x.index === i)
-        if (v) sampleStrips(v, frame)
-        inst.framesIn++
-        inst.lastFrameAt = Date.now()
-        // Per-frame bumps are cheap but matter for the "framesRendered" budget;
-        // the state-commit bump happens through maybeCommitReactState above.
-        bump()
-      } catch (e) {
-        console.warn('[telemetry-store] sim frame parse failed', i, e)
-      }
-    }
-    ws.onerror = () => {
-      // Fall back to retry; the socket will close on its own.
-    }
-    ws.onclose = () => {
-      simSocketsMap.delete(i)
-      simSockets = Array.from(simSocketsMap.keys()).sort((a, b) => a - b)
-      // If all sim sockets are closed, mark the sim plane as connecting.
-      if (simSockets.length === 0) {
-        planes.sim = { conn: 'connecting', retryAt: Date.now() + 2500, lastError: 'sim socket closed' }
-      }
-      bump()
-    }
-    // Register optimistically so a rapid onopen/onerror doesn't race.
-    simSocketsMap.set(i, ws)
-  } catch (e) {
-    console.warn('[telemetry-store] sim socket open failed', i, e)
-  }
-}
-
-function closeSimSocket(i: number): void {
-  const ws = simSocketsMap.get(i)
-  if (!ws) return
-  try {
-    ws.close()
-  } catch {
-    // ignore
-  }
-  simSocketsMap.delete(i)
 }
 
 // ---------------------------------------------------------------------------
@@ -560,7 +444,7 @@ function startMockLadder(): void {
   if (mockTimer) return
   mockFleet = new FleetMockEngine()
   // Build a 2-vehicle mock at first; engine can be re-tuned if more vehicles
-  // appear. The mock emits FleetSnapshot + events + auctions every tick.
+  // appear. The mock emits FleetSnapshot + events every tick.
   mockTimer = setInterval(() => {
     if (!mockFleet) return
     const tick = mockFleet.tick(SIM_TICK_MS / 1000)
@@ -568,17 +452,6 @@ function startMockLadder(): void {
     // accepts bare frames.
     const norm = normalizeFleetSnapshot(tick.snapshot, vehiclesById())
     if (norm) {
-      // Re-source sim frames from per-vehicle mock engines so strip samples
-      // and the GPS fix/sat instruments work in SIMULATED mode too.
-      for (const v of norm.snapshot.vehicles) {
-        let sm = mockSims.get(v.index)
-        if (!sm) {
-          sm = new SimMockEngine()
-          mockSims.set(v.index, sm)
-        }
-        const simFrame = sm.tick(SIM_TICK_MS / 1000)
-        simFrames[v.index] = simFrame
-      }
       commitFleetFrame(norm, 'mock')
     }
   }, SIM_TICK_MS)
@@ -590,7 +463,6 @@ function stopMockLadder(): void {
     mockTimer = null
   }
   mockFleet = null
-  mockSims.clear()
 }
 
 // ---------------------------------------------------------------------------
@@ -623,10 +495,6 @@ export function startTelemetry(): void {
   if (fleetSocket || mockTimer) return
   void startFleetSocket()
   void probeCatalog()
-  // The sim plane's "live"/"simulated" status derives from whether any sim
-  // sockets are open. We start the sim plane as "connecting" and the ladder
-  // (mock or live) will flip it.
-  planes.sim = { conn: 'connecting', retryAt: Date.now() + PROBE_TIMEOUT_MS, lastError: null }
 }
 
 // Welcome notification — fires once when the first fleet frame with vehicles arrives.
@@ -654,9 +522,6 @@ export function stopTelemetry(): void {
     }
     fleetSocket = null
   }
-  for (const i of Array.from(simSocketsMap.keys())) closeSimSocket(i)
-  simSocketsMap.clear()
-  simSockets = []
   if (catalogProbeTimer) {
     clearTimeout(catalogProbeTimer)
     catalogProbeTimer = null

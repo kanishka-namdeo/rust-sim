@@ -45,14 +45,10 @@ export type CommandName =
   | 'rtl'
   | 'hold'
   | 'estop_fleet'
-  | 'estop_sim'
   | 'goto'
   | 'mission_start'
   | 'mission_upload'
   | 'mission_clear'
-  | 'scenario_hotswap'
-  | 'fault_inject'
-  | 'fault_clear'
   | 'calibrate'
   | 'airframe_apply'
   | 'param_write'
@@ -61,7 +57,6 @@ export type CommandName =
   | 'preset_load'
   | 'preset_delete'
   | 'fleet_start'
-  | 'task_append'
 
 /** Spec §7.4: hold-to-confirm verbs (400 ms amber progress fill). */
 const HOLD_CONFIRM_COMMANDS: ReadonlySet<CommandName> = new Set([
@@ -81,7 +76,6 @@ const SAFETY_POSITIVE: ReadonlySet<CommandName> = new Set([
   'rtl',
   'hold',
   'estop_fleet',
-  'estop_sim',
   'mission_clear',
 ])
 
@@ -153,7 +147,7 @@ export interface VerbGuardResult {
  */
 export function guardVerb(name: CommandName, vehicle: number | undefined): VerbGuardResult {
   // E-stop is always enabled (§7.3.1: "always enabled, fires on keyup").
-  if (name === 'estop_fleet' || name === 'estop_sim') {
+  if (name === 'estop_fleet') {
     return { enabled: true }
   }
 
@@ -277,7 +271,6 @@ export function withDeferredUndo<T>(
 // ---------------------------------------------------------------------------
 
 const FLEET_PORT = 8400
-const SIM_PORT_BASE = 8200
 
 export async function command(
   name: CommandName,
@@ -305,7 +298,7 @@ export async function command(
       // Success toast for safety-positive verbs (the operator wants
       // confirmation that LAND/RTL/HOLD landed). Hold-to-confirm verbs
       // get their success toast from the verb button component.
-      if (isSafetyPositive(name) && name !== 'estop_fleet' && name !== 'estop_sim') {
+      if (isSafetyPositive(name) && name !== 'estop_fleet') {
         pushNotification({
           severity: 'info',
           title: `${name} OK`,
@@ -388,56 +381,6 @@ async function dispatch(
             body: JSON.stringify(payload),
           }),
         )
-      case 'task_append':
-        return await unwrapResult(
-          await fetchGw(gw(FLEET_PORT, '/api/tasks'), {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(payload),
-          }),
-        )
-      case 'scenario_hotswap': {
-        // §7.2 M1: file-open .toml → PUT /api/fleet (ADR-0018 hot-swap)
-        const res = await fetchGw(gw(FLEET_PORT, '/api/fleet'), {
-          method: 'PUT',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(payload),
-        })
-        return await unwrapResult(res)
-      }
-
-      // --- Sim verbs (per-vehicle, via :8200+i) -------------------------
-      case 'estop_sim': {
-        // §7.2 M2: per-vehicle SIM E-STOP, POST :8200+i/api/estop
-        if (vehicle == null) return { ok: false, error: { code: 'no_vehicle', message: 'SIM E-STOP needs a vehicle' } }
-        const port = SIM_PORT_BASE + vehicle
-        const res = await fetchGw(gw(port, '/api/estop'), {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({}),
-        })
-        return await unwrapResult(res)
-      }
-      case 'fault_inject': {
-        if (vehicle == null) return { ok: false, error: { code: 'no_vehicle', message: 'fault_inject needs a vehicle' } }
-        const port = SIM_PORT_BASE + vehicle
-        const res = await fetchGw(gw(port, '/api/faults'), {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(payload),
-        })
-        return await unwrapResult(res)
-      }
-      case 'fault_clear': {
-        if (vehicle == null) return { ok: false, error: { code: 'no_vehicle', message: 'fault_clear needs a vehicle' } }
-        const port = SIM_PORT_BASE + vehicle
-        const faultId = payload.id as string | undefined
-        const path = faultId ? `/api/faults/${encodeURIComponent(faultId)}` : '/api/faults'
-        const res = await fetchGw(gw(port, path), {
-          method: 'DELETE',
-        })
-        return await unwrapResult(res)
-      }
 
       // --- Setup verbs (per-vehicle, via :8400) ------------------------
       case 'calibrate':

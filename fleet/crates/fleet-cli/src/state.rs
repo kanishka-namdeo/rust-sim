@@ -8,16 +8,17 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
-use fleet_core::events::{fleet_epoch_ms, Event, EventLog};
+use fleet_core::events::{fleet_epoch_ms, unix_now, Event, EventLog};
 use fleet_core::geo::GeoOrigin;
 use fleet_core::health::HealthFlag;
 use fleet_core::registry::Registry;
 use fleet_core::tick::{FleetFrame, GeofenceView, VehicleView};
+use fleet_core::TaskStatus;
 use fleet_mavlink::LinkHandle;
-use fleet_mission::report::TaskStatus;
 
 /// Per-vehicle task-queue view (written by the supervisor each tick, read by
-/// the frame builder — the runner itself is not shareable state).
+/// the frame builder — the operator mission upload is not shareable state,
+/// it's drained through the OperatorCmd queue).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct VehicleTaskInfo {
     pub current: Option<String>,
@@ -40,8 +41,7 @@ pub struct OperatorWaypoint {
     pub hover_s: f32,
 }
 
-/// Upload ack: accepted task ids + rejected labels with reasons (the
-/// compiler's own validation rules, applied at drain time).
+/// Upload ack: accepted task ids + rejected labels with reasons.
 #[derive(Debug, Clone)]
 pub struct UploadAck {
     pub accepted: Vec<String>,
@@ -60,32 +60,9 @@ pub struct ClearAck {
     pub cleared: usize,
 }
 
-/// One operator task as appended at runtime (`POST /api/tasks`, ADR-0018):
-/// NED metres, home-relative — the direct counterpart of the geo waypoints
-/// `POST /api/mission` accepts. `id` is optional (auto `op*` id when
-/// omitted); ids must not collide with the live task board.
-#[derive(Debug, Clone)]
-pub struct OperatorTask {
-    pub id: Option<String>,
-    pub pos_ned_m: [f32; 3],
-    pub hover_s: f32,
-    pub reward: f32,
-    pub deadline_s: Option<f32>,
-}
-
-/// Hot scenario load ack (`PUT /api/fleet`, ADR-0018): accepted means the
-/// supervisor has gracefully stopped the current run and the process will
-/// re-enter `run_scenario`'s loop with the staged scenario file; the
-/// control plane rebinds on the same port within seconds.
-#[derive(Debug, Clone)]
-pub struct HotLoadAck {
-    pub accepted: bool,
-    pub reason: Option<String>,
-}
-
 /// Operator commands queued by the REST plane and drained by the
-/// supervisor's tick loop (the same discipline as ADR-0016 restart
-/// requests: the supervisor is the single writer of the mission state).
+/// supervisor's tick loop (the supervisor is the single writer of the
+/// mission state).
 #[derive(Debug)]
 pub enum OperatorCmd {
     /// Upload waypoints (append, or replace queued operator tasks).
@@ -98,17 +75,6 @@ pub enum OperatorCmd {
     Start { ack: tokio::sync::oneshot::Sender<StartAck> },
     /// Drop queued operator tasks (the active task is never touched).
     Clear { ack: tokio::sync::oneshot::Sender<ClearAck> },
-    /// Append NED tasks at runtime (ADR-0018, `POST /api/tasks`) — same
-    /// validation + injection path as the mission upload, and the same
-    /// reallocation trigger (the next auction round over the pool).
-    Append {
-        tasks: Vec<OperatorTask>,
-        ack: tokio::sync::oneshot::Sender<UploadAck>,
-    },
-    /// Hot scenario load (ADR-0018, `PUT /api/fleet`): the staged file is
-    /// in `next_scenario`; on accept the supervisor aborts this run
-    /// gracefully and `run_scenario` restarts with the new scenario.
-    HotLoad { ack: tokio::sync::oneshot::Sender<HotLoadAck> },
 }
 
 /// The control-plane-visible fleet state.
@@ -121,7 +87,7 @@ pub struct AppState {
     pub tick_count: AtomicU64,
     pub aborted: AtomicBool,
     estop: AtomicBool,
-    /// Task table (the run report's task section, live).
+    /// Task table (the operator-uploaded task board).
     pub tasks: Mutex<Vec<TaskStatus>>,
     /// Per-vehicle current/queued task ids.
     pub vehicle_tasks: Mutex<Vec<VehicleTaskInfo>>,
@@ -138,8 +104,10 @@ pub struct AppState {
     restart_requests: Mutex<std::collections::BTreeSet<u8>>,
     /// Operator command queue (ADR-0017): drained by the supervisor tick.
     operator_cmds: Mutex<std::collections::VecDeque<OperatorCmd>>,
-    /// Per-vehicle "flying a mission right now" (runner live) — the gate
-    /// guided commands check so a user command can never fight a runner.
+    /// Per-vehicle "flying a mission right now" — the gate guided commands
+    /// check so a user command can never fight a live offboard setpoint
+    /// stream from `POST /api/vehicles/{i}/goto` or
+    /// `POST /api/fleet/start`.
     mission_active: Mutex<Vec<bool>>,
     /// M5 (Fleet C2, GCS_SPEC.md §5.4): per-vehicle mission bindings —
     /// one mission ULID per vehicle, `None` = unbound. Populated by
@@ -155,18 +123,18 @@ pub struct AppState {
     /// Geo origin (ADR-0017): `[env] origin` — published on the frame and
     /// used for all operator-plane geo conversion.
     pub geo_origin: GeoOrigin,
-    /// The real fence (for go-to clamping, runner rule §7.2) and the
-    /// frame-published view of it (so the console draws the *real* fence,
-    /// not a client fallback).
+    /// The real fence (for go-to clamping) and the frame-published view
+    /// of it (so the console draws the *real* fence, not a client
+    /// fallback).
     pub fence: fleet_safety::geofence::Geofence,
     pub fence_view: GeofenceView,
+    /// Wall-clock seconds at run start. Originally populated by the
+    /// (removed) run-report header; kept on AppState for forward-compat
+    /// (operator-facing summaries, run-dir timestamps).
+    #[allow(dead_code)]
     pub started_unix: u64,
-    /// This run's directory (report + events + staged hot-swap scenarios).
+    /// This run's directory (event log + any staged operator missions).
     pub run_dir: std::path::PathBuf,
-    /// Staged next scenario (ADR-0018, `PUT /api/fleet`): set by the REST
-    /// handler after validation, consumed by `run_scenario`'s loop after
-    /// the supervisor's graceful stop. Cleared on a supervisor nack.
-    next_scenario: Mutex<Option<std::path::PathBuf>>,
 }
 
 impl AppState {
@@ -238,13 +206,12 @@ impl AppState {
             fence_view,
             started_unix,
             run_dir: run_dir.into(),
-            next_scenario: Mutex::new(None),
         })
     }
 
-    /// Minimal state for the early-error paths of `run_once` (scenario
+    /// Minimal state for the early-error paths of `run_once` (fleet config
     /// unreadable / run dir unwritable): keeps the return shape uniform so
-    /// the hot-restart loop can still read (empty) staging state before the
+    /// `run_scenario`'s loop can still read (empty) state before the
     /// process exits. Never serves a request.
     pub fn new_for_error() -> Arc<AppState> {
         let registry = Registry::new(0);
@@ -254,7 +221,7 @@ impl AppState {
             log,
             0,
             "<none>",
-            fleet_mission::report::unix_now(),
+            unix_now(),
             GeoOrigin::DEFAULT,
             fleet_safety::geofence::Geofence::default_square(),
             std::env::temp_dir(),
@@ -294,8 +261,8 @@ impl AppState {
         self.restart_requests.lock().unwrap().contains(&index)
     }
 
-    /// Operator e-stop request (POST /api/estop or scenario estop event).
-    /// The supervisor latches it into the policy engine on its next tick.
+    /// Operator e-stop request (POST /api/estop). The supervisor latches
+    /// it into the run-abort path on its next tick.
     pub fn request_estop(&self) {
         self.estop.store(true, Ordering::SeqCst);
     }
@@ -313,27 +280,9 @@ impl AppState {
         q.drain(..).collect()
     }
 
-    /// Stage the next scenario (ADR-0018 `PUT /api/fleet`, after
-    /// validation). The supervisor acks or nacks; on nack the REST handler
-    /// clears this again.
-    pub fn set_next_scenario(&self, path: std::path::PathBuf) {
-        *self.next_scenario.lock().unwrap() = Some(path);
-    }
-
-    /// Take (and clear) the staged next scenario — `run_scenario`'s loop
-    /// reads this after a run ends to decide whether to hot-restart.
-    pub fn take_next_scenario(&self) -> Option<std::path::PathBuf> {
-        self.next_scenario.lock().unwrap().take()
-    }
-
-    /// Peek at the staged next scenario without consuming it (the
-    /// supervisor's hot-load handler logs where the fleet is heading).
-    pub fn next_scenario_path(&self) -> Option<std::path::PathBuf> {
-        self.next_scenario.lock().unwrap().clone()
-    }
-
     /// Per-vehicle "mission live" flag (supervisor writes each tick:
-    /// runner present and engaging/flying — the guided-command gate).
+    /// the operator engaged the vehicle via go-to / mission upload —
+    /// the guided-command gate).
     pub fn set_mission_active(&self, index: u8, active: bool) {
         if let Some(slot) = self.mission_active.lock().unwrap().get_mut(index as usize) {
             *slot = active;
@@ -342,7 +291,7 @@ impl AppState {
 
     /// Is vehicle i currently flying an autonomous mission? Guided
     /// commands (go-to, arm) are gated on this so they never fight a
-    /// runner's setpoint stream (ADR-0017).
+    /// live offboard setpoint stream (ADR-0017).
     pub fn mission_active(&self, index: u8) -> bool {
         self.mission_active.lock().unwrap().get(index as usize).copied().unwrap_or(false)
     }
@@ -360,6 +309,9 @@ impl AppState {
 
     /// Vehicle i's bound mission ULID, if any (None = unbound). The REST
     /// `GET /api/fleet/mission-bindings` handler emits this array-shaped.
+    /// Used directly by the binding tests in api.rs (the routes themselves
+    /// read `mission_bindings_snapshot()`).
+    #[allow(dead_code)]
     pub fn mission_binding(&self, index: u8) -> Option<String> {
         self.mission_bindings
             .lock()

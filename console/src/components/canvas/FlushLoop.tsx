@@ -7,7 +7,7 @@
  *
  * One `requestAnimationFrame` loop, owned by stream A, that every frame:
  *
- *  1. Reads the telemetry store's ring buffers + last sim frames.
+ *  1. Reads the telemetry store's ring buffers + last fleet snapshot.
  *  2. Writes to the HUD ref registry — module-level `Map<string, HTMLElement>`
  *     registered by zone widgets via the `useHudRef(id)` hook. Writes go
  *     through `textContent` and `style.transform` only — no React state,
@@ -27,7 +27,7 @@
  */
 
 import { useEffect, useRef } from 'react'
-import { getFleetSnapshot, getStrip, getSimFrame, getTrack, _incrementFramesRendered } from '@/state/telemetry-store'
+import { getFleetSnapshot, getStrip, getTrack, _incrementFramesRendered } from '@/state/telemetry-store'
 
 // ---------------------------------------------------------------------------
 // HUD ref registry — module-level Map<id, HTMLElement>
@@ -147,16 +147,13 @@ function flush(): void {
       // Speed: horizontal component of velocity_ned_ms.
       const speed = Math.hypot(v.velocity_ned_ms[0], v.velocity_ned_ms[1])
       setText(`v${i}_speed`, fmt(speed, 1))
-      // GPS fix/sats from the sim frame (the only wire source — §8.3).
-      const sim = getSimFrame(i)
-      if (sim) {
-        setText(`v${i}_fix`, `${sim.sensors.gps_sat} sat`)
-      } else {
-        setText(`v${i}_fix`, '—')
-      }
-      // Attitude HUD: roll/pitch from attitude_q_wxyz (P5 fix), with the
-      // sim frame's q as redundancy (§9.1). Yaw-only fallback if both absent.
-      const q = v.attitude_q_wxyz ?? sim?.state.q_wxyz ?? null
+      // GPS fix/sats — the sim frame was the wire source; with the sim
+      // socket ladder removed, this slot shows "—" until the fleet plane
+      // surfaces GPS fix/sats on the vehicle record directly.
+      setText(`v${i}_fix`, '—')
+      // Attitude HUD: roll/pitch from attitude_q_wxyz (P5 fix). Yaw-only
+      // fallback (roll/pitch = 0) if absent.
+      const q = v.attitude_q_wxyz ?? null
       if (q) {
         const { roll_deg, pitch_deg } = quatToRollPitchYaw(q)
         setText(`v${i}_roll`, fmt(roll_deg, 1))
@@ -177,16 +174,9 @@ function flush(): void {
     }
   }
 
-  // Clock: sim time from the first sim frame (mm:ss.d); wall always.
-  const sim0 = getSimFrame(0)
-  if (sim0) {
-    const totalS = sim0.t_us / 1e6
-    const mm = Math.floor(totalS / 60)
-    const ss = (totalS % 60).toFixed(1).padStart(4, '0')
-    setText('clock_sim', `${mm}:${ss}`)
-  } else {
-    setText('clock_sim', '—')
-  }
+  // Clock: sim time clock is gone with the sim socket ladder; the wall
+  // clock remains.
+  setText('clock_sim', '—')
   const now = new Date()
   setText('clock_wall', now.toUTCString().slice(17, 25))
 

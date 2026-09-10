@@ -3,14 +3,13 @@
 /**
  * mavfleet Fleet C2 data hook (:8400).
  *
- * Same dual-mode lifecycle as useSimConsole: probe REST /api/fleet through the
- * gateway → LIVE via /ws/fleet frames (10 Hz) + /api/events tail polling, or
- * SIMULATED via the FleetMockEngine with periodic live retries. The fleet
- * command surface (SPEC §5.4 / §13) covers:
+ * Same dual-mode lifecycle: probe REST /api/fleet through the gateway →
+ * LIVE via /ws/fleet frames (10 Hz) + /api/events tail polling, or SIMULATED
+ * via the FleetMockEngine with periodic live retries. The fleet command
+ * surface (SPEC §5.4 / §13) covers:
  *   - E-STOP                    — POST /api/fleet/estop (single-button abort)
  *   - mission bindings          — GET / POST / DELETE /api/fleet/mission-bindings
  *   - fleet start (parallel/sequential)
- *   - swarming pattern library  — GET /api/fleet/patterns + generate
  *
  * All fleet API calls route through `src/lib/conn.ts` gateway mode with
  * `?XTransformPort=8400`. The catalog (:8300) is the source of truth for
@@ -23,24 +22,19 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { fetchGw, gw, normalizeFleetSnapshot, probePlane, unwrapEnvelope, wsUrl } from '@/lib/conn'
 import { FleetMockEngine } from '@/lib/mock-fleet'
 import type {
-  AuctionEntry,
   ConnState,
   FleetEvent,
   FleetSnapshot,
   FleetStartMode,
   FleetStartResult,
-  GeneratedPatternMission,
   MissionBinding,
   MissionBindingState,
-  PatternGenerationResult,
   SequentialGate,
-  SwarmPattern,
 } from '@/lib/types'
 
 export const FLEET_PORT = 8400
 
 const EVENT_CAP = 200
-const AUCTION_CAP = 40
 
 export function useFleetC2() {
   const [conn, setConn] = useState<ConnState>('connecting')
@@ -48,9 +42,7 @@ export function useFleetC2() {
   const [retryAt, setRetryAt] = useState<number | null>(null)
   const [snapshot, setSnapshot] = useState<FleetSnapshot | null>(null)
   const [events, setEvents] = useState<FleetEvent[]>([])
-  const [auctions, setAuctions] = useState<AuctionEntry[]>([])
   const [bindings, setBindings] = useState<MissionBinding[]>([])
-  const [patterns, setPatterns] = useState<SwarmPattern[]>([])
   const [busy, setBusy] = useState(false)
   const [frameCount, setFrameCount] = useState(0)
 
@@ -63,16 +55,13 @@ export function useFleetC2() {
     setConn(c)
   }, [])
 
-  /** Ingest a normalized snapshot + incremental events/auctions. */
+  /** Ingest a normalized snapshot + incremental events. */
   const applySnapshot = useCallback(
-    (snap: FleetSnapshot, newEvents: FleetEvent[], newAuctions: AuctionEntry[]) => {
+    (snap: FleetSnapshot, newEvents: FleetEvent[]) => {
       vehicleMapRef.current = Object.fromEntries(snap.vehicles.map((v) => [v.id, v]))
       setSnapshot(snap)
       if (newEvents.length > 0) {
         setEvents((prev) => [...prev, ...newEvents].slice(-EVENT_CAP))
-      }
-      if (newAuctions.length > 0) {
-        setAuctions((prev) => [...prev, ...newAuctions].slice(-AUCTION_CAP))
       }
       setFrameCount((c) => c + 1)
     },
@@ -84,7 +73,7 @@ export function useFleetC2() {
     (raw: unknown): boolean => {
       const norm = normalizeFleetSnapshot(raw, vehicleMapRef.current)
       if (!norm) return false
-      const { snapshot: snap, events: evs, auctions: aucs } = norm
+      const { snapshot: snap, events: evs } = norm
       // carry breadcrumbs forward (WS frames may only carry positions)
       for (const v of snap.vehicles) {
         const prev = vehicleMapRef.current[v.id]
@@ -92,7 +81,7 @@ export function useFleetC2() {
         v.breadcrumb.push({ n: v.position_ned_m[0], e: v.position_ned_m[1] })
         if (v.breadcrumb.length > 6) v.breadcrumb.shift()
       }
-      applySnapshot(snap, evs, aucs)
+      applySnapshot(snap, evs)
       return true
     },
     [applySnapshot],
@@ -146,10 +135,9 @@ export function useFleetC2() {
       engineRef.current = fresh
       vehicleMapRef.current = {}
       setEvents([])
-      setAuctions([])
       mockTimer = setInterval(() => {
         const tickRes = fresh.tick(0.2)
-        applySnapshot(tickRes.snapshot, tickRes.events, tickRes.auctions)
+        applySnapshot(tickRes.snapshot, tickRes.events)
       }, 200)
     }
 
@@ -275,7 +263,7 @@ export function useFleetC2() {
     return true
   }, [])
 
-  // ---- v1 (GCS_SPEC §5.4): mission bindings + fleet start + patterns -----
+  // ---- v1 (GCS_SPEC §5.4): mission bindings + fleet start -----
 
   /** Pull a human-readable error message out of the backend's error envelope.
    * The envelope shape is `{ok:false, error:{code,message}} | {ok:false, error:string}`. */
@@ -460,139 +448,15 @@ export function useFleetC2() {
     [],
   )
 
-  /** GET /api/fleet/patterns (:8400) — the swarming-pattern library. */
-  const listPatterns = useCallback(async (): Promise<SwarmPattern[]> => {
-    try {
-      const res = await fetchGw(gw(FLEET_PORT, '/api/fleet/patterns'), { method: 'GET' }, 3000)
-      if (!res.ok) return patterns
-      const j = await res.json()
-      const data = unwrapEnvelope(j)
-      const arr = Array.isArray(data)
-        ? data
-        : Array.isArray((data as { patterns?: unknown[] })?.patterns)
-          ? (data as { patterns: unknown[] }).patterns
-          : []
-      const list: SwarmPattern[] = arr
-        .map((p): SwarmPattern | null => {
-          if (!p || typeof p !== 'object') return null
-          const r = p as Record<string, unknown>
-          const name = typeof r.name === 'string' ? r.name : ''
-          const description = typeof r.description === 'string' ? r.description : ''
-          if (!name) return null
-          return { name, description }
-        })
-        .filter((p): p is SwarmPattern => p != null)
-      setPatterns(list)
-      return list
-    } catch {
-      return patterns
-    }
-  }, [patterns])
-
-  /**
-   * POST /api/fleet/patterns/{name}/generate (:8400) — generates per-vehicle
-   * missions for the chosen swarming pattern and binds them automatically
-   * (so the operator can immediately press "Start Fleet" afterwards).
-   */
-  const generatePattern = useCallback(
-    async (name: string, params: Record<string, number | string>): Promise<{ ok: boolean; result: PatternGenerationResult | null; error: string | null }> => {
-      setBusy(true)
-      try {
-        const res = await fetchGw(
-          gw(FLEET_PORT, `/api/fleet/patterns/${encodeURIComponent(name)}/generate`),
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(params ?? {}),
-          },
-          6000,
-        )
-        if (!res.ok) {
-          let err = `HTTP ${res.status}`
-          try {
-            const j = await res.json()
-            err = envelopeError(unwrapEnvelope(j), err)
-          } catch {
-            /* keep HTTP status */
-          }
-          return { ok: false, result: null, error: err }
-        }
-        const j = await res.json()
-        const data = unwrapEnvelope(j)
-        const rec = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>
-        const missionsRaw = Array.isArray(rec.missions) ? rec.missions : Array.isArray(data) ? data : []
-        const missions: GeneratedPatternMission[] = missionsRaw
-          .map((m): GeneratedPatternMission | null => {
-            if (!m || typeof m !== 'object') return null
-            const r = m as Record<string, unknown>
-            const vehicle_id = typeof r.vehicle_id === 'number' ? r.vehicle_id : Number(r.vehicle_id)
-            const mission_id = typeof r.mission_id === 'string' ? r.mission_id : String(r.mission_id ?? '')
-            const waypoint_count = typeof r.waypoint_count === 'number' ? r.waypoint_count : Number(r.waypoint_count ?? 0)
-            if (!Number.isFinite(vehicle_id)) return null
-            const previewRaw = Array.isArray(r.preview_ned_m) ? r.preview_ned_m : Array.isArray(r.preview) ? r.preview : null
-            const preview_ned_m = previewRaw
-              ? (previewRaw
-                  .map((p) => {
-                    if (Array.isArray(p) && p.length >= 3) {
-                      const a = Number(p[0])
-                      const b = Number(p[1])
-                      const c = Number(p[2])
-                      return Number.isFinite(a) && Number.isFinite(b) && Number.isFinite(c) ? ([a, b, c] as [number, number, number]) : null
-                    }
-                    return null
-                  })
-                  .filter((p): p is [number, number, number] => p != null) as [number, number, number][])
-              : undefined
-            return { vehicle_id, mission_id, waypoint_count, preview_ned_m }
-          })
-          .filter((m): m is GeneratedPatternMission => m != null)
-        const result: PatternGenerationResult = { pattern: typeof rec.pattern === 'string' ? rec.pattern : name, missions }
-        // auto-bind the generated missions so the operator can press Start Fleet next
-        if (missions.length > 0) {
-          const next = missions.map((m) => ({
-            vehicle_id: m.vehicle_id,
-            mission_id: m.mission_id,
-            binding_state: 'assigned' as MissionBindingState,
-          }))
-          setBindings((prev) => {
-            const map = new Map(next.map((b) => [b.vehicle_id, b]))
-            const out: MissionBinding[] = []
-            const seen = new Set<number>()
-            for (const b of prev) {
-              const replacement = map.get(b.vehicle_id)
-              if (replacement) {
-                out.push(replacement)
-                seen.add(b.vehicle_id)
-              } else {
-                out.push(b)
-              }
-            }
-            for (const b of next) if (!seen.has(b.vehicle_id)) out.push(b)
-            return out
-          })
-        }
-        return { ok: true, result, error: null }
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e)
-        return { ok: false, result: null, error: msg }
-      } finally {
-        setBusy(false)
-      }
-    },
-    [],
-  )
-
-  /** Refresh bindings + patterns on a short interval while live. The bind
-   * panel also calls these on mount; the interval keeps the binding_state
-   * column in sync as the fleet orchestrator advances it. */
+  /** Refresh bindings on a short interval while live. The bind panel also
+   * calls these on mount; the interval keeps the binding_state column in sync
+   * as the fleet orchestrator advances it. */
   useEffect(() => {
     if (conn !== 'live') return
     let cancelled = false
     const tick = async () => {
       if (cancelled) return
       await listMissionBindings()
-      if (cancelled) return
-      await listPatterns()
     }
     void tick()
     const t = setInterval(() => {
@@ -602,7 +466,7 @@ export function useFleetC2() {
       cancelled = true
       clearInterval(t)
     }
-  }, [conn, listMissionBindings, listPatterns])
+  }, [conn, listMissionBindings])
 
   /** Local optimistic assign — used by the Assign dropdown so the UI flips to
    * "assigned" instantly, then POSTs to persist. Falls back to nothing if the
@@ -630,9 +494,7 @@ export function useFleetC2() {
     retryAt,
     snapshot,
     events,
-    auctions,
     bindings,
-    patterns,
     busy,
     frameCount,
     estop,
@@ -642,8 +504,6 @@ export function useFleetC2() {
     assignLocal,
     markUploaded,
     startFleet,
-    listPatterns,
-    generatePattern,
   }
 }
 

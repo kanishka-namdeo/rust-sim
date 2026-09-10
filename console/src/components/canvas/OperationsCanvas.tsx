@@ -13,8 +13,8 @@
  * rule so map gestures pass through everywhere else).
  *
  * Zone H (event rail) lands at M11; overlay panels F (MissionStrip, Library,
- * FleetC2, SimControl, SetupDrawer, AnalyzeOverlay, PreFlight, CheatSheet)
- * ship with T-B2..B7 at M10..M13.
+ * FleetC2, SetupDrawer, AnalyzeOverlay, PreFlight, CheatSheet) ship with
+ * T-B2..B7 at M10..M13.
  *
  * M8 ships: the zone grid skeleton + the FlushLoop mount point + the
  * telemetry-store init/teardown (start on mount, stop on unmount —
@@ -35,7 +35,6 @@ import { LibraryPanel } from './overlays/LibraryPanel'
 import { FleetC2Panel } from './overlays/FleetC2Panel'
 import { SetupDrawer } from './overlays/SetupDrawer'
 import { AnalyzeOverlay } from './overlays/AnalyzeOverlay'
-import { SimControlPanel } from './overlays/SimControlPanel'
 import { SettingsPanel } from './overlays/SettingsPanel'
 import { PreFlightPanel } from './overlays/PreFlightPanel'
 import { GotoConfirmChip } from './overlays/GotoConfirmChip'
@@ -89,7 +88,6 @@ export function OperationsCanvas() {
       {app.overlays.fleet && <FleetC2Panel />}
       {app.overlays.setup && <SetupDrawer />}
       {app.overlays.analyze && <AnalyzeOverlay />}
-      {app.overlays.sim && <SimControlPanel />}
       {app.overlays.settings && <SettingsPanel />}
       {app.overlays.preflight && <PreFlightPanel />}
 

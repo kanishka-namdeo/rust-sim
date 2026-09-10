@@ -6,24 +6,20 @@
  * Spec: docs/GCS_V2_SPEC.md §8.1 (link chips) + §5.4 (state colors).
  *
  * The v1 ConnBadge/ConnSubline components retire at M14; this is the
- * v2-native port per spec §3.1. Renders one chip per plane (fleet/sim/catalog)
+ * v2-native port per spec §3.1. Renders one chip per plane (fleet/catalog)
  * with the §5.4 contract:
  *
  *   LIVE       = accent cyan
  *   SIMULATED  = violet #A78BFA
  *   CONNECTING = dim gray with countdown
  *   OFFLINE    = danger
- *
- * For M8 the sim plane is "connecting" until the first sim socket opens;
- * the SIMULATED ladder kicks in after the retry budget (§9.1).
  */
 
 import { useTelemetrySnapshot, getPlaneStates } from '@/state/telemetry-store'
 import type { ConnState } from '@/lib/types'
 
-const PLANES: { id: 'fleet' | 'sim' | 'catalog'; label: string; port: number }[] = [
+const PLANES: { id: 'fleet' | 'catalog'; label: string; port: number }[] = [
   { id: 'fleet', label: 'FLEET', port: 8400 },
-  { id: 'sim', label: 'SIM', port: 8200 },
   { id: 'catalog', label: 'CATALOG', port: 8300 },
 ]
 

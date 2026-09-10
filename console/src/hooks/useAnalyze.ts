@@ -3,32 +3,24 @@
 /**
  * Analyze View data hook (:8300 fleet-catalog plane, GCS_SPEC §5.5 / §8.5).
  *
- * Six API methods, all routed through `src/lib/conn.ts` gateway mode with
+ * Four API methods, all routed through `src/lib/conn.ts` gateway mode with
  * `?XTransformPort=8300`:
- *   - listReplays()                         GET /api/replays
  *   - listUlogs()                           GET /api/ulogs
- *   - getReplayMeta(filename)                GET /api/replays/{file}/meta
- *   - getReplayTopics(filename)              GET /api/replays/{file}/topics
- *   - getReplayData(filename, from, to, t)   GET /api/replays/{file}/data?from_tick&to_tick&topic
  *   - getUlogTopics(filename)                GET /api/ulogs/{file}/topics
  *   - getUlogTopicData(file, topic, a, b)    GET /api/ulogs/{file}/topics/{topic}/data?from_s&to_s
  *
  * The catalog plane is shared with the M2/M4 mission + preset CRUD endpoints
- * (ADR-0027). All Analyze responses are tolerant-shaped: missing fields
- * (e.g. `geo_origin`, `final_pos_ned_m`) are common — the UI degrades
- * gracefully (an empty map, an empty plot list) instead of crashing.
+ * (ADR-0027). All Analyze responses are tolerant-shaped: missing fields are
+ * common — the UI degrades gracefully (an empty plot list) instead of crashing.
  *
- * When the backend's replay/ULog endpoints are not yet implemented (M6-Backend
- * track in flight in parallel), the methods return empty arrays / null so
- * the UI shows an empty-state panel instead of erroring.
+ * When the backend's ULog endpoints are not yet implemented (M6-Backend track
+ * in flight in parallel), the methods return empty arrays / null so the UI
+ * shows an empty-state panel instead of erroring.
  */
 
 import { useCallback, useState } from 'react'
 import { fetchGw, gw, unwrapEnvelope } from '@/lib/conn'
 import type {
-  ReplayFile,
-  ReplayMeta,
-  ReplayTopicData,
   UlogFile,
   UlogTopicData,
 } from '@/lib/types'
@@ -69,25 +61,6 @@ function numArr(v: unknown): number[] | null {
   return out
 }
 
-function numVec3(v: unknown): [number, number, number] | null {
-  if (!Array.isArray(v) || v.length < 3) return null
-  const a = num(v[0])
-  const b = num(v[1])
-  const c = num(v[2])
-  if (a == null || b == null || c == null) return null
-  return [a, b, c]
-}
-
-function numVec4(v: unknown): [number, number, number, number] | null {
-  if (!Array.isArray(v) || v.length < 4) return null
-  const a = num(v[0])
-  const b = num(v[1])
-  const c = num(v[2])
-  const d = num(v[3])
-  if (a == null || b == null || c == null || d == null) return null
-  return [a, b, c, d]
-}
-
 /** Pull the catalog's per-file mtime into a JS epoch ms (server returns either
  *  s, ms, or an ISO 8601 string). Falls back to 0 (so sorting stays stable). */
 function coerceMtime(...cands: unknown[]): number {
@@ -108,19 +81,6 @@ function coerceMtime(...cands: unknown[]): number {
 // normalizers
 // ---------------------------------------------------------------------------
 
-function normReplayFile(raw: unknown): ReplayFile | null {
-  const r = asRec(raw) ?? {}
-  const filename = str(r.filename, r.name, r.file)
-  if (!filename) return null
-  return {
-    filename,
-    duration_s: num(r.duration_s, r.duration, r.virtual_duration_s) ?? 0,
-    vehicle_count: num(r.vehicle_count, r.vehicles) ?? 1,
-    scenario_sha256: str(r.scenario_sha256, r.scenario_hash, r.sha256) ?? '',
-    mtime: coerceMtime(r.mtime, r.modified, r.modified_at),
-  }
-}
-
 function normUlogFile(raw: unknown): UlogFile | null {
   const r = asRec(raw) ?? {}
   const filename = str(r.filename, r.name, r.file)
@@ -130,50 +90,6 @@ function normUlogFile(raw: unknown): UlogFile | null {
     size_bytes: num(r.size_bytes, r.size, r.bytes) ?? 0,
     mtime: coerceMtime(r.mtime, r.modified, r.modified_at),
   }
-}
-
-function normReplayMeta(raw: unknown): ReplayMeta | null {
-  const r = asRec(raw) ?? {}
-  const records = num(r.records, r.tick_count, r.total_ticks) ?? 0
-  const virtual_duration_s = num(r.virtual_duration_s, r.duration_s, r.duration) ?? 0
-  const tick_rate_hz = num(r.tick_rate_hz, r.rate_hz, r.tick_rate) ?? 0
-  // Records / rate fallback when virtual_duration_s is missing or zero.
-  const duration = virtual_duration_s > 0 ? virtual_duration_s : tick_rate_hz > 0 ? records / tick_rate_hz : 0
-  const originRec = asRec(r.geo_origin) ?? asRec(r.origin)
-  const geo_origin = originRec
-    ? {
-        lat_deg: num(originRec.lat_deg, originRec.lat) ?? 47.39777,
-        lon_deg: num(originRec.lon_deg, originRec.lon) ?? 8.54558,
-        alt_m: num(originRec.alt_m, originRec.alt) ?? 500,
-      }
-    : null
-  return {
-    tick_rate_hz,
-    seed: r.seed != null ? (typeof r.seed === 'number' ? r.seed : String(r.seed)) : 0,
-    scenario_sha256: str(r.scenario_sha256, r.scenario_hash) ?? '',
-    records,
-    virtual_duration_s: duration,
-    final_pos_ned_m: numVec3(r.final_pos_ned_m) ?? undefined,
-    final_q_wxyz: numVec4(r.final_q_wxyz) ?? undefined,
-    geo_origin,
-  }
-}
-
-function normReplayData(raw: unknown): ReplayTopicData | null {
-  const r = asRec(raw) ?? {}
-  const ticks = numArr(r.ticks) ?? numArr(r.t) ?? []
-  const valuesRaw = r.values
-  let values: number[] | number[][] = []
-  if (Array.isArray(valuesRaw)) {
-    if (valuesRaw.length > 0 && Array.isArray(valuesRaw[0])) {
-      // vector topic — [[n,e,d], ...]
-      values = (valuesRaw as unknown[]).map((v) => numArr(v) ?? [])
-    } else {
-      // scalar topic — [v, v, ...]
-      values = numArr(valuesRaw) ?? []
-    }
-  }
-  return { ticks, values }
 }
 
 function normUlogData(raw: unknown): UlogTopicData | null {
@@ -202,16 +118,8 @@ export interface AnalyzeApi {
   busy: boolean
   /** Last error message surfaced to the UI (null = no error). */
   lastError: string | null
-  /** GET /api/replays → list of .replay files (sorted by mtime desc). */
-  listReplays: () => Promise<ReplayFile[]>
   /** GET /api/ulogs → list of .ulg files (sorted by mtime desc). */
   listUlogs: () => Promise<UlogFile[]>
-  /** GET /api/replays/{file}/meta → header info (tick rate, duration, origin). */
-  getReplayMeta: (filename: string) => Promise<ReplayMeta | null>
-  /** GET /api/replays/{file}/topics → topic names available in this replay. */
-  getReplayTopics: (filename: string) => Promise<string[]>
-  /** GET /api/replays/{file}/data?from_tick&to_tick&topic → tick samples. */
-  getReplayData: (filename: string, fromTick: number, toTick: number, topic: string) => Promise<ReplayTopicData | null>
   /** GET /api/ulogs/{file}/topics → topic names in this ULog. */
   getUlogTopics: (filename: string) => Promise<string[]>
   /** GET /api/ulogs/{file}/topics/{topic}/data?from_s&to_s → field samples. */
@@ -254,19 +162,6 @@ export function useAnalyze(): AnalyzeApi {
     [],
   )
 
-  const listReplays = useCallback(async (): Promise<ReplayFile[]> => {
-    const data = await getJson('/api/replays', {}, 4000)
-    if (!data) return []
-    const arr = Array.isArray(data)
-      ? data
-      : Array.isArray((asRec(data) ?? {}).files)
-        ? (asRec(data) as { files: unknown[] }).files
-        : []
-    const list = arr.map(normReplayFile).filter((f): f is ReplayFile => f != null)
-    list.sort((a, b) => b.mtime - a.mtime)
-    return list
-  }, [getJson])
-
   const listUlogs = useCallback(async (): Promise<UlogFile[]> => {
     const data = await getJson('/api/ulogs', {}, 4000)
     if (!data) return []
@@ -279,48 +174,6 @@ export function useAnalyze(): AnalyzeApi {
     list.sort((a, b) => b.mtime - a.mtime)
     return list
   }, [getJson])
-
-  const getReplayMeta = useCallback(
-    async (filename: string): Promise<ReplayMeta | null> => {
-      const data = await getJson(`/api/replays/${encodeURIComponent(filename)}/meta`, {}, 5000)
-      if (!data) return null
-      return normReplayMeta(data)
-    },
-    [getJson],
-  )
-
-  const getReplayTopics = useCallback(
-    async (filename: string): Promise<string[]> => {
-      const data = await getJson(`/api/replays/${encodeURIComponent(filename)}/topics`, {}, 5000)
-      if (!data) return []
-      const arr = Array.isArray(data)
-        ? data
-        : Array.isArray((asRec(data) ?? {}).topics)
-          ? (asRec(data) as { topics: unknown[] }).topics
-          : []
-      return arr
-        .map((t) => {
-          if (typeof t === 'string') return t
-          const r = asRec(t)
-          return r ? str(r.name, r.topic) ?? '' : ''
-        })
-        .filter((t) => t.length > 0)
-    },
-    [getJson],
-  )
-
-  const getReplayData = useCallback(
-    async (filename: string, fromTick: number, toTick: number, topic: string): Promise<ReplayTopicData | null> => {
-      const data = await getJson(
-        `/api/replays/${encodeURIComponent(filename)}/data`,
-        { from_tick: fromTick, to_tick: toTick, topic },
-        8000,
-      )
-      if (!data) return null
-      return normReplayData(data)
-    },
-    [getJson],
-  )
 
   const getUlogTopics = useCallback(
     async (filename: string): Promise<string[]> => {
@@ -366,11 +219,7 @@ export function useAnalyze(): AnalyzeApi {
     catalogAlive,
     busy,
     lastError,
-    listReplays,
     listUlogs,
-    getReplayMeta,
-    getReplayTopics,
-    getReplayData,
     getUlogTopics,
     getUlogTopicData,
     probe,
