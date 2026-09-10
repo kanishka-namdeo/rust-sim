@@ -341,7 +341,35 @@ function commitFleetFrame(
   // changed (§9.2). This is the ONLY path that increments __rsimCommits.
   maybeCommitReactState(norm.snapshot)
 
+  // Battery ladder notifications (MDPI spec: 30% warn / 20% caution /
+  // 10% auto-RTL notice). Only fires on threshold crossings.
+  checkBatteryLadder(norm.snapshot.vehicles)
+
   bump()
+}
+
+// Battery ladder — fires notifications on threshold crossings.
+let lastBatteryThreshold: Record<number, string> = {}
+function checkBatteryLadder(vehicles: FleetVehicle[]): void {
+  for (const v of vehicles) {
+    const pct = v.battery_pct
+    let level = 'ok'
+    if (pct <= 10) level = 'critical'
+    else if (pct <= 20) level = 'caution'
+    else if (pct <= 30) level = 'warn'
+
+    const prev = lastBatteryThreshold[v.index] ?? 'ok'
+    if (level !== prev && level !== 'ok') {
+      const severity = level === 'critical' ? 'error' : level === 'caution' ? 'warn' : 'info'
+      const title = level === 'critical' ? 'Battery critical — auto-RTL recommended' : level === 'caution' ? 'Battery caution' : 'Battery low'
+      const detail = `v${v.index}: ${pct.toFixed(0)}% (${level})`
+      // Dynamic import to avoid circular dep.
+      import('./app-store').then(({ pushNotification }) => {
+        pushNotification({ severity, title, detail, sticky: level === 'critical' })
+      })
+    }
+    lastBatteryThreshold[v.index] = level
+  }
 }
 
 // React-state commit gate. The state-commit path is the budget the G-14/G-20

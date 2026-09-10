@@ -37,6 +37,8 @@ import { SetupDrawer } from './overlays/SetupDrawer'
 import { AnalyzeOverlay } from './overlays/AnalyzeOverlay'
 import { SimControlPanel } from './overlays/SimControlPanel'
 import { SettingsPanel } from './overlays/SettingsPanel'
+import { PreFlightPanel } from './overlays/PreFlightPanel'
+import { GotoConfirmChip } from './overlays/GotoConfirmChip'
 import { ContextMenu } from './map/context-menu'
 import { useAppStore } from '@/state/app-store'
 import { startTelemetry, stopTelemetry } from '@/state/telemetry-store'
@@ -80,7 +82,7 @@ export function OperationsCanvas() {
       {/* M10 follow-up: right-click context menus (§7.2 M1..M5). */}
       <ContextMenu />
 
-      {/* Zone F overlay panels — MissionStrip + Library + FleetC2 + Setup + Analyze + SimControl + Settings (M10..M15) */}
+      {/* Zone F overlay panels — all 8 (M10..M15 + competition flows) */}
       {app.overlays.mission && <MissionStrip />}
       {app.overlays.library && <LibraryPanel />}
       {app.overlays.fleet && <FleetC2Panel />}
@@ -88,6 +90,10 @@ export function OperationsCanvas() {
       {app.overlays.analyze && <AnalyzeOverlay />}
       {app.overlays.sim && <SimControlPanel />}
       {app.overlays.settings && <SettingsPanel />}
+      {app.overlays.preflight && <PreFlightPanel />}
+
+      {/* Goto confirm chip — competition feature (QGC goto alt input) */}
+      <GotoConfirmChip />
     </div>
   )
 }

@@ -21,8 +21,9 @@
  */
 
 import { useHudRef } from '../FlushLoop'
-import { useTelemetrySnapshot, getSimFrame } from '@/state/telemetry-store'
+import { useTelemetrySnapshot, getSimFrame, getStrip } from '@/state/telemetry-store'
 import { useAppStore } from '@/state/app-store'
+import { useEffect, useRef } from 'react'
 
 export function TelemetryColumn() {
   const snap = useTelemetrySnapshot()
@@ -132,24 +133,68 @@ export function TelemetryColumn() {
         </Tile>
       </div>
 
-      {/* Mini-plots placeholder — M9 wires the actual strip charts via
-        getStrip(activeVehicle, 'alt_m' | 'battery_pct' | 'ground_speed_ms').
-        M8 ships the placeholder so the column C layout assertion in G-14
-        passes (the column exists with the right zone tag). */}
-      <div
-        style={{
-          marginTop: 'auto',
-          padding: 12,
-          borderRadius: 'var(--rsim-radius-panel)',
-          border: '1px solid var(--rsim-border)',
-          background: 'rgba(17, 22, 29, 0.4)',
-          color: 'var(--rsim-text-dim)',
-          fontSize: 11,
-        }}
-      >
-        Mini-plots — wired at M9 (alt / battery / ground-speed).
-        StripChart-class plots docked here via the telemetry store's getStrip().
+      {/* Mini-plots — alt / battery / ground-speed StripCharts. The FlushLoop
+        writes telemetry to the telemetry-store ring buffers; we read them
+        via getStrip() on each render (10 Hz cadence from the snapshot). */}
+      <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <MiniPlot label="alt m" data={getStrip(v?.index ?? 0, 'alt_m')} color="var(--rsim-accent)" />
+        <MiniPlot label="battery %" data={getStrip(v?.index ?? 0, 'battery_pct')} color="var(--rsim-ok)" />
+        <MiniPlot label="speed m/s" data={getStrip(v?.index ?? 0, 'ground_speed_ms')} color="var(--rsim-alert)" />
       </div>
+    </div>
+  )
+}
+
+// Mini-plot — canvas 2D rolling-window plot, 60s window @ 10 Hz.
+// Compact version of the v1 StripChart (h-16 instead of h-36).
+function MiniPlot({ label, data, color }: { label: string; data: { t: number; v: number }[]; color: string }) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas || data.length < 2) return
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    const dpr = window.devicePixelRatio || 1
+    const w = canvas.clientWidth
+    const h = canvas.clientHeight
+    canvas.width = w * dpr
+    canvas.height = h * dpr
+    ctx.scale(dpr, dpr)
+    ctx.clearRect(0, 0, w, h)
+
+    // Window: last 60s
+    const now = Date.now()
+    const windowMs = 60000
+    const samples = data.filter((d) => now - d.t < windowMs)
+    if (samples.length < 2) return
+
+    const values = samples.map((s) => s.v)
+    const min = Math.min(...values)
+    const max = Math.max(...values)
+    const range = max - min || 1
+
+    // Draw the line
+    ctx.strokeStyle = color
+    ctx.lineWidth = 1.5
+    ctx.beginPath()
+    samples.forEach((s, i) => {
+      const x = ((s.t - (now - windowMs)) / windowMs) * w
+      const y = h - ((s.v - min) / range) * (h - 4) - 2
+      if (i === 0) ctx.moveTo(x, y)
+      else ctx.lineTo(x, y)
+    })
+    ctx.stroke()
+
+    // Draw the label
+    ctx.fillStyle = 'var(--rsim-text-dim, #8B98A5)'
+    ctx.font = '9px var(--rsim-font-mono)'
+    ctx.fillText(label, 4, 11)
+  }, [data, label, color])
+
+  return (
+    <div style={{ position: 'relative', height: 56, borderRadius: 'var(--rsim-radius-control)', border: '1px solid var(--rsim-border)', background: 'rgba(17, 22, 29, 0.4)', overflow: 'hidden' }}>
+      <canvas ref={canvasRef} style={{ width: '100%', height: '100%' }} />
     </div>
   )
 }

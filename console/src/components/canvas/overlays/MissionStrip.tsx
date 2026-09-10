@@ -35,6 +35,7 @@ import {
 } from '@/state/plan-store'
 import { toggleOverlay, pushNotification } from '@/state/app-store'
 import { usePlanCatalog } from '@/hooks/usePlanCatalog'
+import { MissionStatsBar } from './MissionStatsBar'
 import { gw, fetchGw } from '@/lib/conn'
 import type { PlanWaypoint, MissionType } from '@/lib/plan-types'
 import { MISSION_TYPE_ID } from '@/lib/plan-types'
@@ -82,6 +83,9 @@ export function MissionStrip(): JSX.Element {
         </div>
         <button type="button" onClick={() => toggleOverlay('library', { force: false })} style={{ background: 'transparent', border: '1px solid var(--rsim-border)', borderRadius: 'var(--rsim-radius-control)', color: 'var(--rsim-text-dim)', cursor: 'pointer', padding: '4px 8px', fontSize: 11 }} aria-label="Close">×</button>
       </div>
+
+      {/* Mission statistics bar (QGC master — distance/time/alt/battery est) */}
+      <MissionStatsBar />
 
       <div style={{ flex: 1, overflow: 'auto' }}>
         <Section title="Mission" count={plan.file.waypoints.length} expanded={expanded === 'mission'} onToggle={() => setExpanded('mission')}>
