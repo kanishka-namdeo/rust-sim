@@ -30,6 +30,9 @@ import { CommandBar } from './bar/CommandBar'
 import { NotificationStack } from './notify/NotificationStack'
 import { FlushLoop } from './FlushLoop'
 import { ShortcutsProvider } from './ShortcutsProvider'
+import { MissionStrip } from './overlays/MissionStrip'
+import { LibraryPanel } from './overlays/LibraryPanel'
+import { useAppStore } from '@/state/app-store'
 import { startTelemetry, stopTelemetry } from '@/state/telemetry-store'
 
 export function OperationsCanvas() {
@@ -40,6 +43,8 @@ export function OperationsCanvas() {
     startTelemetry()
     return () => stopTelemetry()
   }, [])
+
+  const app = useAppStore()
 
   return (
     <div
@@ -66,9 +71,9 @@ export function OperationsCanvas() {
       {/* M9: global key handler + cheat-sheet dialog (§7.3 + §7.3.3). */}
       <ShortcutsProvider />
 
-      {/* Zone F overlay panels ship with T-B2..B7 (M10..M13).
-          M8 leaves them unmounted; the rail toggles flip the app-store flags
-          but the panels render nothing until they ship. */}
+      {/* Zone F overlay panels — MissionStrip + Library (M10) */}
+      {app.overlays.mission && <MissionStrip />}
+      {app.overlays.library && <LibraryPanel />}
     </div>
   )
 }

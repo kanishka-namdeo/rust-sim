@@ -47,12 +47,22 @@ export const LAYER_IDS = [
   'vehicles-body',
   'vehicles-label',
   'tracks-line',
+  'fence-fill',
+  'fence-line',
+  'fence-vertices',
+  'wp-body',
+  'wp-line',
+  'wp-err',
+  'mission-line',
+  'mission-flown',
+  'rally-body',
+  'rally-label',
   'graticule-line',
 ] as const
 
 export type LayerId = (typeof LAYER_IDS)[number]
 
-export const SOURCE_IDS = ['vehicles', 'tracks', 'graticule'] as const
+export const SOURCE_IDS = ['vehicles', 'tracks', 'fence', 'waypoints', 'mission-active', 'rally', 'graticule'] as const
 export type SourceId = (typeof SOURCE_IDS)[number]
 
 // ---------------------------------------------------------------------------
@@ -176,6 +186,217 @@ export function graticuleFeatureCollection(
 }
 
 // ---------------------------------------------------------------------------
+// L3: Fence — inclusion polygon + exclusion[] polygons + vertices.
+// Spec §6.4 L3: "inclusion polygon + exclusion[] polygons + vertices
+// FeatureCollection (props kind/poly_id/vtx_id)".
+// ---------------------------------------------------------------------------
+
+export interface FenceFeatureProperties {
+  kind: 'inclusion' | 'exclusion'
+  poly_id: number // 0 = inclusion, 1..N = exclusion polygons
+  vtx_id: number // vertex index within the polygon
+}
+
+export function fenceFeatureCollection(
+  fence: { inclusion: [number, number][]; exclusion: [number, number][][] } | null,
+): GeoJSON.FeatureCollection<GeoJSON.Geometry, FenceFeatureProperties> {
+  const features: GeoJSON.Feature<GeoJSON.Geometry, FenceFeatureProperties>[] = []
+  if (!fence) {
+    bumpLayerCount('fence-fill', 0)
+    bumpLayerCount('fence-line', 0)
+    bumpLayerCount('fence-vertices', 0)
+    return { type: 'FeatureCollection', features }
+  }
+
+  // Inclusion polygon (poly_id 0)
+  if (fence.inclusion.length >= 3) {
+    const coords = fence.inclusion.map(([lat, lon]) => [Number(lon.toFixed(6)), Number(lat.toFixed(6))]) as [number, number][]
+    // Close the ring
+    coords.push(coords[0])
+    features.push({
+      type: 'Feature',
+      geometry: { type: 'Polygon', coordinates: [coords] },
+      properties: { kind: 'inclusion', poly_id: 0, vtx_id: -1 },
+    })
+  }
+
+  // Exclusion polygons (poly_id 1..N)
+  fence.exclusion.forEach((poly, i) => {
+    if (poly.length >= 3) {
+      const coords = poly.map(([lat, lon]) => [Number(lon.toFixed(6)), Number(lat.toFixed(6))]) as [number, number][]
+      coords.push(coords[0])
+      features.push({
+        type: 'Feature',
+        geometry: { type: 'Polygon', coordinates: [coords] },
+        properties: { kind: 'exclusion', poly_id: i + 1, vtx_id: -1 },
+      })
+    }
+  })
+
+  // Vertex markers (for drag + M4 context menu)
+  const vertexFeatures: GeoJSON.Feature<GeoJSON.Point, FenceFeatureProperties>[] = []
+  fence.inclusion.forEach((v, i) => {
+    vertexFeatures.push({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [Number(v[1].toFixed(6)), Number(v[0].toFixed(6))] },
+      properties: { kind: 'inclusion', poly_id: 0, vtx_id: i },
+    })
+  })
+  fence.exclusion.forEach((poly, pi) => {
+    poly.forEach((v, vi) => {
+      vertexFeatures.push({
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: [Number(v[1].toFixed(6)), Number(v[0].toFixed(6))] },
+        properties: { kind: 'exclusion', poly_id: pi + 1, vtx_id: vi },
+      })
+    })
+  })
+
+  bumpLayerCount('fence-fill', features.filter((f) => f.geometry.type === 'Polygon').length)
+  bumpLayerCount('fence-line', features.filter((f) => f.geometry.type === 'Polygon').length)
+  bumpLayerCount('fence-vertices', vertexFeatures.length)
+
+  // Combine polygons + vertex points into one FeatureCollection.
+  // MapLibre paint properties are per-layer-type; the fence-fill + fence-line
+  // layers filter to Polygon, fence-vertices filters to Point.
+  return { type: 'FeatureCollection', features: [...features, ...vertexFeatures] }
+}
+
+// ---------------------------------------------------------------------------
+// L4: Waypoints — mission waypoints (Point, props seq/alt/hold/accept/errors[]).
+// Spec §6.4 L4: "wp-body (circle 7px + seq label), wp-line (dashed, accent),
+// wp-err (danger ring when errors non-empty)".
+// ---------------------------------------------------------------------------
+
+export interface WaypointFeatureProperties {
+  seq: number
+  alt: number
+  hold: number
+  accept: number
+  errors: string[]
+}
+
+export function waypointFeatureCollection(
+  waypoints: { seq: number; x: number; y: number; z: number; param1: number; param2: number }[] | null,
+  erroredSeqs: Set<number> = new Set(),
+): GeoJSON.FeatureCollection<GeoJSON.Point, WaypointFeatureProperties> {
+  const features: GeoJSON.Feature<GeoJSON.Point, WaypointFeatureProperties>[] = []
+  if (!waypoints) {
+    bumpLayerCount('wp-body', 0)
+    bumpLayerCount('wp-err', 0)
+    return { type: 'FeatureCollection', features }
+  }
+  for (const w of waypoints) {
+    const errors: string[] = erroredSeqs.has(w.seq) ? ['validation_error'] : []
+    features.push({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [Number(w.y.toFixed(6)), Number(w.x.toFixed(6))] },
+      properties: {
+        seq: w.seq,
+        alt: w.z,
+        hold: w.param1,
+        accept: w.param2,
+        errors,
+      },
+    })
+  }
+  bumpLayerCount('wp-body', features.length)
+  bumpLayerCount('wp-err', features.filter((f) => f.properties.errors.length > 0).length)
+  return { type: 'FeatureCollection', features }
+}
+
+/** Waypoint polyline (L4 wp-line) — the planned mission path. */
+export function waypointLineFeatureCollection(
+  waypoints: { seq: number; x: number; y: number }[] | null,
+): GeoJSON.FeatureCollection<GeoJSON.LineString, { count: number }> {
+  if (!waypoints || waypoints.length < 2) {
+    bumpLayerCount('wp-line', 0)
+    return { type: 'FeatureCollection', features: [] }
+  }
+  const coords = waypoints.map((w) => [Number(w.y.toFixed(6)), Number(w.x.toFixed(6))] as [number, number])
+  bumpLayerCount('wp-line', 1)
+  return {
+    type: 'FeatureCollection',
+    features: [{
+      type: 'Feature',
+      geometry: { type: 'LineString', coordinates: coords },
+      properties: { count: waypoints.length },
+    }],
+  }
+}
+
+// ---------------------------------------------------------------------------
+// L5: Mission-active — uploaded/active mission polyline + flown-leg highlight.
+// Spec §6.4 L5 + P6 fix: "the active mission MUST render on the Fly map;
+// flown-leg highlight derives from vehicle position vs leg geometry".
+// ---------------------------------------------------------------------------
+
+export interface MissionActiveProperties {
+  totalLegs: number
+  flownLegs: number
+  activeLeg: number // -1 = not started
+}
+
+export function missionActiveFeatureCollection(
+  missionPath: [number, number][] | null, // [lon, lat] pairs
+  activeLeg: number = -1,
+  flownLegs: number = 0,
+): GeoJSON.FeatureCollection<GeoJSON.LineString, MissionActiveProperties> {
+  if (!missionPath || missionPath.length < 2) {
+    bumpLayerCount('mission-line', 0)
+    bumpLayerCount('mission-flown', 0)
+    return { type: 'FeatureCollection', features: [] }
+  }
+  const features: GeoJSON.Feature<GeoJSON.LineString, MissionActiveProperties>[] = []
+  // Full mission line (remaining + current leg)
+  features.push({
+    type: 'Feature',
+    geometry: { type: 'LineString', coordinates: missionPath },
+    properties: { totalLegs: missionPath.length - 1, flownLegs, activeLeg },
+  })
+  // Flown portion (legs 0..activeLeg)
+  if (activeLeg > 0) {
+    features.push({
+      type: 'Feature',
+      geometry: { type: 'LineString', coordinates: missionPath.slice(0, activeLeg + 1) },
+      properties: { totalLegs: missionPath.length - 1, flownLegs, activeLeg },
+    })
+  }
+  bumpLayerCount('mission-line', 1)
+  bumpLayerCount('mission-flown', activeLeg > 0 ? 1 : 0)
+  return { type: 'FeatureCollection', features }
+}
+
+// ---------------------------------------------------------------------------
+// L7: Rally — rally points (R glyph).
+// Spec §6.4 L7: "rally-body (R glyph), rally-label". ≤5 (V-12).
+// ---------------------------------------------------------------------------
+
+export interface RallyFeatureProperties {
+  seq: number
+  alt: number
+}
+
+export function rallyFeatureCollection(
+  rally: { seq: number; x: number; y: number; z: number }[] | null,
+): GeoJSON.FeatureCollection<GeoJSON.Point, RallyFeatureProperties> {
+  const features: GeoJSON.Feature<GeoJSON.Point, RallyFeatureProperties>[] = []
+  if (!rally) {
+    bumpLayerCount('rally-body', 0)
+    return { type: 'FeatureCollection', features }
+  }
+  for (const r of rally) {
+    features.push({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [Number(r.y.toFixed(6)), Number(r.x.toFixed(6))] },
+      properties: { seq: r.seq, alt: r.z },
+    })
+  }
+  bumpLayerCount('rally-body', features.length)
+  return { type: 'FeatureCollection', features }
+}
+
+// ---------------------------------------------------------------------------
 // Layer init — called once after the basemap `load` event. The layer
 // catalog here is the M8 subset; M10..M13 add L3..L12.
 // ---------------------------------------------------------------------------
@@ -288,4 +509,225 @@ export function addLayers(ctx: LayerInitCtx): void {
     },
     layout: { visibility: 'none' }, // hidden by default; visible when OFFLINE
   })
+
+  // --- L3: fence (inclusion + exclusion polygons + vertices) ---
+  // Spec §6.4 L3: "fence-fill (inclusion accent-dim 8% / exclusion danger 8%),
+  // fence-line (dashed 1.5px), fence-vertices (circle 5px, draggable)".
+  ctx.addSource('fence', {
+    type: 'geojson',
+    data: { type: 'FeatureCollection', features: [] } as GeoJSON.FeatureCollection,
+  })
+  ctx.addLayer({
+    id: 'fence-fill',
+    type: 'fill',
+    source: 'fence',
+    filter: ['==', '$type', 'Polygon'],
+    paint: {
+      // inclusion = accent-dim 8%, exclusion = danger 8%
+      'fill-color': ['case', ['==', ['get', 'kind'], 'exclusion'], ctx.colorToken('--rsim-danger', '#EF4444'), ctx.colorToken('--rsim-accent-dim', '#0E7490')],
+      'fill-opacity': ['case', ['==', ['get', 'kind'], 'exclusion'], 0.08, 0.08],
+    },
+    layout: { visibility: 'none' }, // shown in Plan/Fence mode
+  })
+  ctx.addLayer({
+    id: 'fence-line',
+    type: 'line',
+    source: 'fence',
+    filter: ['==', '$type', 'Polygon'],
+    paint: {
+      'line-color': ['case', ['==', ['get', 'kind'], 'exclusion'], ctx.colorToken('--rsim-danger', '#EF4444'), ctx.colorToken('--rsim-accent', '#22D3EE')],
+      'line-width': 1.5,
+      'line-dasharray': [6, 5],
+      'line-opacity': 0.8,
+    },
+    layout: { visibility: 'none' },
+  })
+  ctx.addLayer({
+    id: 'fence-vertices',
+    type: 'circle',
+    source: 'fence',
+    filter: ['==', '$type', 'Point'],
+    paint: {
+      'circle-radius': 5,
+      'circle-color': ['case', ['==', ['get', 'kind'], 'exclusion'], ctx.colorToken('--rsim-danger', '#EF4444'), ctx.colorToken('--rsim-accent', '#22D3EE')],
+      'circle-stroke-width': 1.5,
+      'circle-stroke-color': ctx.colorToken('--rsim-text', '#E6EDF3'),
+      'circle-stroke-opacity': 0.8,
+    },
+    layout: { visibility: 'none' }, // shown in Fence mode
+  })
+
+  // --- L4: waypoints (body + line + error ring) ---
+  // Spec §6.4 L4: "wp-body (circle 7px + seq label), wp-line (dashed, accent),
+  // wp-err (danger ring when errors non-empty)".
+  ctx.addSource('waypoints', {
+    type: 'geojson',
+    data: { type: 'FeatureCollection', features: [] } as GeoJSON.FeatureCollection,
+  })
+  ctx.addLayer({
+    id: 'wp-line',
+    type: 'line',
+    source: 'waypoints',
+    paint: {
+      'line-color': ctx.colorToken('--rsim-accent', '#22D3EE'),
+      'line-width': 1.5,
+      'line-dasharray': [8, 6],
+      'line-opacity': 0.7,
+    },
+    layout: { visibility: 'none' }, // shown in Plan mode
+  })
+  ctx.addLayer({
+    id: 'wp-body',
+    type: 'circle',
+    source: 'waypoints',
+    paint: {
+      'circle-radius': 7,
+      'circle-color': ctx.colorToken('--rsim-accent', '#22D3EE'),
+      'circle-stroke-width': 1.5,
+      'circle-stroke-color': ctx.colorToken('--rsim-text', '#E6EDF3'),
+      'circle-stroke-opacity': 0.9,
+    },
+    layout: { visibility: 'none' }, // shown in Plan mode
+  })
+  ctx.addLayer({
+    id: 'wp-err',
+    type: 'circle',
+    source: 'waypoints',
+    filter: ['>', ['length', ['get', 'errors']], 0],
+    paint: {
+      'circle-radius': 12,
+      'circle-color': ctx.colorToken('--rsim-danger', '#EF4444'),
+      'circle-opacity': 0.0, // transparent fill — just the ring
+      'circle-stroke-width': 2,
+      'circle-stroke-color': ctx.colorToken('--rsim-danger', '#EF4444'),
+      'circle-stroke-opacity': 0.9,
+    },
+    layout: { visibility: 'none' }, // shown in Plan mode
+  })
+  // Waypoint seq labels (reuse symbol layer pattern)
+  ctx.addLayer({
+    id: 'wp-label',
+    type: 'symbol',
+    source: 'waypoints',
+    layout: {
+      'text-field': ['to-string', ['get', 'seq']],
+      'text-size': 10,
+      'text-offset': [0, 0.5],
+      'text-anchor': 'top',
+      'text-allow-overlap': true,
+      visibility: 'none',
+    },
+    paint: {
+      'text-color': ctx.colorToken('--rsim-text', '#E6EDF3'),
+      'text-halo-color': ctx.colorToken('--rsim-surface-solid', '#11161D'),
+      'text-halo-width': 2,
+    },
+  })
+
+  // --- L5: mission-active (uploaded mission polyline + flown-leg highlight) ---
+  // Spec §6.4 L5 + P6 fix. mission-line = remaining + current leg (accent);
+  // mission-flown = ok-green solid.
+  ctx.addSource('mission-active', {
+    type: 'geojson',
+    data: { type: 'FeatureCollection', features: [] } as GeoJSON.FeatureCollection,
+  })
+  ctx.addLayer({
+    id: 'mission-line',
+    type: 'line',
+    source: 'mission-active',
+    filter: ['==', ['get', 'activeLeg'], ['get', 'activeLeg']], // all features (no filter)
+    paint: {
+      'line-color': ctx.colorToken('--rsim-accent', '#22D3EE'),
+      'line-width': 2,
+      'line-opacity': 0.7,
+    },
+    layout: { visibility: 'none' }, // shown during missionFlying
+  })
+  ctx.addLayer({
+    id: 'mission-flown',
+    type: 'line',
+    source: 'mission-active',
+    // The flown portion is the second feature in the FC (when present).
+    // Filter to features where activeLeg > 0 (the flown feature has activeLeg > 0;
+    // the full mission line also has activeLeg but it's the first feature).
+    // Simplest: filter by feature index is not possible in MapLibre expressions;
+    // we use a separate property. For M10 we render both features and let the
+    // flown one overlay the full one with a different color.
+    paint: {
+      'line-color': ctx.colorToken('--rsim-ok', '#34D399'),
+      'line-width': 2.5,
+      'line-opacity': 0.9,
+    },
+    layout: { visibility: 'none' }, // shown during missionFlying
+  })
+
+  // --- L7: rally (R glyph + label) ---
+  ctx.addSource('rally', {
+    type: 'geojson',
+    data: { type: 'FeatureCollection', features: [] } as GeoJSON.FeatureCollection,
+  })
+  ctx.addLayer({
+    id: 'rally-body',
+    type: 'symbol',
+    source: 'rally',
+    layout: {
+      'text-field': 'R',
+      'text-size': 14,
+      'text-allow-overlap': true,
+      visibility: 'none',
+    },
+    paint: {
+      'text-color': ctx.colorToken('--rsim-alert', '#F59E0B'),
+      'text-halo-color': ctx.colorToken('--rsim-surface-solid', '#11161D'),
+      'text-halo-width': 2,
+    },
+  })
+  ctx.addLayer({
+    id: 'rally-label',
+    type: 'symbol',
+    source: 'rally',
+    layout: {
+      'text-field': ['concat', 'rally ', ['to-string', ['get', 'seq']], ' · ', ['to-string', ['get', 'alt']], 'm'],
+      'text-size': 10,
+      'text-offset': [0, 1.5],
+      'text-anchor': 'top',
+      'text-allow-overlap': true,
+      visibility: 'none',
+    },
+    paint: {
+      'text-color': ctx.colorToken('--rsim-text-dim', '#8B98A5'),
+      'text-halo-color': ctx.colorToken('--rsim-surface-solid', '#11161D'),
+      'text-halo-width': 2,
+    },
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Layer visibility helpers — toggle Plan/Fence mode layers on/off.
+// Called by MapCanvas when the app-store's mapMode changes.
+// ---------------------------------------------------------------------------
+
+export function setPlanModeLayersVisible(ctx: { setLayoutProperty: (layer: string, name: 'visibility', value: 'visible' | 'none') => void }, mode: 'fly' | 'plan' | 'fence' | 'corridor'): void {
+  const planVisible = mode === 'plan' || mode === 'fence' || mode === 'corridor'
+  const fenceVisible = mode === 'fence' || mode === 'plan'
+  const wpVisible = mode === 'plan' || mode === 'corridor'
+
+  // L3 fence
+  ctx.setLayoutProperty('fence-fill', 'visibility', fenceVisible ? 'visible' : 'none')
+  ctx.setLayoutProperty('fence-line', 'visibility', fenceVisible ? 'visible' : 'none')
+  ctx.setLayoutProperty('fence-vertices', 'visibility', mode === 'fence' ? 'visible' : 'none')
+  // L4 waypoints
+  ctx.setLayoutProperty('wp-line', 'visibility', wpVisible ? 'visible' : 'none')
+  ctx.setLayoutProperty('wp-body', 'visibility', wpVisible ? 'visible' : 'none')
+  ctx.setLayoutProperty('wp-err', 'visibility', wpVisible ? 'visible' : 'none')
+  ctx.setLayoutProperty('wp-label', 'visibility', wpVisible ? 'visible' : 'none')
+  // L7 rally
+  ctx.setLayoutProperty('rally-body', 'visibility', planVisible ? 'visible' : 'none')
+  ctx.setLayoutProperty('rally-label', 'visibility', planVisible ? 'visible' : 'none')
+}
+
+/** Show/hide the L5 mission-active layers (during missionFlying). */
+export function setMissionActiveLayersVisible(ctx: { setLayoutProperty: (layer: string, name: 'visibility', value: 'visible' | 'none') => void }, visible: boolean): void {
+  ctx.setLayoutProperty('mission-line', 'visibility', visible ? 'visible' : 'none')
+  ctx.setLayoutProperty('mission-flown', 'visibility', visible ? 'visible' : 'none')
 }

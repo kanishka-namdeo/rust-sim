@@ -209,7 +209,7 @@ export function ShortcutsProvider(): JSX.Element | null {
       }
 
       // If shortcuts are disabled (§7.3.4), bail after the Esc/?/F8 path.
-      if (!settingsRef.current.shortcutsEnabled) return
+      if (!settingsRef.current?.shortcutsEnabled) return
 
       if (shouldSkipShortcut(e)) return
 
@@ -254,7 +254,7 @@ export function ShortcutsProvider(): JSX.Element | null {
         return
       }
       if (key === 'm' || key === 'M') {
-        toggleOverlay('library') // §7.3.1 M: toggle mission strip overlay (library = mission catalog for M8)
+        toggleOverlay('mission') // §7.3.1 M: toggle mission strip overlay
         e.preventDefault()
         e.stopPropagation()
         return
@@ -325,7 +325,7 @@ export function ShortcutsProvider(): JSX.Element | null {
     const onKeyUp = (e: KeyboardEvent) => {
       // E-stop fires on keyup (§7.3.1 — fires on keyup).
       if (e.key === 'e' || e.key === 'E') {
-        if (!settingsRef.current.shortcutsEnabled) return
+        if (!settingsRef.current?.shortcutsEnabled) return
         if (shouldSkipShortcut(e)) return
         // E-stop is always enabled (guardVerb returns enabled for estop_fleet).
         void command('estop_fleet', undefined, {})

@@ -38,9 +38,16 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 
 import {
   addLayers,
+  setPlanModeLayersVisible,
+  setMissionActiveLayersVisible,
   vehicleFeatureCollection,
   trackFeatureCollection,
   graticuleFeatureCollection,
+  fenceFeatureCollection,
+  waypointFeatureCollection,
+  waypointLineFeatureCollection,
+  missionActiveFeatureCollection,
+  rallyFeatureCollection,
   getLayerFeatureCount,
   type LayerId,
 } from './map/layers'
@@ -60,7 +67,8 @@ import {
   type CameraState,
 } from './map/camera'
 import { getFleetSnapshot, useTelemetrySnapshot } from '@/state/telemetry-store'
-import { useAppStore } from '@/state/app-store'
+import { useAppStore, getSnapshot as getAppStoreSnapshot, setGotoPending } from '@/state/app-store'
+import { usePlanStore, getSnapshot as getPlanStoreSnapshot, getErroredSeqs, addWaypoint, addFenceVertex, addExclusionVertex } from '@/state/plan-store'
 import { DEFAULT_ORIGIN } from '@/lib/geo'
 
 // Worker URL — set once at module load (§6.2).
@@ -179,6 +187,7 @@ export function MapCanvas(): JSX.Element {
   // Subscribe to telemetry + app store — the snapshot is what we draw.
   const snap = useTelemetrySnapshot()
   const app = useAppStore()
+  const plan = usePlanStore()
 
   // ---------------------------------------------------------------------------
   // 1. Map init — vanilla maplibre (the spec's R-7 fallback is the default).
@@ -283,6 +292,55 @@ export function MapCanvas(): JSX.Element {
       cameraRef.current = markManualPan(cameraRef.current, performance.now())
     })
 
+    // M10: Plan-mode click handlers — §7.1 map grammar + §2.3 rule 1 (Plan-on-live-map).
+    //   - In Plan/Fly mode (fly): left-click empty map → clear selection (or goto if pending)
+    //   - In waypoint mode (plan): left-click → addWaypoint
+    //   - In fence mode (fence): left-click → addFenceVertex; dblclick → closeFence
+    //   - In corridor mode (corridor): left-click → addCorridorVertex; dblclick → finish
+    // The app-store's gotoPending takes precedence (§7.1 goto flow).
+    map.on('click', (e) => {
+      const appState = getAppStoreSnapshot()
+      const planState = getPlanStoreSnapshot()
+      const lng = e.lngLat.lng
+      const lat = e.lngLat.lat
+
+      // Goto flow takes precedence — §7.1: G enters goto mode, click places target.
+      if (appState.gotoPending) {
+        setGotoPending(false)
+        // Fire goto via the command bus (dynamic import to avoid circular dep).
+        void import('@/state/command-bus').then(({ command }) => {
+          void command('goto', appState.activeVehicle, { lat, lon: lng })
+        })
+        return
+      }
+
+      // Plan-mode editing
+      if (appState.mapMode === 'plan') {
+        addWaypoint(lat, lng)
+      } else if (appState.mapMode === 'fence') {
+        // If there's an in-progress exclusion polygon, append to it.
+        const exclusionCount = planState.file.geofence.exclusion.length
+        if (exclusionCount > 0 && planState.file.geofence.exclusion[exclusionCount - 1].length < 3) {
+          addExclusionVertex(exclusionCount - 1, lat, lng)
+        } else {
+          addFenceVertex(lat, lng)
+        }
+      } else if (appState.mapMode === 'corridor') {
+        // Corridor mode (M15 wires the full corridor tool; M10 just adds vertices).
+        addWaypoint(lat, lng)
+      }
+    })
+
+    // M10: dblclick closes the fence polygon (§7.1: "in Fence/Plan draw mode
+    // dblclick closes the polygon — preventDefault suppresses the zoom").
+    map.on('dblclick', (e) => {
+      const appState = getAppStoreSnapshot()
+      if (appState.mapMode === 'fence' || appState.mapMode === 'plan') {
+        e.preventDefault()
+        // Closing is conceptual — the L3 polygon layer renders when ≥ 3 vertices.
+      }
+    })
+
     // NOTE: the `sourcedata` handler was removed — the layer feature counts
     // are kept by `layers.ts:bumpLayerCount` on each `setData` (the spec
     // §9.2 binding: "feature counts are plain counters kept by layers.ts
@@ -341,33 +399,80 @@ export function MapCanvas(): JSX.Element {
     const map = mapRef.current
     if (!map || !map.isStyleLoaded()) return
     const fleetSnap = getFleetSnapshot()
-    if (!fleetSnap) return
 
-    // L1: vehicles.
-    const vehiclesFc = vehicleFeatureCollection(fleetSnap.vehicles, app.activeVehicle)
-    const vehiclesSrc = map.getSource('vehicles') as maplibregl.GeoJSONSource | undefined
-    if (vehiclesSrc) vehiclesSrc.setData(vehiclesFc)
+    // L1: vehicles + L2: tracks — always present (even with no fleet, the
+    // empty FeatureCollection clears the layers).
+    if (fleetSnap) {
+      const vehiclesFc = vehicleFeatureCollection(fleetSnap.vehicles, app.activeVehicle)
+      const vehiclesSrc = map.getSource('vehicles') as maplibregl.GeoJSONSource | undefined
+      if (vehiclesSrc) vehiclesSrc.setData(vehiclesFc)
 
-    // L2: tracks.
-    const tracksFc = trackFeatureCollection(fleetSnap.vehicles)
-    const tracksSrc = map.getSource('tracks') as maplibregl.GeoJSONSource | undefined
-    if (tracksSrc) tracksSrc.setData(tracksFc)
+      const tracksFc = trackFeatureCollection(fleetSnap.vehicles)
+      const tracksSrc = map.getSource('tracks') as maplibregl.GeoJSONSource | undefined
+      if (tracksSrc) tracksSrc.setData(tracksFc)
+    }
+
+    // M10: L3 fence, L4 waypoints, L5 mission-active, L7 rally — flush from the plan store.
+    const planState = getPlanStoreSnapshot()
+    const erroredSeqs = getErroredSeqs()
+
+    // L3: fence (inclusion + exclusion polygons + vertices)
+    const fenceFc = fenceFeatureCollection(planState.file.geofence)
+    const fenceSrc = map.getSource('fence') as maplibregl.GeoJSONSource | undefined
+    if (fenceSrc) fenceSrc.setData(fenceFc)
+
+    // L4: waypoints (body + line + error ring) — combine Points + LineString in one FC.
+    const wpFc = waypointFeatureCollection(planState.file.waypoints, erroredSeqs)
+    const wpLineFc = waypointLineFeatureCollection(planState.file.waypoints)
+    const combinedWpFc: GeoJSON.FeatureCollection = {
+      type: 'FeatureCollection',
+      features: [...wpFc.features, ...wpLineFc.features],
+    }
+    const wpSrc = map.getSource('waypoints') as maplibregl.GeoJSONSource | undefined
+    if (wpSrc) wpSrc.setData(combinedWpFc)
+
+    // L5: mission-active — only when a mission is flying (P6 fix).
+    const missionActive = fleetSnap?.vehicles.some((v) => v.fsm === 'ACTIVE' && v.armed) ?? false
+    const missionSrc = map.getSource('mission-active') as maplibregl.GeoJSONSource | undefined
+    if (missionActive && planState.file.waypoints.length >= 2) {
+      const missionPath = planState.file.waypoints.map((w) => [Number(w.y.toFixed(6)), Number(w.x.toFixed(6))] as [number, number])
+      const missionFc = missionActiveFeatureCollection(missionPath, -1, 0)
+      if (missionSrc) missionSrc.setData(missionFc)
+      try { setMissionActiveLayersVisible({ setLayoutProperty: (l, n, v) => map.setLayoutProperty(l, n, v) }, true) } catch { /* style not loaded */ }
+    } else {
+      if (missionSrc) missionSrc.setData({ type: 'FeatureCollection', features: [] })
+      try { setMissionActiveLayersVisible({ setLayoutProperty: (l, n, v) => map.setLayoutProperty(l, n, v) }, false) } catch { /* style not loaded */ }
+    }
+
+    // L7: rally
+    const rallyFc = rallyFeatureCollection(planState.file.rally)
+    const rallySrc = map.getSource('rally') as maplibregl.GeoJSONSource | undefined
+    if (rallySrc) rallySrc.setData(rallyFc)
+
+    // Plan-mode layer visibility — toggle L3/L4/L7 based on app.mapMode.
+    try {
+      setPlanModeLayersVisible({ setLayoutProperty: (l, n, v) => map.setLayoutProperty(l, n, v) }, app.mapMode)
+    } catch {
+      // Style not loaded yet — skip; will retry on next flush.
+    }
 
     // Follow-mode easeTo (§6.5): ≥1 Hz, suspend on manual pan.
-    const now = performance.now()
-    const active = fleetSnap.vehicles.find((v) => v.index === app.activeVehicle) ?? fleetSnap.vehicles[0]
-    if (shouldFollowEase(cameraRef.current, active ?? null, now)) {
-      const target = followEaseTarget(active, cameraRef.current)
-      map.easeTo({ ...target, duration: 800 })
-      cameraRef.current = markFollowEase(cameraRef.current, active.id, now)
+    if (fleetSnap) {
+      const now = performance.now()
+      const active = fleetSnap.vehicles.find((v) => v.index === app.activeVehicle) ?? fleetSnap.vehicles[0]
+      if (shouldFollowEase(cameraRef.current, active ?? null, now)) {
+        const target = followEaseTarget(active, cameraRef.current)
+        map.easeTo({ ...target, duration: 800 })
+        cameraRef.current = markFollowEase(cameraRef.current, active.id, now)
+      }
     }
   }
 
-  // Flush data on every telemetry snapshot change.
+  // Flush data on every telemetry snapshot + plan store + mapMode change.
   useEffect(() => {
     flushData()
-     
-  }, [snap])
+
+  }, [snap, plan, app.mapMode])
 
   // ---------------------------------------------------------------------------
   // 4. App-store-driven camera verbs (Z reset, X pitch glance, V NED inset, F follow).

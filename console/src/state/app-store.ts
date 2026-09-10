@@ -25,6 +25,7 @@ export type MapMode = 'fly' | 'plan' | 'fence' | 'corridor'
 
 /** Overlay panel identifiers (zones A–H + F overlay panels, spec §2.2). */
 export type OverlayId =
+  | 'mission'
   | 'library'
   | 'fleet'
   | 'sim'
@@ -71,6 +72,7 @@ const INITIAL: AppStoreState = {
   multiSelect: [],
   mapMode: 'fly',
   overlays: {
+    mission: false,
     library: false,
     fleet: false,
     sim: false,
