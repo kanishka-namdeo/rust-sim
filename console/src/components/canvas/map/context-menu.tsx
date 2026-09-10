@@ -33,7 +33,6 @@
  */
 
 import { useEffect, useState, useCallback, type JSX } from 'react'
-import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { command, guardVerb } from '@/state/command-bus'
 import {
   addWaypoint,
@@ -102,42 +101,50 @@ export function useContextMenuState(): MenuState | null {
 
 export function ContextMenu(): JSX.Element | null {
   const menu = useContextMenuState()
-  const onClose = useCallback(() => closeMenu(), [])
+
+  // Close on any click outside the menu, or Escape.
+  useEffect(() => {
+    if (!menu) return
+    const onDown = (e: MouseEvent): void => {
+      const target = e.target as HTMLElement
+      if (!target.closest('[data-rsim-context-menu]')) closeMenu()
+    }
+    const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape') closeMenu() }
+    window.addEventListener('mousedown', onDown, true)
+    window.addEventListener('keydown', onKey, true)
+    return () => {
+      window.removeEventListener('mousedown', onDown, true)
+      window.removeEventListener('keydown', onKey, true)
+    }
+  }, [menu])
 
   if (!menu) return null
 
   return (
-    <div style={{ position: 'fixed', left: menu.x, top: menu.y, zIndex: 1000 }}>
-      <DropdownMenu.Root open={true} onOpenChange={(o) => { if (!o) onClose() }}>
-        <DropdownMenu.Trigger asChild>
-          <span style={{ position: 'fixed', left: menu.x, top: menu.y, width: 0, height: 0 }} />
-        </DropdownMenu.Trigger>
-        <DropdownMenu.Portal>
-          <DropdownMenu.Content
-            onPointerDownOutside={onClose}
-            onEscapeKeyDown={onClose}
-            style={{
-              minWidth: 200,
-              background: 'var(--rsim-surface-solid)',
-              border: '1px solid var(--rsim-border)',
-              borderRadius: 'var(--rsim-radius-panel)',
-              boxShadow: 'var(--rsim-shadow-overlay)',
-              padding: 4,
-              fontFamily: 'var(--rsim-font-ui)',
-              fontSize: 12,
-              color: 'var(--rsim-text)',
-            }}
-            sideOffset={0}
-            align="start"
-          >
+    <div
+      data-rsim-context-menu
+      style={{
+        position: 'fixed',
+        left: menu.x,
+        top: menu.y,
+        zIndex: 1000,
+        minWidth: 200,
+        background: 'var(--rsim-surface-solid)',
+        border: '1px solid var(--rsim-border)',
+        borderRadius: 'var(--rsim-radius-panel)',
+        boxShadow: 'var(--rsim-shadow-overlay)',
+        padding: 4,
+        fontFamily: 'var(--rsim-font-ui)',
+        fontSize: 12,
+        color: 'var(--rsim-text)',
+        cursor: 'default',
+      }}
+    >
             {menu.kind === 'empty' && <M1EmptyMap menu={menu} />}
             {menu.kind === 'vehicle' && <M2Vehicle menu={menu} />}
             {menu.kind === 'waypoint' && <M3Waypoint menu={menu} />}
             {(menu.kind === 'fence-vertex' || menu.kind === 'rally') && <M4FenceOrRally menu={menu} />}
             {(menu.kind === 'mission-leg' || menu.kind === 'task') && <M5LegOrTask menu={menu} />}
-          </DropdownMenu.Content>
-        </DropdownMenu.Portal>
-      </DropdownMenu.Root>
     </div>
   )
 }
@@ -148,26 +155,24 @@ export function ContextMenu(): JSX.Element | null {
 
 function Item({ label, onSelect, disabled, reason, danger }: { label: string; onSelect: () => void; disabled?: boolean; reason?: string; danger?: boolean }): JSX.Element {
   return (
-    <DropdownMenu.Item
-      onSelect={disabled ? undefined : onSelect}
-      disabled={disabled}
+    <div
+      onClick={disabled ? undefined : () => { onSelect(); closeMenu() }}
       style={{
         padding: '6px 10px',
         borderRadius: 'var(--rsim-radius-chip)',
         cursor: disabled ? 'not-allowed' : 'pointer',
         color: disabled ? 'var(--rsim-text-dim)' : danger ? 'var(--rsim-danger)' : 'var(--rsim-text)',
         opacity: disabled ? 0.5 : 1,
-        outline: 'none',
       }}
       title={reason}
     >
       {label}
-    </DropdownMenu.Item>
+    </div>
   )
 }
 
 const Sep = (): JSX.Element => (
-  <DropdownMenu.Separator style={{ height: 1, background: 'var(--rsim-border)', margin: '4px 0' }} />
+  <div style={{ height: 1, background: 'var(--rsim-border)', margin: '4px 0' }} />
 )
 
 const GroupLabel = ({ children }: { children: React.ReactNode }): JSX.Element => (

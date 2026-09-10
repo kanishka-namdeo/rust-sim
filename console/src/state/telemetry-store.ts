@@ -431,6 +431,10 @@ function openSimSocket(i: number): void {
     ws.onopen = () => {
       simSocketsMap.set(i, ws)
       simSockets = Array.from(simSocketsMap.keys()).sort((a, b) => a - b)
+      // Update the sim plane state to 'live' when at least one socket opens.
+      if (planes.sim.conn !== 'live') {
+        planes.sim = { conn: 'live', retryAt: null, lastError: null }
+      }
       bump()
     }
     ws.onmessage = (ev) => {
@@ -457,6 +461,10 @@ function openSimSocket(i: number): void {
     ws.onclose = () => {
       simSocketsMap.delete(i)
       simSockets = Array.from(simSocketsMap.keys()).sort((a, b) => a - b)
+      // If all sim sockets are closed, mark the sim plane as connecting.
+      if (simSockets.length === 0) {
+        planes.sim = { conn: 'connecting', retryAt: Date.now() + 2500, lastError: 'sim socket closed' }
+      }
       bump()
     }
     // Register optimistically so a rapid onopen/onerror doesn't race.
