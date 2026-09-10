@@ -687,8 +687,8 @@ function normalizePresetSummary(raw: unknown): PresetSummary | null {
   if (!name) return null
   return {
     name,
-    created_at: str(r.created_at, r.createdAt ?? ''),
-    param_count: num(r.param_count, r.paramCount) ?? 0,
+    created_at: str(r.created_at) || str(r.createdAt) || '',
+    param_count: num(r.param_count) ?? num(r.paramCount) ?? 0,
   }
 }
 

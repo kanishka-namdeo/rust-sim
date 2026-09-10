@@ -178,7 +178,7 @@ function normReplayData(raw: unknown): ReplayTopicData | null {
 
 function normUlogData(raw: unknown): UlogTopicData | null {
   const r = asRec(raw) ?? {}
-  const t = numArr(r.t) ?? numArr(r.timestamps, r.time) ?? []
+  const t = numArr(r.t) ?? numArr(r.timestamps) ?? numArr(r.time) ?? []
   const fieldsRec = asRec(r.fields) ?? {}
   const fields: Record<string, number[]> = {}
   for (const [k, v] of Object.entries(fieldsRec)) {
