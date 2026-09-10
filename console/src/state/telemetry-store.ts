@@ -130,10 +130,18 @@ let lastReactSnapshot: {
 // Gate instruments (§9.2 — always on)
 const inst = {
   framesIn: 0, // WS frames normalized into the store
-  framesRendered: 0, // rAF passes that flushed work (incremented by FlushLoop)
+  framesRendered: 0, // rAF passes that flushed work (incremented by FlushLoop via _incrementFramesRendered)
   lastFrameAt: 0,
   commits: 0, // React state commits (§9.2)
 }
+
+/** Incremented by FlushLoop.tsx on each rAF pass (§9.2 binding contract).
+ *  Exposed so the FlushLoop owns the write; __rsimTelemetry.framesRendered
+ *  reads via a getter so gates can assert it. */
+export function _incrementFramesRendered(): void {
+  inst.framesRendered++
+}
+
 if (typeof window !== 'undefined') {
   ;(window as unknown as { __rsimTelemetry?: unknown }).__rsimTelemetry = {
     get framesIn() {
@@ -164,18 +172,30 @@ export function subscribe(fn: () => void): () => void {
   return () => listeners.delete(fn)
 }
 
+let snapshotCache: ReturnType<typeof getSnapshot> | null = null
+let snapshotCacheVersion = -1
+
 export function getSnapshot(): {
   vehicles: FleetVehicle[]
   lastFrameAt: number
   planes: typeof planes
   simSockets: number[]
 } {
-  return {
+  // `useSyncExternalStore` requires `getSnapshot` to return the SAME object
+  // when state hasn't changed — otherwise it detects "changes" every call
+  // and re-renders infinitely (the M8 spike: React error #185 "Maximum
+  // update depth exceeded"). Cache by `version` and only rebuild on bump.
+  if (snapshotCache && snapshotCacheVersion === version) {
+    return snapshotCache
+  }
+  snapshotCache = {
     vehicles,
     lastFrameAt: inst.lastFrameAt,
     planes,
     simSockets: simSockets.slice(),
   }
+  snapshotCacheVersion = version
+  return snapshotCache
 }
 
 export function getVersion(): number {

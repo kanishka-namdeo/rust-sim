@@ -18,23 +18,78 @@
  * v1 static-prerendered `/` page.
  */
 
-import dynamic from 'next/dynamic'
+import { useEffect, useState, Suspense, type ReactNode, type ComponentType } from 'react'
 
-const OperationsCanvas = dynamic(
-  () => import('@/components/canvas/OperationsCanvas').then((m) => m.OperationsCanvas),
-  {
-    ssr: false,
-    loading: () => (
-      <div
-        className="rsim-canvas flex h-screen w-screen items-center justify-center"
-        style={{ background: 'var(--rsim-bg)', color: 'var(--rsim-text-dim)', fontFamily: 'var(--rsim-font-mono)' }}
-      >
-        loading operations canvas…
-      </div>
-    ),
-  },
-)
+// Lazy-load with explicit error handling so the canvas mount surfaces
+// any module-load / render-time failure (the M8 spike: silent dynamic-import
+// failures under Turbopack's ESM-only maplibre-gl had to be debugged by
+// patching this loader).
+const OperationsCanvasLazy = (() => {
+  let p: Promise<{ default: ComponentType } | { OperationsCanvas: ComponentType }> | null = null
+  return () => {
+    if (!p) {
+      p = import('@/components/canvas/OperationsCanvas').then(
+        (m) => m,
+        (err) => {
+          console.error('[CanvasLoader] dynamic import failed:', err)
+          throw err
+        },
+      )
+    }
+    return p
+  }
+})()
+
+function Loading(): ReactNode {
+  return (
+    <div
+      className="rsim-canvas flex h-screen w-screen items-center justify-center"
+      style={{ background: 'var(--rsim-bg)', color: 'var(--rsim-text-dim)', fontFamily: 'var(--rsim-font-mono)' }}
+    >
+      loading operations canvas…
+    </div>
+  )
+}
+
+function Error({ error }: { error: Error }): ReactNode {
+  return (
+    <div
+      className="rsim-canvas flex h-screen w-screen flex-col items-center justify-center gap-2"
+      style={{ background: 'var(--rsim-bg)', color: 'var(--rsim-danger)', fontFamily: 'var(--rsim-font-mono)', padding: 24 }}
+    >
+      <div style={{ fontSize: 16, fontWeight: 600 }}>canvas failed to load</div>
+      <pre style={{ fontSize: 11, color: 'var(--rsim-text-dim)', maxWidth: 600, overflow: 'auto' }}>
+        {error.message}
+        {'\n'}
+        {error.stack}
+      </pre>
+    </div>
+  )
+}
 
 export function CanvasLoader() {
-  return <OperationsCanvas />
+  const [Comp, setComp] = useState<ComponentType | null>(null)
+  const [err, setErr] = useState<Error | null>(null)
+  useEffect(() => {
+    OperationsCanvasLazy().then(
+      (m) => {
+        const C = (m as { OperationsCanvas?: ComponentType; default?: ComponentType }).OperationsCanvas
+          ?? (m as { default?: ComponentType }).default
+        if (!C) {
+          setErr(new Error('OperationsCanvas export not found in dynamic import'))
+          return
+        }
+        setComp(() => C)
+      },
+      (e: Error) => setErr(e),
+    )
+  }, [])
+  if (err) return <Error error={err} />
+  if (!Comp) return <Loading />
+  return (
+    <Suspense fallback={<Loading />}>
+      <Comp />
+    </Suspense>
+  )
 }
+

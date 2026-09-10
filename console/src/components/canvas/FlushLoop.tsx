@@ -27,7 +27,7 @@
  */
 
 import { useEffect, useRef } from 'react'
-import { getFleetSnapshot, getStrip, getSimFrame, getTrack } from '@/state/telemetry-store'
+import { getFleetSnapshot, getStrip, getSimFrame, getTrack, _incrementFramesRendered } from '@/state/telemetry-store'
 
 // ---------------------------------------------------------------------------
 // HUD ref registry — module-level Map<id, HTMLElement>
@@ -128,12 +128,7 @@ let lastFlushAt = 0
 function flush(): void {
   const snap = getFleetSnapshot()
   framesRendered++
-  if (typeof window !== 'undefined') {
-    const inst = (
-      window as unknown as { __rsimTelemetry?: { framesRendered: number } }
-    ).__rsimTelemetry
-    if (inst) inst.framesRendered = framesRendered
-  }
+  _incrementFramesRendered() // §9.2: __rsimTelemetry.framesRendered reads via getter
   lastFlushAt = performance.now()
 
   if (snap) {

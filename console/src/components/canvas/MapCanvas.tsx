@@ -41,6 +41,7 @@ import {
   vehicleFeatureCollection,
   trackFeatureCollection,
   graticuleFeatureCollection,
+  getLayerFeatureCount,
   type LayerId,
 } from './map/layers'
 import {
@@ -62,9 +63,25 @@ import { getFleetSnapshot, useTelemetrySnapshot } from '@/state/telemetry-store'
 import { useAppStore } from '@/state/app-store'
 import { DEFAULT_ORIGIN } from '@/lib/geo'
 
-// Worker URL set once at module load (§6.2 — the official Next.js workaround).
-// The prebuild script (T-A1) copies both siblings into public/maplibre/.
-setWorkerUrl('/maplibre/maplibre-gl-worker.mjs')
+// Worker URL — set once at module load (§6.2).
+//
+// The MapLibre v6 worker is an ESM module that must be served at a stable
+// URL the browser can fetch. Under Turbopack + Next.js 16, the
+// `new URL('maplibre-gl/dist/maplibre-gl-worker.mjs', import.meta.url)`
+// pattern that works under webpack/rspack fails with "chunk path empty
+// but not in a worker" because Turbopack intercepts the import.meta.url
+// resolution and the chunk path comes through empty (MapLibre issue #8126).
+//
+// The fix: the prebuild script (T-A1, scripts/copy-maplibre-worker.mjs)
+// copies both worker siblings into public/maplibre/ so Next.js serves them
+// at /maplibre/maplibre-gl-worker.mjs. We resolve an ABSOLUTE URL here so
+// the worker fetch isn't subject to relative-path interception. The
+// production standalone server (finish-standalone.mjs already copies
+// public/ into .next/standalone/) serves the same path on the wire.
+if (typeof window !== 'undefined') {
+  const workerUrl = new URL('/maplibre/maplibre-gl-worker.mjs', window.location.origin).href
+  setWorkerUrl(workerUrl)
+}
 
 // ---------------------------------------------------------------------------
 // Basemap ladder (§6.3) — keyless-first, dark, offline-safe.
@@ -128,13 +145,18 @@ const mapDebug: MapDebug = {
   pitch: 0,
   bearing: 0,
   mode: 'geo',
-  layers: {
-    'vehicles-halo': 0,
-    'vehicles-body': 0,
-    'vehicles-label': 0,
-    'tracks-line': 0,
-    'graticule-line': 0,
-  },
+  // §9.2 binding: layer feature counts kept by `layers.ts` on each `setData`
+  // (never queryRenderedFeatures in the hook path). Expose via a getter Proxy
+  // so the gate assertion `__rsimMapDebug.layers["vehicles-body"] >= 2` reads
+  // the live counter, not a stale snapshot. `JSON.stringify` on the parent
+  // `mapDebug` object accesses `.layers` via `get`, so the Proxy returns the
+  // live count per-property without needing `ownKeys` (which would require the
+  // LAYER_IDS constant from layers.ts and complicates the serialization path).
+  layers: new Proxy({} as Record<LayerId, number>, {
+    get: (_target, prop: string) => {
+      return getLayerFeatureCount(prop as LayerId)
+    },
+  }),
 }
 
 if (typeof window !== 'undefined') {
@@ -187,6 +209,13 @@ export function MapCanvas(): JSX.Element {
       return
     }
     mapRef.current = map
+
+    // Expose the map instance for debugging + gate assertions (the M8 spike:
+    // `__rsimMapDebug.layers` counters need a way to verify the source actually
+    // has data; the `sourcedata` event is unreliable for the initial setData).
+    if (typeof window !== 'undefined') {
+      ;(window as unknown as { __rsimMap?: maplibregl.Map }).__rsimMap = map
+    }
 
     map.on('load', () => {
       mapDebug.loadedAtMs = performance.now()
@@ -244,7 +273,8 @@ export function MapCanvas(): JSX.Element {
       const src = map.getSource('graticule') as maplibregl.GeoJSONSource | undefined
       if (src) {
         src.setData(fc)
-        mapDebug.layers['graticule-line'] = fc.features.length
+        // graticuleFeatureCollection already calls bumpLayerCount —
+        // __rsimMapDebug.layers['graticule-line'] reads live via the Proxy.
       }
     })
 
@@ -253,24 +283,11 @@ export function MapCanvas(): JSX.Element {
       cameraRef.current = markManualPan(cameraRef.current, performance.now())
     })
 
-    // Source data — count features as they land (for the gate instrument).
-    map.on('sourcedata', (e) => {
-      if (!e.isSourceLoaded) return
-      // Map source id → layer-id counter (for L1/L2).
-      const id = e.sourceId as 'vehicles' | 'tracks' | 'graticule' | undefined
-      if (id === 'vehicles') {
-        const src = map.getSource(id) as maplibregl.GeoJSONSource | undefined
-        const fc = src?._data as GeoJSON.FeatureCollection | undefined
-        const n = fc?.features.length ?? 0
-        mapDebug.layers['vehicles-halo'] = n
-        mapDebug.layers['vehicles-body'] = n
-        mapDebug.layers['vehicles-label'] = n
-      } else if (id === 'tracks') {
-        const src = map.getSource(id) as maplibregl.GeoJSONSource | undefined
-        const fc = src?._data as GeoJSON.FeatureCollection | undefined
-        mapDebug.layers['tracks-line'] = fc?.features.length ?? 0
-      }
-    })
+    // NOTE: the `sourcedata` handler was removed — the layer feature counts
+    // are kept by `layers.ts:bumpLayerCount` on each `setData` (the spec
+    // §9.2 binding: "feature counts are plain counters kept by layers.ts
+    // on each setData, never queryRenderedFeatures in the hook path"). The
+    // `__rsimMapDebug.layers` Proxy reads live from `getLayerFeatureCount`.
 
     return () => {
       if (basemapRetryTimerRef.current) {
