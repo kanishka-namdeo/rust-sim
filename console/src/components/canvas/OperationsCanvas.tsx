@@ -36,6 +36,7 @@ import { FleetC2Panel } from './overlays/FleetC2Panel'
 import { SetupDrawer } from './overlays/SetupDrawer'
 import { AnalyzeOverlay } from './overlays/AnalyzeOverlay'
 import { SimControlPanel } from './overlays/SimControlPanel'
+import { SettingsPanel } from './overlays/SettingsPanel'
 import { ContextMenu } from './map/context-menu'
 import { useAppStore } from '@/state/app-store'
 import { startTelemetry, stopTelemetry } from '@/state/telemetry-store'
@@ -79,13 +80,14 @@ export function OperationsCanvas() {
       {/* M10 follow-up: right-click context menus (§7.2 M1..M5). */}
       <ContextMenu />
 
-      {/* Zone F overlay panels — MissionStrip + Library + FleetC2 + Setup + Analyze + SimControl (M10..M13) */}
+      {/* Zone F overlay panels — MissionStrip + Library + FleetC2 + Setup + Analyze + SimControl + Settings (M10..M15) */}
       {app.overlays.mission && <MissionStrip />}
       {app.overlays.library && <LibraryPanel />}
       {app.overlays.fleet && <FleetC2Panel />}
       {app.overlays.setup && <SetupDrawer />}
       {app.overlays.analyze && <AnalyzeOverlay />}
       {app.overlays.sim && <SimControlPanel />}
+      {app.overlays.settings && <SettingsPanel />}
     </div>
   )
 }

@@ -286,6 +286,44 @@ export function ShortcutsProvider(): JSX.Element | null {
         return
       }
 
+      // --- Camera verbs (Z/X/C/N) — §6.5 + §7.3.1 ----------------------
+      // Z: reset camera (north-up, pitch 0, re-fit fence)
+      // X: pitch glance 0↔55°
+      // C: re-center on active vehicle
+      // N: cycle basemap (the ladder §6.3)
+      // V: toggle NED inset view
+      if (key === 'z' || key === 'Z') {
+        // Reset — trigger the map's resetCamera via a custom event.
+        window.dispatchEvent(new CustomEvent('rsim:camera-reset'))
+        e.preventDefault()
+        e.stopPropagation()
+        return
+      }
+      if (key === 'x' || key === 'X') {
+        window.dispatchEvent(new CustomEvent('rsim:camera-pitch-glance'))
+        e.preventDefault()
+        e.stopPropagation()
+        return
+      }
+      if (key === 'c' || key === 'C') {
+        window.dispatchEvent(new CustomEvent('rsim:camera-recenter'))
+        e.preventDefault()
+        e.stopPropagation()
+        return
+      }
+      if (key === 'n' || key === 'N') {
+        window.dispatchEvent(new CustomEvent('rsim:cycle-basemap'))
+        e.preventDefault()
+        e.stopPropagation()
+        return
+      }
+      if (key === 'v' || key === 'V') {
+        setNedInset(!app.nedInset)
+        e.preventDefault()
+        e.stopPropagation()
+        return
+      }
+
       // --- Flight verbs (A/D/T/L/R/H) ----------------------------------
       // ARM/TAKEOFF use hold-to-confirm (400ms); the rest are single-tap.
       if (key === 'a' || key === 'A') {

@@ -455,7 +455,39 @@ export function MapCanvas(): JSX.Element {
     // on each setData, never queryRenderedFeatures in the hook path"). The
     // `__rsimMapDebug.layers` Proxy reads live from `getLayerFeatureCount`.
 
+    // M15: camera verb listeners — dispatched by ShortcutsProvider (Z/X/C/N).
+    const onCameraReset = (): void => {
+      const fleetSnap = getFleetSnapshot()
+      const bounds = fenceBounds(fleetSnap)
+      if (bounds) {
+        map.fitBounds([[bounds.west, bounds.south], [bounds.east, bounds.north]], fitBoundsOptions(bounds))
+      }
+      map.easeTo({ pitch: 0, bearing: 0 })
+      cameraRef.current = resetCamera(cameraRef.current)
+    }
+    const onPitchGlance = (): void => {
+      const next = cameraRef.current.pitch === 0 ? 55 : 0
+      map.easeTo({ pitch: next })
+      cameraRef.current = togglePitchGlance(cameraRef.current)
+    }
+    const onRecenter = (): void => {
+      const fleetSnap = getFleetSnapshot()
+      const active = fleetSnap?.vehicles.find((v) => v.index === getAppStoreSnapshot().activeVehicle) ?? fleetSnap?.vehicles[0]
+      if (active && active.lat != null && active.lon != null) {
+        map.easeTo({ center: [active.lon, active.lat], zoom: 16 })
+      }
+    }
+    const onCycleBasemap = (): void => { advanceBasemap() }
+    window.addEventListener('rsim:camera-reset', onCameraReset)
+    window.addEventListener('rsim:camera-pitch-glance', onPitchGlance)
+    window.addEventListener('rsim:camera-recenter', onRecenter)
+    window.addEventListener('rsim:cycle-basemap', onCycleBasemap)
+
     return () => {
+      window.removeEventListener('rsim:camera-reset', onCameraReset)
+      window.removeEventListener('rsim:camera-pitch-glance', onPitchGlance)
+      window.removeEventListener('rsim:camera-recenter', onRecenter)
+      window.removeEventListener('rsim:cycle-basemap', onCycleBasemap)
       if (basemapRetryTimerRef.current) {
         clearTimeout(basemapRetryTimerRef.current)
         basemapRetryTimerRef.current = null
