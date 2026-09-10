@@ -146,18 +146,34 @@ export function setMapMode(mode: MapMode): void {
  * For M8 this is the simple toggler; the stacking arithmetic (which depends
  * on viewport width + column C collapse) lands with the OperationsCanvas
  * layout in T-B1.
+ *
+ * Fix: opening a new overlay closes all other overlays (single-overlay mode
+ * until the responsive breakpoint logic ships). This prevents the stacking
+ * bug where B/S/Y open on top of MissionStrip.
  */
 export function toggleOverlay(id: OverlayId, opts?: { force?: boolean }): void {
   const force = opts?.force
-  const next = { ...state.overlays }
   if (force === true) {
+    // Open this one, close all others.
+    const next: Record<OverlayId, boolean> = { ...INITIAL.overlays }
     next[id] = true
+    // Also close the cheat sheet (it's a dialog, not a panel).
+    next.cheat = false
+    setState({ overlays: next })
   } else if (force === false) {
-    next[id] = false
+    // Close just this one.
+    setState({ overlays: { ...state.overlays, [id]: false } })
   } else {
-    next[id] = !next[id]
+    // Toggle: if opening, close all others first (single-overlay mode).
+    const willOpen = !state.overlays[id]
+    if (willOpen) {
+      const next: Record<OverlayId, boolean> = { ...INITIAL.overlays }
+      next[id] = true
+      setState({ overlays: next })
+    } else {
+      setState({ overlays: { ...state.overlays, [id]: false } })
+    }
   }
-  setState({ overlays: next })
 }
 
 export function setFollow(on: boolean): void {

@@ -31,7 +31,7 @@ export function SetupDrawer(): JSX.Element {
   const [section, setSection] = useState<Section>('summary')
 
   return (
-    <div data-rsim-zone="F" className="pointer-events-auto rsim-canvas" style={{ position: 'absolute', right: 0, top: 48, bottom: 96, width: 380, zIndex: 25, background: 'var(--rsim-surface-solid)', borderLeft: '1px solid var(--rsim-border)', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'var(--rsim-font-ui)', color: 'var(--rsim-text)' }}>
+    <div data-rsim-zone="F" role="dialog" aria-modal="true" className="pointer-events-auto rsim-canvas" style={{ position: 'absolute', right: 0, top: 48, bottom: 96, width: 380, zIndex: 25, background: 'var(--rsim-surface-solid)', borderLeft: '1px solid var(--rsim-border)', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'var(--rsim-font-ui)', color: 'var(--rsim-text)' }}>
       <div style={{ padding: 12, borderBottom: '1px solid var(--rsim-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div>
           <div style={{ fontSize: 13, fontWeight: 600 }}>Vehicle Setup</div>

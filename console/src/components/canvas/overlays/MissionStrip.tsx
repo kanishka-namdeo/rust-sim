@@ -56,7 +56,7 @@ export function MissionStrip(): JSX.Element {
 
   return (
     <div
-      data-rsim-zone="F"
+      data-rsim-zone="F" role="dialog" aria-modal="true"
       className="pointer-events-auto rsim-canvas"
       style={{
         position: 'absolute',
@@ -149,9 +149,11 @@ const btnStyle: React.CSSProperties = { background: 'rgba(17, 22, 29, 0.6)', bor
 function WaypointTable({ waypoints, selectedWp, erroredSeqs, onSelect, onPatch, onRemove }: { waypoints: PlanWaypoint[]; selectedWp: number | null; erroredSeqs: Set<number>; onSelect: (s: number | null) => void; onPatch: (s: number, p: Partial<PlanWaypoint>) => void; onRemove: (s: number) => void }): JSX.Element {
   return (
     <div style={{ fontSize: 10, fontFamily: 'var(--rsim-font-mono)' }}>
-      <div style={{ display: 'grid', gridTemplateColumns: '24px 1fr 56px 40px 36px 24px', gap: 2, padding: '4px 8px', fontWeight: 600, color: 'var(--rsim-text-dim)', borderBottom: '1px solid var(--rsim-border)' }}>
-        <span>#</span><span>lat, lon</span><span>AGL m</span><span>hold</span><span>acc</span><span></span>
-      </div>
+      {waypoints.length > 0 && (
+        <div style={{ display: 'grid', gridTemplateColumns: '24px 1fr 56px 40px 36px 24px', gap: 2, padding: '4px 8px', fontWeight: 600, color: 'var(--rsim-text-dim)', borderBottom: '1px solid var(--rsim-border)' }}>
+          <span>#</span><span>lat, lon</span><span>AGL m</span><span>hold</span><span>acc</span><span></span>
+        </div>
+      )}
       {waypoints.map((w) => (
         <div key={w.seq} onClick={() => onSelect(w.seq)} style={{ display: 'grid', gridTemplateColumns: '24px 1fr 56px 40px 36px 24px', gap: 2, padding: '4px 8px', cursor: 'pointer', background: w.seq === selectedWp ? 'rgba(34, 211, 238, 0.08)' : erroredSeqs.has(w.seq) ? 'rgba(239, 68, 68, 0.06)' : 'transparent', borderLeft: erroredSeqs.has(w.seq) ? '2px solid var(--rsim-danger)' : w.seq === selectedWp ? '2px solid var(--rsim-accent)' : '2px solid transparent' }}>
           <span>{w.seq}</span>

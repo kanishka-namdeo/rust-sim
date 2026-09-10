@@ -102,10 +102,10 @@ export function CommandBar(): JSX.Element {
             />
           ))}
 
-          {/* MISSION ▸ strip toggle (M10 wires the MissionStrip overlay) */}
+          {/* MISSION ▸ strip toggle — enabled (M key + button both work) */}
           <button
             type="button"
-            disabled
+            onClick={() => import('@/state/app-store').then(({ toggleOverlay }) => toggleOverlay('mission'))}
             style={{
               height: 32,
               padding: '0 10px',
@@ -117,10 +117,9 @@ export function CommandBar(): JSX.Element {
               fontWeight: 600,
               fontFamily: 'var(--rsim-font-mono)',
               letterSpacing: '0.04em',
-              cursor: 'not-allowed',
-              opacity: 0.4,
+              cursor: 'pointer',
             }}
-            title="Mission strip overlay — wired at M10"
+            title="Toggle mission strip overlay (M)"
           >
             MISSION ▸ (M)
           </button>

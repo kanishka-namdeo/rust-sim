@@ -341,6 +341,9 @@ function commitFleetFrame(
   // changed (§9.2). This is the ONLY path that increments __rsimCommits.
   maybeCommitReactState(norm.snapshot)
 
+  // Welcome notification — fires once when the first fleet frame arrives.
+  maybeShowWelcome(norm.snapshot)
+
   // Battery ladder notifications (MDPI spec: 30% warn / 20% caution /
   // 10% auto-RTL notice). Only fires on threshold crossings.
   checkBatteryLadder(norm.snapshot.vehicles)
@@ -616,6 +619,22 @@ export function startTelemetry(): void {
   // sockets are open. We start the sim plane as "connecting" and the ladder
   // (mock or live) will flip it.
   planes.sim = { conn: 'connecting', retryAt: Date.now() + PROBE_TIMEOUT_MS, lastError: null }
+}
+
+// Welcome notification — fires once when the first fleet frame with vehicles arrives.
+let welcomeNotified = false
+function maybeShowWelcome(snap: FleetSnapshot): void {
+  if (welcomeNotified) return
+  if (snap.vehicles.length > 0) {
+    welcomeNotified = true
+    import('./app-store').then(({ pushNotification }) => {
+      pushNotification({
+        severity: 'info',
+        title: `${snap.vehicles.length} SITL vehicle${snap.vehicles.length > 1 ? 's' : ''} connected`,
+        detail: 'press ? for shortcuts · right-click map for context menu',
+      })
+    })
+  }
 }
 
 export function stopTelemetry(): void {

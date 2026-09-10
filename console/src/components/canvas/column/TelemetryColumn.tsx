@@ -194,7 +194,7 @@ function MiniPlot({ label, data, color }: { label: string; data: { t: number; v:
 
   return (
     <div style={{ position: 'relative', height: 56, borderRadius: 'var(--rsim-radius-control)', border: '1px solid var(--rsim-border)', background: 'rgba(17, 22, 29, 0.4)', overflow: 'hidden' }}>
-      <canvas ref={canvasRef} style={{ width: '100%', height: '100%' }} />
+      <canvas ref={canvasRef} style={{ width: '100%', height: '100%' }} role="img" aria-label={`${label} sparkline`} />
     </div>
   )
 }

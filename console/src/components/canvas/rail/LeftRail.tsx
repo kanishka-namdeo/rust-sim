@@ -164,7 +164,7 @@ export function LeftRail() {
             transition: 'background 120ms, color 120ms',
           }}
           aria-pressed={item.active}
-          aria-label={`${item.label} (${item.shortcut})`}
+          aria-label={`${item.label}${item.shortcut !== '—' ? ` (${item.shortcut})` : ' — click to open'}`}
           title={`${item.label} (${item.shortcut})`}
         >
           {item.icon}
