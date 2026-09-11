@@ -1,16 +1,27 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import localFont from "next/font/local";
 import "./globals.css";
 import { Providers } from "@/components/providers";
 
-const geistSans = Geist({
+// M-T1 (Tauri repurpose): switched from `next/font/google` to
+// `next/font/local` with vendored variable-axis .ttf in public/fonts/
+// (extracted from the `geist` npm package v1.7.2) so the build works in
+// air-gapped CI (no fonts.gstatic.com fetch at build time).
+// Note: next/font/local resolves `src` relative to THIS file (src/app/),
+// so reaching the project-root `public/fonts/` requires `../../public/`.
+// (An earlier draft used `../public/fonts/` which resolved to the
+// nonexistent `src/public/fonts/` and broke `next build`.)
+// See docs/TAURI_APP_SPEC.md §5.1 and Appendix F.2/F.8.
+const geistSans = localFont({
+  src: "../../public/fonts/Geist-Variable.ttf",
+  display: "swap",
   variable: "--font-geist-sans",
-  subsets: ["latin"],
 });
 
-const geistMono = Geist_Mono({
+const geistMono = localFont({
+  src: "../../public/fonts/GeistMono-Variable.ttf",
+  display: "swap",
   variable: "--font-geist-mono",
-  subsets: ["latin"],
 });
 
 export const metadata: Metadata = {
@@ -19,7 +30,8 @@ export const metadata: Metadata = {
     "GCS v2 single-screen operator surface (MapLibre + edge HUD) for PX4 SITL.",
   keywords: ["PX4", "HIL", "SITL", "MAVLink", "rustsitsim", "mavfleet", "fleet manager", "telemetry", "operator console"],
   icons: {
-    icon: "https://z-cdn.chatglm.cn/z-ai/static/logo.svg",
+    // M-T1: was https://z-cdn.chatglm.cn/z-ai/static/logo.svg (fails offline).
+    icon: "/logo.svg",
   },
 };
 

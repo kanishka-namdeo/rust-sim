@@ -7,6 +7,11 @@ node_modules/
 bun.lock
 npm-debug.log*
 
+# M-T1 (Tauri repurpose): Next.js static-export output directory — generated
+# by `next build` with `output: 'export'`, consumed by `cargo tauri build`
+# via `frontendDist: ../console/out`. Never committed.
+console/out/
+
 # local env
 .env
 .env.local

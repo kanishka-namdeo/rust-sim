@@ -3,18 +3,23 @@
  *
  * Two API routing styles:
  *
- * - "gateway" (default): every request is a RELATIVE path; the backend port
- *   travels in the `XTransformPort` query parameter and the Caddy gateway
- *   (see Caddyfile.example) forwards it:
+ * - "gateway" (legacy web stack): every request is a RELATIVE path; the
+ *   backend port travels in the `XTransformPort` query parameter and the
+ *   Caddy gateway (see Caddyfile.example) forwards it:
  *     REST:  fetch('/api/status?XTransformPort=8200')
  *     WS:    new WebSocket('/?XTransformPort=8200')
- *   This is the mode used behind preview proxies where absolute localhost
- *   URLs are unreachable from the browser.
+ *   Used behind the preview proxy (scripts/stack_up.sh + Caddy :81)
+ *   where absolute localhost URLs are unreachable from the browser.
  *
- * - "direct": absolute localhost URLs straight to the Rust control planes
- *   (set NEXT_PUBLIC_RSIM_API_STYLE=direct when running the console locally
- *   without the gateway). Both backends upgrade WebSockets at `/` (and their
- *   spec paths /ws/telemetry, /ws/fleet).
+ * - "direct" (Tauri default, also dev-without-gateway): absolute
+ *   localhost URLs straight to the Rust control planes. Both backends
+ *   upgrade WebSockets at `/` (and their spec paths /ws/telemetry,
+ *   /ws/fleet).
+ *
+ * M-T1 (Tauri repurpose): the Tauri build sets
+ * NEXT_PUBLIC_RSIM_API_STYLE=direct at build time via .env.production;
+ * the legacy web stack keeps gateway mode (default). See
+ * docs/TAURI_APP_SPEC.md §5.1 and Appendix F.3.
  */
 
 import type {

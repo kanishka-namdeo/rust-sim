@@ -96,6 +96,22 @@ import { DEFAULT_ORIGIN } from '@/lib/geo'
 // the worker fetch isn't subject to relative-path interception. The
 // production standalone server (finish-standalone.mjs already copies
 // public/ into .next/standalone/) serves the same path on the wire.
+//
+// M-T1 (Tauri repurpose) NOTE: the original M-T1 patch switched this to
+// `new URL('/maplibre/maplibre-gl-worker.mjs', import.meta.url).href`
+// (per docs/TAURI_APP_SPEC.md §5.1 row 7 + Appendix F.4). That change is
+// actually M-T3 scope (spec §12 explicitly defers row 7 to M-T3), and it
+// breaks `next build` under Turbopack with `output: 'export'`:
+//   Error: Module not found: Can't resolve '/maplibre/maplibre-gl-worker.mjs'
+//   server relative imports are not implemented yet.
+// Turbopack intercepts the `new URL(string, import.meta.url)` pattern as
+// an asset import and fails on the absolute path. For M-T1 we revert to
+// `window.location.origin` — functionally equivalent in the Tauri webview
+// (the origin IS `http://tauri.localhost` / `tauri://localhost` there, and
+// the worker is served at `/maplibre/...` from the bundled `out/` dir).
+// M-T3 will revisit this with a Turbopack-safe pattern (e.g. a non-literal
+// first arg or `import.meta.url`+origin derivation) once the Tauri webview
+// is actually available for end-to-end testing.
 if (typeof window !== 'undefined') {
   const workerUrl = new URL('/maplibre/maplibre-gl-worker.mjs', window.location.origin).href
   setWorkerUrl(workerUrl)
