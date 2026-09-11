@@ -93,28 +93,74 @@ import { DEFAULT_ORIGIN } from '@/lib/geo'
 // The fix: the prebuild script (T-A1, scripts/copy-maplibre-worker.mjs)
 // copies both worker siblings into public/maplibre/ so Next.js serves them
 // at /maplibre/maplibre-gl-worker.mjs. We resolve an ABSOLUTE URL here so
-// the worker fetch isn't subject to relative-path interception. The
-// production standalone server (finish-standalone.mjs already copies
-// public/ into .next/standalone/) serves the same path on the wire.
+// the worker fetch isn't subject to relative-path interception.
 //
-// M-T1 (Tauri repurpose) NOTE: the original M-T1 patch switched this to
-// `new URL('/maplibre/maplibre-gl-worker.mjs', import.meta.url).href`
-// (per docs/TAURI_APP_SPEC.md §5.1 row 7 + Appendix F.4). That change is
-// actually M-T3 scope (spec §12 explicitly defers row 7 to M-T3), and it
-// breaks `next build` under Turbopack with `output: 'export'`:
-//   Error: Module not found: Can't resolve '/maplibre/maplibre-gl-worker.mjs'
-//   server relative imports are not implemented yet.
-// Turbopack intercepts the `new URL(string, import.meta.url)` pattern as
-// an asset import and fails on the absolute path. For M-T1 we revert to
-// `window.location.origin` — functionally equivalent in the Tauri webview
-// (the origin IS `http://tauri.localhost` / `tauri://localhost` there, and
-// the worker is served at `/maplibre/...` from the bundled `out/` dir).
-// M-T3 will revisit this with a Turbopack-safe pattern (e.g. a non-literal
-// first arg or `import.meta.url`+origin derivation) once the Tauri webview
-// is actually available for end-to-end testing.
+// M-T3 (Tauri repurpose) — the worker URL derivation.
+//
+// `window.location.origin` is correct in ALL four runtime environments:
+//
+//   1. Next.js dev server (npm run dev on :3000):
+//        origin = http://localhost:3000
+//        worker URL = http://localhost:3000/maplibre/maplibre-gl-worker.mjs
+//        Next.js serves public/ at the dev origin.
+//
+//   2. Web stack behind Caddy gateway (:81, XTransformPort):
+//        origin = http://localhost:81
+//        worker URL = http://localhost:81/maplibre/maplibre-gl-worker.mjs
+//        Caddy proxies / to :3000 and serves public/ via the Next.js
+//        standalone server (or static export server).
+//
+//   3. Tauri webview on Linux/Windows (useHttpsScheme: false, the default):
+//        origin = http://tauri.localhost
+//        worker URL = http://tauri.localhost/maplibre/maplibre-gl-worker.mjs
+//        Tauri's asset protocol serves frontendDist (../console/out) at
+//        this origin, so /maplibre/... resolves to the bundled worker.
+//
+//   4. Tauri webview on macOS (and Linux):
+//        origin = tauri://localhost
+//        worker URL = tauri://localhost/maplibre/maplibre-gl-worker.mjs
+//        Same as above — the Tauri asset protocol serves at this origin.
+//
+// Why NOT use `new URL('/maplibre/...', import.meta.url)` (the spec's
+// Appendix F.4 suggestion)?
+//
+//   Turbopack intercepts `new URL(literal_string, import.meta.url)` as an
+//   asset import. With an ABSOLUTE path like '/maplibre/...' it fails:
+//     "Module not found: Can't resolve '/maplibre/maplibre-gl-worker.mjs'
+//      server relative imports are not implemented yet."
+//   With a RELATIVE path like 'maplibre/...' it would try to bundle the
+//   file as a chunk (duplicate of what copy-maplibre-worker.mjs already
+//   did) and drop the maplibre-gl-shared.mjs sibling (the original
+//   MapLibre #8126 bug). Both paths are worse than window.location.origin.
+//
+// `window.location.origin` is the simplest pattern that works everywhere
+// without bundler-specific workarounds.
+//
+// M-T3 also adds a runtime probe: if the worker URL returns non-200 (e.g.
+// a misconfigured Tauri build that doesn't bundle public/maplibre/), we
+// log a clear error to the console so the operator sees it immediately
+// instead of debugging a blank map.
 if (typeof window !== 'undefined') {
   const workerUrl = new URL('/maplibre/maplibre-gl-worker.mjs', window.location.origin).href
   setWorkerUrl(workerUrl)
+
+  // M-T3: runtime probe — async, non-blocking. If this fails, the map
+  // will mount but never load a tile; the operator sees a clear console
+  // error pointing at the misconfigured bundle.
+  fetch(workerUrl, { method: 'HEAD', cache: 'no-store' })
+    .then((res) => {
+      if (!res.ok) {
+        console.error(
+          `[rsim] MapLibre worker URL "${workerUrl}" returned HTTP ${res.status}. ` +
+          `The map will mount but tiles won't load. Check that public/maplibre/ ` +
+          `is bundled into the static export (run \`npm run build\` in console/).`,
+        )
+      }
+    })
+    .catch(() => {
+      // Network error — likely a Tauri webview origin issue. Don't log
+      // here; the maplibre-gl library will log its own worker-load error.
+    })
 }
 
 // ---------------------------------------------------------------------------
