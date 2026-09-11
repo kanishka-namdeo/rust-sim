@@ -87,6 +87,23 @@ Track-up), projection (2D / 3D-pitch), and 7 layer-visibility toggles
 graticule). The state lives in `console/src/state/map-settings.ts`,
 persisted to `localStorage` under `rsim.map.v1`.
 
+**Tauri desktop app (2026-09-11, M-T1..M-T8).** The `src-tauri/` crate
+packages the RustSim GCS as a single double-clickable desktop installer
+(`.deb`/`.AppImage` on Linux, `.dmg` on macOS, `.msi`/`.exe` on Windows).
+The Tauri binary spawns `fleet-catalog` + `fleet-supervisor` at startup
+via `tokio::process::Command` with `kill_on_drop(true)`, and
+`graceful_shutdown()` on window close sends `POST /api/sitl/stop` then
+drops the Child handles. The frontend is built with `output: 'export'`
+(M-T1) — a pure static site the Tauri webview loads via its asset
+protocol (no Node server in production). The web stack
+(`scripts/stack_up.sh start` + Caddy `:81`) remains the browser/LAN
+deployment path; the two share the same backend contract. See
+`docs/TAURI_APP_SPEC.md` for the full spec + 8-milestone verification
+records (`docs/MT5_VERIFICATION.md` through `docs/MT8_VERIFICATION.md`).
+M-T8 (screenshot verification) is BLOCKED by a WebKitGTK 2.52 wedge
+in the headless container — real-hardware verification deferred to the
+CI matrix proposed in `docs/MT7_VERIFICATION.md`.
+
 ## RustSim Repository Rules (Local Contracts)
 
 - No credentials in the tree: git auth tokens (session PATs) live only in

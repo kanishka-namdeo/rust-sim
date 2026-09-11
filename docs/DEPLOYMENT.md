@@ -10,6 +10,14 @@ For the Z.AI sandbox's constrained environment (no Rust/cmake, trimmed npm
 registry) see [SANDBOX_SETUP.md](SANDBOX_SETUP.md) instead — every fix for
 that environment lives there and is not needed on a normal machine.
 
+**Two deployment paths share the same backend contract:**
+- **Web stack** (sections 0–9 below): Next.js console behind Caddy `:81`.
+  Browse from any machine on the LAN. Best for multi-operator / headless-server setups.
+- **Tauri desktop app** (section 10): a single double-clickable installer
+  (`.deb`/`.AppImage`/`.dmg`/`.msi`) that spawns its own catalog + supervisor.
+  No Caddy, no Node server, no terminal. Best for single-operator workstations.
+  See [TAURI_APP_SPEC.md](TAURI_APP_SPEC.md) + [MT7_VERIFICATION.md](MT7_VERIFICATION.md).
+
 ## 0. What ends up running
 
 ```
@@ -78,6 +86,11 @@ cd ../PX4-Autopilot && make px4_sitl_default
 
 Console output is a standalone server: `console/.next/standalone/server.js`
 (~150 MB RSS in production mode; the dev server can exceed 2 GB).
+> **Tauri note**: the `output: 'export'` switch (M-T1) produces a static
+> `console/out/` directory instead — used by `cargo tauri build`. The web
+> stack still uses `output: 'standalone'` via `stack_up.sh`'s build path;
+> the two modes coexist (the env var `NEXT_PUBLIC_RSIM_API_STYLE` selects
+> direct vs gateway at build time).
 
 ## 4. Run the stack (one host, browser on the same host)
 
@@ -259,3 +272,105 @@ bash scripts/browser_map_test.sh               # O-2, end-to-end in a browser
 > deleted — see ADR-0030 + the worklog.
 
 The recorded results live in [VERIFICATION.md](VERIFICATION.md).
+
+## 10. Tauri desktop app (alternative to the web stack)
+
+The `src-tauri/` crate (added 2026-09-11, M-T2..M-T7) packages the
+RustSim GCS as a single double-clickable desktop app. The Tauri binary
+spawns `fleet-catalog` + `fleet-supervisor` at startup and kills them on
+window close. No Caddy, no Node server, no terminal needed by the
+operator. SITL stays operator-driven — click Start in the SITL Manager
+panel, same as the web stack.
+
+### Prerequisites (same as the web stack + Tauri system deps)
+
+| Tool | Version | Notes |
+|------|---------|-------|
+| Rust | stable 1.77+ | `tauri = "2"` in `src-tauri/Cargo.toml` |
+| Node | 20+ | for the Tauri CLI (`@tauri-apps/cli@^2`) + Next.js build |
+| Tauri system deps | webkit2gtk-4.1-dev, gtk-3-dev, librsvg2-dev, etc. | `sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libsoup-3.0-dev` on Debian/Ubuntu |
+| PX4-Autopilot | v1.16.2 | NOT bundled — install separately per section 2 above |
+
+### Build the desktop installer
+
+```bash
+# Install the Tauri CLI (prebuilt native binary — avoids cargo install)
+cd console && npm install --no-audit --no-fund @tauri-apps/cli@^2 @tauri-apps/api@^2
+
+# Build the static export + the Tauri binary + the platform installer
+cd ../src-tauri && cargo tauri build --bundles deb,appimage
+# → src-tauri/target/release/bundle/deb/RustSim GCS_1.0.0_amd64.deb (4.5 MB)
+# → src-tauri/target/release/bundle/appimage/RustSim GCS_1.0.0_amd64.AppImage (104 MB)
+```
+
+`cargo tauri build` runs `beforeBuildCommand` (`npm run build` with
+`NEXT_PUBLIC_RSIM_API_STYLE=direct`) → compiles the Rust binary → bundles
+the binary + static export + icons into the platform installer.
+
+### Install + run
+
+**Linux `.deb`:**
+```bash
+sudo apt install ./RustSim\ GCS_1.0.0_amd64.deb
+# dpkg resolves Depends: libwebkit2gtk-4.1-0, libssl3, libgtk-3-0, librsvg2-2
+# Launch from desktop menu (Development → RustSim GCS) or `rustsim-gcs` from terminal
+```
+
+**Linux `.AppImage`** (self-contained, no install):
+```bash
+chmod +x RustSim\ GCS_1.0.0_amd64.AppImage
+./RustSim\ GCS_1.0.0_amd64.AppImage   # FUSE mounts + execs AppRun → rustsim-gcs
+```
+
+**macOS `.dmg`** + **Windows `.msi`**: built via the CI matrix proposed
+in [MT7_VERIFICATION.md](MT7_VERIFICATION.md) (need real macOS/Windows
+runners). Unsigned for v1: Gatekeeper/SmartScreen warning → right-click →
+Open / Run anyway.
+
+### What the Tauri binary does at startup
+
+1. `tauri_plugin_log` initializes (Stdout + `~/.local/share/rustsim/logs/`
+   + Webview targets).
+2. `setup()` spawns an async task that:
+   - `probe_and_clean_ports()` — kills any stale process on `:8300`/`:8400`/`:8500`
+   - `spawn_catalog()` — `fleet-catalog --port 8300 --catalog-dir <data_dir>`
+     with `kill_on_drop(true)` + `process_group(0)` on Unix
+   - `spawn_supervisor()` — `fleet-supervisor --port 8500 --fleet-dir <fleet/>`
+     with `PX4_ROOT` env propagated from `resolve_px4_root()`
+   - `probe_px4()` — emits `px4-status` event to the webview
+3. The webview loads `console/out/index.html` (the static export).
+4. The frontend's `fetch('http://127.0.0.1:8300/api/health')` + WebSocket
+   to `ws://127.0.0.1:8400/` work because the CSP allows them (M-T2).
+
+### What the Tauri binary does on window close
+
+`on_window_event(CloseRequested)` → `api.prevent_close()` → spawn
+`graceful_shutdown()` task → `window.close()` after it completes:
+
+1. `POST http://127.0.0.1:8500/api/sitl/stop` (supervisor kills mavfleet +
+   px4 + sitsim-cli)
+2. sleep 250ms
+3. Drop the catalog + supervisor Child handles → `kill_on_drop` fires
+   (SIGTERM → 500ms → SIGKILL on Unix)
+
+Verified in [MT6_VERIFICATION.md](MT6_VERIFICATION.md): zero orphan
+processes, all 7 ports released, idempotent (handles SITL-not-running).
+
+### Data directory
+
+All RustSim data lives under the OS-specific data dir:
+- Linux: `~/.local/share/rustsim/{logs,catalog,missions}/`
+- macOS: `~/Library/Application Support/ai.z.rustsim.gcs/`
+- Windows: `%APPDATA%\rustsim\`
+
+### Verification records
+
+- [MT5_VERIFICATION.md](MT5_VERIFICATION.md) — SITL lifecycle end-to-end
+  (2 vehicles READY, 10 Hz WebSocket telemetry, clean teardown)
+- [MT6_VERIFICATION.md](MT6_VERIFICATION.md) — graceful shutdown
+  (zero orphans, 7/7 ports released, idempotent)
+- [MT7_VERIFICATION.md](MT7_VERIFICATION.md) — `.deb` + `.AppImage`
+  bundles produced + structurally verified on Linux
+- [MT8_VERIFICATION.md](MT8_VERIFICATION.md) — screenshot verification
+  (BLOCKED by WebKitGTK 2.52 wedge in headless container; real-hardware
+  screenshot capture deferred to CI matrix)

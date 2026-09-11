@@ -173,20 +173,41 @@ Seven feature areas, each mapped to its milestone and verification gates
 ## Architecture
 
 ```
-browser ── Caddy gateway :81 ──┬─ :8300  RustSim Catalog (mission CRUD, ULog, presets)
-                               ├─ :8500  RustSim Supervisor (SITL lifecycle: start/stop mavfleet, ADR-0030)
-                               ├─ :3000  RustSim Console (Operations Canvas)
-                               └─ :8400  RustSim Fleet manager (spawned on-demand by :8500; MAVLink UDP 14540+i)
-            PX4 SITL v1.16.2 ◄── TCP 4560+i ┘ (HIL lockstep, 200 Hz)
+┌─ Web deployment (browser) ──────────────────────────────────────────────────┐
+│                                                                              │
+│  browser ── Caddy gateway :81 ──┬─ :8300  RustSim Catalog (mission CRUD, ULog, presets)                       │
+│                                 ├─ :8500  RustSim Supervisor (SITL lifecycle: start/stop mavfleet, ADR-0030) │
+│                                 ├─ :3000  RustSim Console (Operations Canvas — Next.js standalone server)    │
+│                                 └─ :8400  RustSim Fleet manager (spawned on-demand by :8500; MAVLink UDP 14540+i)            │
+│              PX4 SITL v1.16.2 ◄── TCP 4560+i ┘ (HIL lockstep, 200 Hz)                                       │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌─ Desktop deployment (Tauri 2.x) ─────────────────────────────────────────────┐
+│                                                                              │
+│  RustSim GCS.app / .exe / .AppImage                                          │
+│    ├─ Tauri webview (WebKitGTK / WebView2 / WKWebView)                        │
+│    │    loads static export from console/out/ (output: 'export')             │
+│    │    talks direct to http://127.0.0.1:{8300,8400,8500} (no gateway)       │
+│    └─ Tauri Rust backend (src-tauri/)                                        │
+│         spawns fleet-catalog (:8300) + fleet-supervisor (:8500) at startup   │
+│         as tokio::process::Command children with kill_on_drop(true)          │
+│         graceful_shutdown() on window close → POST /api/sitl/stop → kill     │
+│                                                                              │
+│  PX4 SITL v1.16.2 — installed separately (not bundled); discovered via      │
+│  PX4_ROOT env or ../PX4-Autopilot. Supervisor spawns mavfleet + px4 on demand │
+│  when operator clicks Start in the SITL Manager panel.                       │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-SITL is operator-driven (QGC/MP pattern): `stack_up.sh start` brings up
-catalog + supervisor + console only; the operator starts SITL from the
-GCS UI's SITL Manager panel or `stack_up.sh start-fleet` (ADR-0030).
+**Two deployment paths, one codebase:**
+- **Web** (`scripts/stack_up.sh start`): catalog + supervisor + Next.js console behind Caddy `:81`. Browse from any machine on the LAN. SITL stays operator-driven.
+- **Desktop** (`cargo tauri build` → `.deb`/`.AppImage`/`.dmg`/`.msi`): a single double-clickable app that spawns its own catalog + supervisor + webview. No Caddy, no Node server, no terminal. SITL lifecycle identical (supervisor on `:8500`).
+
+SITL is operator-driven in both paths (QGC/MP pattern, ADR-0030): the GCS launches cold; the operator starts SITL from the SITL Manager panel or `stack_up.sh start-fleet`.
 
 Full port map and data flows: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-GCS-specific topology and API contracts: [docs/GCS_SPEC.md](docs/GCS_SPEC.md)
-§4 and §7.
+GCS-specific topology and API contracts: [docs/GCS_SPEC.md](docs/GCS_SPEC.md) §4 and §7.
+Tauri repurpose spec + 8-milestone plan: [docs/TAURI_APP_SPEC.md](docs/TAURI_APP_SPEC.md).
 
 ## Quickstart
 
@@ -226,6 +247,31 @@ Verify the supervisor is up:
 curl http://127.0.0.1:8500/api/sitl/status
 # {"ok":true,"data":{"running":false,"vehicle_count":0,...}}
 ```
+
+### Desktop app (Tauri 2.x) — alternative to the web stack
+
+Build a single double-clickable desktop installer (no Caddy, no Node server,
+no terminal needed by the operator):
+
+```bash
+cd console && npm install --no-audit --no-fund @tauri-apps/cli@^2 @tauri-apps/api@^2
+cd src-tauri && cargo tauri build --bundles deb,appimage
+# → src-tauri/target/release/bundle/deb/RustSim GCS_1.0.0_amd64.deb
+# → src-tauri/target/release/bundle/appimage/RustSim GCS_1.0.0_amd64.AppImage
+```
+
+Install the `.deb` (`sudo apt install ./RustSim\ GCS_1.0.0_amd64.deb`) or
+`chmod +x` the AppImage + double-click. The Tauri binary spawns
+`fleet-catalog` + `fleet-supervisor` at startup and kills them on window
+close (`graceful_shutdown()`). SITL stays operator-driven — click Start
+in the SITL Manager panel, same as the web stack.
+
+> Tauri build needs the same system deps as the web stack (`libwebkit2gtk-4.1-dev`,
+> `libgtk-3-dev`, `librsvg2-dev`, etc. on Debian/Ubuntu). PX4-Autopilot
+> v1.16.2 is NOT bundled — install it separately per the Quickstart above;
+> the Tauri binary discovers it via `PX4_ROOT` env or `../PX4-Autopilot`.
+> See [docs/TAURI_APP_SPEC.md](docs/TAURI_APP_SPEC.md) for the full spec
+> + 8-milestone verification record.
 
 Fly one vehicle, for real (single-invocation integration harness —
 spawns + asserts + tears down in one shell call, no persistent stack
@@ -298,6 +344,7 @@ fleet/                        RustSim Fleet  — 7 crates incl. fleet-mission (G
                                               docs/ (SPEC, SCENARIOS, ADRs), live harnesses
 console/                      RustSim Console — Next.js 16 app, Operations Canvas + 7 overlay panels,
                                               dual API routing incl. :8300 (catalog) + :8500 (supervisor)
+                                              (M-T1: output: 'export' for Tauri static bundling)
   src/components/canvas/      MapLibre GL canvas + overlays (SitlManagerPanel, FleetC2Panel,
                                 MissionStrip, LibraryPanel, SetupDrawer, AnalyzeOverlay,
                                 PreFlightPanel, SettingsPanel, OnboardingTour)
@@ -305,11 +352,23 @@ console/                      RustSim Console — Next.js 16 app, Operations Can
   src/lib/patterns.ts         Survey grid / corridor / perimeter generators (M7, ADR-0028)
   tests/                      G-ladder harnesses (11 surviving: G-0..G-9, G-11, G-13) + mock PX4
   docs/adr/                   GCS ADRs 0019-0030 (6 accepted: 0019, 0020, 0026, 0027, 0029, 0030)
+src-tauri/                    Tauri 2.x desktop shell (M-T2..M-T7) — spawns catalog + supervisor
+                              as tokio::process children, graceful_shutdown on window close.
+  src/{main,backends,commands,shutdown,log_pipe}.rs   the Rust lifecycle manager
+  tauri.conf.json             window config (1280×800), CSP (allows 127.0.0.1:{8300,8400,8500}),
+                              bundle targets (deb/rpm/appimage for Linux, dmg for macOS, msi/nsis for Win)
+  capabilities/main.json      Tauri 2 capabilities (core + 7 plugins)
 docs/                         architecture, GCS v1/v2 spec, verification record, operations
-                              runbook, sandbox setup, deployment guide, evidence images
+                              runbook, sandbox setup, deployment guide, evidence images,
+                              Tauri repurpose spec + M-T1..M-T8 verification records
   GCS_SPEC.md                the v1 engineering spec (7 milestones, 14 gates, 6 feature areas)
   GCS_V2_SPEC.md             the v2 Operations Canvas redesign spec (M8..M15, G-14..G-21)
+  TAURI_APP_SPEC.md          the Tauri repurpose spec (8 milestones M-T1..M-T8, appendices C–Q)
   VERIFICATION.md             the I/F/S/O/R + G ladder evidence record
+  MT5_VERIFICATION.md         M-T5 SITL lifecycle end-to-end (2 vehicles READY, 10 Hz WS telemetry)
+  MT6_VERIFICATION.md         M-T6 graceful shutdown (zero orphans, 7/7 ports released)
+  MT7_VERIFICATION.md         M-T7 cross-platform packaging (.deb + AppImage on Linux; CI matrix for macOS/Win)
+  MT8_VERIFICATION.md         M-T8 screenshot verification (BLOCKED by WebKitGTK 2.52 wedge in headless container)
   images/                     live screenshots (Fleet C2, Operator Map, Vehicle Setup, Fly/Plan View)
 scripts/                      cross-repo live tests (browser), golden-vector generator,
                               stack_up.sh persistent-stack launcher (catalog + supervisor + console
@@ -355,6 +414,32 @@ measured time budgets without re-running the corresponding live case.
   flight path.
 - ✅ **Plan View, Fly View, Analyze View, Fleet C2 orchestration,
   Vehicle Setup extensions** — see the *GCS v1 feature areas* above.
+
+### Shipped — Tauri desktop app (M-T1..M-T7, 2026-09-11)
+
+- ✅ **M-T1** — Next.js `output: 'export'` static export (no Node server
+  in production; vendored Geist TTF fonts; favicon pinned to `/logo.svg`).
+- ✅ **M-T2** — Tauri 2.x skeleton: `src-tauri/` with `tauri.conf.json`
+  (1280×800 window, CSP allowing `http://127.0.0.1:{8300,8400,8500}`),
+  7 plugins, 6 placeholder icons.
+- ✅ **M-T3** — MapLibre worker URL verified for all 4 runtime environments
+  (Next dev, web stack `:81`, Tauri Linux/Win, Tauri macOS) + runtime
+  fetch probe for clear error reporting.
+- ✅ **M-T4** — Rust backend orchestration: `tokio::process::Command` +
+  `kill_on_drop(true)` for `fleet-catalog` + `fleet-supervisor`; 6 IPC
+  commands; `graceful_shutdown()` on window close.
+- ✅ **M-T5** — SITL lifecycle end-to-end: `POST /api/sitl/start` → 2
+  vehicles READY → 10 Hz WebSocket telemetry → `POST /api/sitl/stop` →
+  all 7 ports released, no orphans.
+- ✅ **M-T6** — Graceful shutdown verified: zero orphan processes, 7/7
+  ports released, idempotent (handles SITL-not-running edge case).
+- ✅ **M-T7** — Cross-platform packaging: `.deb` (4.5 MB) + `.AppImage`
+  (104 MB) produced on Linux. macOS `.dmg` + Windows `.msi` deferred
+  to CI matrix on real OSes.
+- ⚠️ **M-T8** — Screenshot verification: BLOCKED by WebKitGTK 2.52 wedge
+  in headless container. The Tauri binary launches + `main()` runs +
+  bridge setup works, but the webview init hangs Xvfb before `setup()`
+  fires. Real-hardware screenshot capture deferred to CI matrix.
 
 ### Planned for v1.1
 

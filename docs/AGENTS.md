@@ -13,8 +13,11 @@ components in `sim/docs/` and `fleet/docs/`.
 
 Owned here: `ARCHITECTURE.md`, `VERIFICATION.md`, `OPERATIONS.md`,
 `DEPLOYMENT.md`, `SANDBOX_SETUP.md`, `GCS_SPEC.md`, `GCS_V2_SPEC.md`,
+`TAURI_APP_SPEC.md`, `MT5_VERIFICATION.md`, `MT6_VERIFICATION.md`,
+`MT7_VERIFICATION.md`, `MT8_VERIFICATION.md`, `LIVE-DESKTOP-PREVIEW-SETUP.md`,
 `images/`. Not owned here: component specs/ADRs (see `../sim/AGENTS.md`,
-`../fleet/AGENTS.md`, `../console/AGENTS.md`).
+`../fleet/AGENTS.md`, `../console/AGENTS.md`, `../src-tauri/` — the Tauri
+crate has no `AGENTS.md` yet; its contract lives in `TAURI_APP_SPEC.md`).
 
 ## Local Contracts
 
@@ -58,6 +61,17 @@ Owned here: `ARCHITECTURE.md`, `VERIFICATION.md`, `OPERATIONS.md`,
   console remains GCS v1; v2 statements describe target state, not
   shipped state. Update it only via the decision-log/section-amendment
   pattern it defines (§1.4, §13.3).
+- `TAURI_APP_SPEC.md` is the binding engineering spec for the **Tauri 2.x
+  desktop app repurpose** (M-T1..M-T8 milestones, appendices C–Q). It
+  defines the dual-deployment architecture (web stack + Tauri desktop),
+  the backend orchestration (`tokio::process::Command` + `kill_on_drop`),
+  the CSP + capabilities, the 8-milestone verification plan, and the
+  CI matrix for macOS/Windows packaging. The 4 verification records
+  (`MT5`..`MT8`) are the evidence; `LIVE-DESKTOP-PREVIEW-SETUP.md` is
+  the agent-facing playbook for the headless-sandbox preview bridge.
+  Update the spec when the Tauri config, lifecycle, or packaging
+  changes — not for milestone-status updates (those go in the
+  `MT*_VERIFICATION.md` files).
 
 ## Work Guidance
 

@@ -6,33 +6,65 @@ pattern, ADR-0030): the GCS does NOT auto-spawn SITL on launch — the
 supervisor (`:8500`) is the lifecycle entry point and the operator starts
 SITL on demand from the GCS UI or `stack_up.sh start-fleet`.
 
+**Two deployment paths share the same backend contract:**
+- **Web stack** (browser): Next.js console behind Caddy `:81`, talks to
+  catalog `:8300` + supervisor `:8500` via the `XTransformPort` gateway.
+- **Tauri desktop app** (`src-tauri/`, M-T1..M-T7): a single double-clickable
+  app that spawns its own catalog + supervisor as `tokio::process::Command`
+  children. The webview talks direct to `http://127.0.0.1:{8300,8400,8500}`
+  — no gateway. See [TAURI_APP_SPEC.md](TAURI_APP_SPEC.md) for the full spec.
+
 ```
-                       ┌──────────────────────────────┐
-                       │        browser user          │
-                       │  Operations Canvas + 7      │
-                       │  overlay panels (Mission,    │
-                       │  Library, Fleet C2, SITL,    │
-                       │  Setup, Analyze, PreFlight,   │
-                       │  Settings, Cheat)            │
-                       └──────────────┬───────────────┘
-                                      │ HTTP/WS (relative paths)
-                     ┌────────────────▼─────────────────┐
-                     │   Caddy gateway :81 (XTransformPort)   │
-                     └──┬──────────┬─────────┬──────────┬───┘
-                        │ :8300    │ :8500   │ :3000   │ :8400 (on-demand)
-              ┌─────────▼────┐  ┌──▼────────┐ │ ┌────────▼────────┐
-              │ RustSim Core │  │ RustSim   │ │ │ RustSim Fleet   │
-              │ (sim)        │  │ Supervisor│ │ │ manager          │
-              │ per vehicle  │  │ fleet-     │ │ │ mavfleet          │
-              │ sitsim-cli   │◄─┤ supervisor│ │ │ REST+WS control  │
-              │ REST+WS +HIL │  │ SITL life │ │ │ plane             │
-              │ TCP          │  │ cycle     │ │ │                   │
-              └────────┬─────┘  └──────────┘ │ └─────────┬────────┘
-                       │                     │            │
-              ┌────────▼─────────┐   ┌─────▼─────┐  ┌────────▼──────────┐
-              │  PX4 SITL v1.16.2 │   │ Console   │  │ PX4 SITL v1.16.2    │
-              │  (unmodified)    │   │ Next.js   │  │ (unmodified, -i)    │
-              └───────────────────┘   └──────────┘  └─────────────────────┘
+┌─ Web deployment ─────────────────────────────────────────────────────────────┐
+│                                                                              │
+│                       ┌──────────────────────────────┐                       │
+│                       │        browser user          │                       │
+│                       │  Operations Canvas + 7      │                       │
+│                       │  overlay panels (Mission,    │                       │
+│                       │  Library, Fleet C2, SITL,    │                       │
+│                       │  Setup, Analyze, PreFlight,   │                       │
+│                       │  Settings, Cheat)            │                       │
+│                       └──────────────┬───────────────┘                       │
+│                                      │ HTTP/WS (relative paths)               │
+│                     ┌────────────────▼─────────────────┐                     │
+│                     │   Caddy gateway :81 (XTransformPort)   │                 │
+│                     └──┬──────────┬─────────┬──────────┬───┘                 │
+│                        │ :8300    │ :8500   │ :3000   │ :8400 (on-demand)    │
+│              ┌─────────▼────┐  ┌──▼────────┐ │ ┌────────▼────────┐            │
+│              │ RustSim Core │  │ RustSim   │ │ │ RustSim Fleet   │            │
+│              │ (sim)        │  │ Supervisor│ │ │ manager          │            │
+│              │ per vehicle  │  │ fleet-     │ │ │ mavfleet          │            │
+│              │ sitsim-cli   │◄─┤ supervisor│ │ │ REST+WS control  │            │
+│              │ REST+WS +HIL │  │ SITL life │ │ │ plane             │            │
+│              │ TCP          │  │ cycle     │ │ │                   │            │
+│              └────────┬─────┘  └──────────┘ │ └─────────┬────────┘            │
+│                       │                     │            │                      │
+│              ┌────────▼─────────┐   ┌─────▼─────┐  ┌────────▼──────────┐       │
+│              │  PX4 SITL v1.16.2 │   │ Console   │  │ PX4 SITL v1.16.2    │       │
+│              │  (unmodified)    │   │ Next.js   │  │ (unmodified, -i)    │       │
+│              └───────────────────┘   └──────────┘  └─────────────────────┘       │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌─ Tauri desktop deployment (M-T2..M-T7) ──────────────────────────────────────┐
+│                                                                              │
+│   RustSim GCS.app / .exe / .AppImage                                          │
+│   ┌────────────────────────────────────────────────────────────────┐         │
+│   │  Tauri webview (WebKitGTK / WebView2 / WKWebView)               │         │
+│   │    loads static export from console/out/ (output: 'export')    │         │
+│   │    fetch → http://127.0.0.1:{8300,8400,8500} (no gateway)       │         │
+│   │    new WebSocket('ws://127.0.0.1:8400/')                        │         │
+│   └────────────────────────┬───────────────────────────────────────┘         │
+│                            │ spawns at startup via tokio::process             │
+│   ┌────────────────────────▼───────────────────────────────────────┐        │
+│   │  Tauri Rust backend (src-tauri/src/{main,backends,commands,shutdown}.rs)│        │
+│   │    fleet-catalog --port 8300  ← kill_on_drop(true)              │        │
+│   │    fleet-supervisor --port 8500 ← kill_on_drop(true)             │        │
+│   │    graceful_shutdown() on window close → POST /api/sitl/stop     │        │
+│   └────────────────────────────────────────────────────────────────┘         │
+│                                                                              │
+│   PX4 SITL v1.16.2 — NOT bundled; discovered via PX4_ROOT env or             │
+│   ../PX4-Autopilot. Supervisor spawns mavfleet + px4 on demand.              │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 - The **console** (Operations Canvas + 7 overlay panels) talks to four
@@ -74,8 +106,35 @@ SITL on demand from the GCS UI or `stack_up.sh start-fleet`.
 | **8500** | **fleet-supervisor (ADR-0030)** | HTTP REST (SITL lifecycle: `/api/sitl/start`, `/stop`, `/status`, `/scenarios`) |
 | 14540 + i | manager's telemetry link | UDP; PX4 streams telemetry here |
 | 14580 + i | PX4 onboard link | UDP; the manager sends commands here |
-| 3000 | console | HTTP (Next.js) |
-| 81 | gateway | HTTP/WS reverse proxy (`?XTransformPort=<port>`) |
+| 3000 | console | HTTP (Next.js) — web-stack mode (Tauri mode uses static export, no port) |
+| 81 | gateway | HTTP/WS reverse proxy (`?XTransformPort=<port>`) — web-stack only |
+
+## Tauri desktop deployment (M-T2..M-T7)
+
+The `src-tauri/` crate (added 2026-09-11) is the desktop app shell. See
+[TAURI_APP_SPEC.md](TAURI_APP_SPEC.md) for the full spec + 8-milestone
+verification record.
+
+- **Lifecycle**: the Tauri Rust binary (`rustsim-gcs`) spawns
+  `fleet-catalog` + `fleet-supervisor` at startup via
+  `tokio::process::Command` with `kill_on_drop(true)`. On window close,
+  `graceful_shutdown()` sends `POST /api/sitl/stop` to the supervisor,
+  waits 250ms, then drops the Child handles — killing both backends.
+  Verified in [MT6_VERIFICATION.md](MT6_VERIFICATION.md): zero orphan
+  processes, all 7 ports released, idempotent.
+- **Frontend**: the Next.js console is built with `output: 'export'`
+  (M-T1) — a pure static site in `console/out/` that Tauri's webview
+  loads via its asset protocol. No Node server in production.
+- **Data plane**: the webview talks direct to
+  `http://127.0.0.1:{8300,8400,8500}` — no Caddy gateway. The
+  `NEXT_PUBLIC_RSIM_API_STYLE=direct` env (baked into the static export
+  at build time) produces absolute localhost URLs.
+- **PX4 SITL**: NOT bundled (too large — ~600 MB). The operator installs
+  PX4 v1.16.2 separately; the Tauri binary discovers it via `PX4_ROOT`
+  env or `../PX4-Autopilot`. SITL stays operator-driven (ADR-0030).
+- **Bundles**: `cargo tauri build` produces `.deb` + `.AppImage` on
+  Linux (M-T7 verified), `.dmg` on macOS, `.msi` + NSIS `.exe` on
+  Windows. See [MT7_VERIFICATION.md](MT7_VERIFICATION.md).
 
 ## Component map
 
@@ -117,7 +176,17 @@ fleet/   mavfleet workspace — 7 crates (fleet-alloc was removed 2026-09-10)
                           on `:8500`, ADR-0030)
 
 console/ Next.js 16 operator console (the Operations Canvas — see
-         console/README.md + console/AGENTS.md)
+         console/README.md + console/AGENTS.md). M-T1: output: 'export'
+         for Tauri static bundling; .env.production forces direct mode.
+
+src-tauri/ Tauri 2.x desktop shell (M-T2..M-T7) — the Rust binary that
+         spawns catalog + supervisor + serves the static export to the
+         webview. See docs/TAURI_APP_SPEC.md.
+         src/main.rs       tauri::Builder + setup + on_window_event
+         src/backends.rs   spawn_catalog + spawn_supervisor (kill_on_drop)
+         src/commands.rs   6 IPC commands (backend_status, restart_*, etc.)
+         src/shutdown.rs   graceful_shutdown() on window close
+         tauri.conf.json   window config + CSP + bundle targets
 ```
 
 ## Key data flows
