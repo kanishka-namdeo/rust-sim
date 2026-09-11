@@ -1,0 +1,112 @@
+{
+  "$schema": "https://schema.tauri.app/config/2.11.0",
+  "productName": "RustSim GCS",
+  "version": "1.0.0",
+  "identifier": "ai.z.rustsim.gcs",
+  "build": {
+    "beforeDevCommand": "cd ../console && NEXT_PUBLIC_RSIM_API_STYLE=direct npm run dev",
+    "devUrl": "http://localhost:3000",
+    "beforeBuildCommand": "cd ../console && NEXT_PUBLIC_RSIM_API_STYLE=direct npm run build",
+    "frontendDist": "../console/out",
+    "runner": "cargo"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "RustSim GCS — Operations Canvas",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 1024,
+        "minHeight": 720,
+        "resizable": true,
+        "maximizable": true,
+        "minimizable": true,
+        "closable": true,
+        "maximized": false,
+        "fullscreen": false,
+        "center": true,
+        "decorations": true,
+        "transparent": false,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
+        "titleBarStyle": "Visible",
+        "theme": "Dark",
+        "dragDropEnabled": false,
+        "useHttpsScheme": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:8300 http://127.0.0.1:8400 http://127.0.0.1:8500 ws://127.0.0.1:8400; img-src 'self' asset: http://asset.localhost blob: data: https://*.tile.openstreetmap.org https://*.basemaps.cartocdn.com https://*.tile.opentopomap.org https://server.arcgisonline.com https://tiles.stadiamaps.com https://api.maptiler.com; style-src 'self' 'unsafe-inline'; script-src 'self' 'wasm-unsafe-eval'; font-src 'self' data:; worker-src 'self' blob:",
+      "devCsp": null,
+      "freezePrototype": false,
+      "dangerousDisableAssetCspModification": false,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$RESOURCE/**", "$APPDATA/**", "$APPCONFIG/**"]
+      }
+    },
+    "trayIcon": null,
+    "macOSPrivateApi": false,
+    "withGlobalTauri": false
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "publisher": "RustSim Team",
+    "category": "DeveloperTool",
+    "shortDescription": "QGroundControl-class GCS for PX4 SITL",
+    "longDescription": "RustSim GCS is a pure Rust + TypeScript ground control station for PX4-Autopilot v1.16.2 SITL. Single-screen Operations Canvas with 7 overlay panels for mission authoring, fleet C2, SITL lifecycle, vehicle setup, ULog analyze, pre-flight checks, and settings.",
+    "copyright": "Apache-2.0",
+    "homepage": "https://github.com/kanishka-namdeo/rust-sim",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": [],
+    "externalBin": [],
+    "macOS": {
+      "frameworks": [],
+      "minimumSystemVersion": "12.0",
+      "exceptionDomain": "",
+      "signingIdentity": null,
+      "entitlements": null,
+      "providerShortName": null
+    },
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "headerImage": null,
+        "sidebarImage": null,
+        "installMode": "perMachine",
+        "languages": ["en-US"],
+        "displayLanguageSelector": false,
+        "compression": "lzma"
+      },
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "wix": null,
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "http://timestamp.sectigo.com",
+      "tsp": false
+    },
+    "linux": {
+      "deb": {
+        "depends": ["libwebkit2gtk-4.1-0", "libssl3", "libgtk-3-0", "librsvg2-2"],
+        "provides": ["rustsim-gcs"],
+        "files": {}
+      },
+      "rpm": {
+        "depends": ["webkit2gtk4.1", "openssl-libs", "gtk3", "librsvg2"],
+        "provides": ["rustsim-gcs"]
+      }
+    }
+  },
+  "plugins": {}
+}

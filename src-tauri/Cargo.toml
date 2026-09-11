@@ -1,0 +1,69 @@
+[package]
+name = "rustsim-gcs"
+version = "1.0.0"
+description = "QGroundControl-class GCS for PX4 SITL — Tauri shell"
+authors = ["RustSim Team <noreply@rustsim.ai>"]
+license = "Apache-2.0"
+repository = "https://github.com/kanishka-namdeo/rust-sim"
+default-run = "rustsim-gcs"
+edition = "2021"
+rust-version = "1.77.2"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-shell = "2"
+tauri-plugin-log = "2"
+tauri-plugin-window-state = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-os = "2"
+tauri-plugin-process = "2"
+
+# Async runtime (Tauri 2 uses tokio under the hood)
+tokio = { version = "1", features = ["full"] }
+
+# HTTP client — used by the Tauri Rust backend to call the supervisor's
+# POST /api/sitl/stop on shutdown. The webview's fetch() cannot run during
+# RunEvent::ExitRequested because the webview is already torn down.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Logging
+log = "0.4"
+
+# Path resolution per OS
+dirs = "5"
+
+# PATH lookup for backends.rs
+which = "6"
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Serialization (matches fleet workspace)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Time (for log rotation + timestamps)
+time = { version = "0.3", features = ["formatting", "macros"] }
+
+[features]
+# Production default: enables the custom-protocol feature that tells Tauri
+# to serve frontendDist instead of the devUrl.
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+opt-level = "s"     # Optimise for size; we're not CPU-bound in the Tauri shell
+lto = true          # Link-time optimisation across the workspace
+codegen-units = 1   # Slower build, smaller binary
+strip = true        # Strip debug symbols from the release binary
+panic = "abort"     # Smaller binary; abort on panic instead of unwind
+
+[profile.dev]
+opt-level = 0
+debug = true
+strip = false

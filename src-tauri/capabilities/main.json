@@ -1,0 +1,22 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the main operations-canvas window (M-T2 of the Tauri repurpose plan)",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:default",
+    "core:event:default",
+    "core:app:default",
+    "core:path:default",
+    "core:webview:default",
+    "shell:allow-open",
+    "shell:default",
+    "log:default",
+    "window-state:default",
+    "fs:default",
+    "dialog:default",
+    "os:default",
+    "process:default"
+  ]
+}

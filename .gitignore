@@ -12,6 +12,11 @@ npm-debug.log*
 # via `frontendDist: ../console/out`. Never committed.
 console/out/
 
+# M-T2 (Tauri repurpose): Tauri Rust build artifacts + tauri-build generated
+# files. Never committed.
+src-tauri/target/
+src-tauri/gen/
+
 # local env
 .env
 .env.local
